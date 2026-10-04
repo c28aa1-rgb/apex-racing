@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,11 +9,14 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { createServer } from 'node:net';
 import type { PartyLobby } from '../shared/party';
 import { Parties } from '../shared/party-room';
+import { TRACKS } from '../shared/tracks';
+import { PHYSICS_VERSION } from '../shared/physics-version';
 
 // Run a real Wrangler server: exercise HTTP, native WebSockets and separate DO instances.
 test('Cloudflare rooms synchronize, isolate, validate, reconnect and cleanly leave', { timeout: 90000 }, async () => {
   const port = await new Promise<number>(resolve => { const server = createServer(); server.listen(0, '127.0.0.1', () => { const address = server.address() as { port: number }; server.close(() => resolve(address.port)); }); });
   const directory = await mkdtemp(join(tmpdir(), 'apex-cloudflare-'));
+  await promisify(execFile)(process.execPath, ['node_modules/wrangler/bin/wrangler.js', 'd1', 'execute', 'apex-times', '--local', '--persist-to', directory, '--file', 'cloudflare/migrations/0001_times.sql'], { env: { ...process.env, WRANGLER_SEND_METRICS: 'false' } });
   const child = spawn(process.execPath, ['node_modules/wrangler/bin/wrangler.js', 'dev', '--local', '--ip', '127.0.0.1', '--port', String(port), '--persist-to', directory, '--var', 'SESSION_SECRET:test-secret-at-least-thirty-two-characters'], { cwd: process.cwd(), env: { ...process.env, WRANGLER_SEND_METRICS: 'false', BROWSER: 'none' }, stdio: ['ignore', 'pipe', 'pipe'] });
   let output = ''; child.stdout.on('data', data => { output += data; }); child.stderr.on('data', data => { output += data; });
   const base = `http://127.0.0.1:${port}`, sockets: WebSocket[] = [];
@@ -41,6 +45,32 @@ test('Cloudflare rooms synchronize, isolate, validate, reconnect and cleanly lea
     assert.equal((await request('/api/parties', undefined, { carId: 'celica-gt4' })).status, 401);
     const identities = await Promise.all(['Host', 'Guest', 'Other', 'Third'].map(async nickname => (await request('/api/players', undefined, { nickname })).json() as Promise<{ id: string; token: string }>));
     const [host, guest, other, third] = identities;
+    const track = TRACKS[0];
+    const run = { trackId: track.id, trackVersion: track.version, physicsVersion: PHYSICS_VERSION, carId: 'celica-gt4', timeMs: 2000, inputs: Array(120).fill(1), steering: Array(120).fill(1), drift: Array(120).fill(.5), manual: true };
+    assert.equal((await request('/api/runs', undefined, run)).status, 401);
+    assert.equal((await request('/api/runs', host.token, { ...run, physicsVersion: 'obsolete' })).status, 422);
+    assert.equal((await request('/api/runs', host.token, { ...run, timeMs: 1 })).status, 422);
+    assert.equal((await request('/api/runs', host.token, { ...run, playerId: guest.id })).status, 422);
+    assert.equal((await request('/api/runs', host.token, { ...run, trackVersion: -1 })).status, 422);
+    const saved = await request('/api/runs', host.token, run); assert.equal(saved.status, 201);
+    const record = await saved.json() as any; assert.equal(record.improved, true); assert.equal(record.verified, false);
+    const id = record.entries[0].id;
+    assert.deepEqual(await (await request(`/api/replays/${id}`)).json(), run);
+    const faster = { ...run, inputs: Array(90).fill(1), steering: Array(90).fill(1), drift: Array(90).fill(.5), timeMs: 1500 };
+    const improved = await (await request('/api/runs', host.token, faster)).json() as any;
+    assert.equal(improved.improved, true); assert.equal(improved.entries[0].id, id);
+    assert.equal((await (await request('/api/runs', host.token, run)).json() as any).improved, false);
+    assert.deepEqual(await (await request(`/api/replays/${id}`)).json(), faster);
+    await request('/api/runs', guest.token, { ...run, inputs: Array(60).fill(1), steering: Array(60).fill(1), drift: Array(60).fill(.5), timeMs: 1000 });
+    const renamed = await fetch(base + '/api/players/me', { method: 'PUT', headers: { Authorization: `Bearer ${host.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ nickname: 'Renamed Host' }) });
+    assert.equal(renamed.status, 200);
+    await request('/api/runs', host.token, run); // An old signed nickname must not overwrite the database nickname.
+    const board = await (await request(`/api/leaderboards/${track.id}`)).json() as any;
+    assert.equal(board.verified, false); assert.deepEqual(board.entries.map((e: any) => [e.playerId,e.rank,e.timeMs,e.nickname]), [[guest.id,1,1000,'Guest'],[host.id,2,1500,'Renamed Host']]);
+    assert.equal(board.entries[0].verified, false); assert.equal(board.entries[0].manual, true);
+    assert.equal((await request('/api/replays/00000000-0000-4000-8000-000000000000')).status, 404);
+    assert.equal((await request('/api/leaderboards/missing')).status, 404);
+    assert.equal((await request('/api/runs', host.token, { ...run, inputs: Array(18000).fill(1), steering: Array(18000).fill(1.77777777777777), drift: Array(18000).fill(1.55555555555555), timeMs: 300000 })).status, 413);
     assert.equal((await request('/api/parties', host.token + 'tampered', { carId: 'celica-gt4' })).status, 401);
     assert.equal((await request('/api/parties', host.token, { carId: 'invalid' })).status, 400);
     const missing = await request('/api/parties/join', guest.token, { code: 'AAAAAA', carId: 'celica-gt4' });

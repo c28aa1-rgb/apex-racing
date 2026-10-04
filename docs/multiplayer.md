@@ -4,6 +4,17 @@ Live frontend: https://c28aa1-rgb.github.io/apex-racing/
 
 Production backend: https://apex-multiplayer.c28aa1-rgb.workers.dev
 
+Cloudflare D1 database: `apex-times`, bound as `TIMES`. The public site stores casual best times and replay inputs here. Leaderboards show the top 50 and retain only each driver's fastest time per track, track version, and physics version. These times are explicitly unverified: the Worker checks session ownership, payloads, versions, and input duration, but does not replay physics or prove checkpoints were completed. The existing Node backend still verifies full physics replays. Career REP and personal bests remain on the device. Anonymous identities are device-specific; keep browser storage to keep posting under the same driver.
+
+The database was created and initialized through the connected Cloudflare plugin. For subsequent deployments, apply migrations before publishing the Worker:
+
+```sh
+npx wrangler d1 migrations apply apex-times --remote
+npm run deploy:cloudflare
+```
+
+`npm run dev:cloudflare` applies the same migrations to the local D1 database before starting. The database credentials stay inside Cloudflare bindings; the browser only calls the Worker API. D1 prepared statements and atomic batches protect score ownership and faster-only updates. Existing local Node scores are not imported into this new casual leaderboard.
+
 Source repository: https://github.com/c28aa1-rgb/apex-racing
 
 `main` pushes run `.github/workflows/pages.yml` and publish the frontend. Run `npm run build:pages` to produce the same artifact locally. Deployment excludes personal soundtrack files and original model backups; runtime models and licensed effects remain included. Original models stay in the local project for asset regeneration and tests that inspect source GLBs. Those source-model tests require the delivered local assets after cloning. Backend updates use Wrangler separately; log in to the configured account before deploying.
@@ -56,7 +67,7 @@ VITE_MULTIPLAYER_URL=http://127.0.0.1:8787
 
 Production uses an **HTTPS** backend URL. The client derives `wss://` automatically and rejects insecure backend URLs when the frontend uses HTTPS. `VITE_MULTIPLAYER_URL` is the backend origin, without `/api` or a room path. Do not put secrets in `VITE_*` variables; these values are public.
 
-`VITE_API_URL` optionally points solo/leaderboard requests at a separately hosted Node API. In Node mode it also controls party requests. Such an API must accept your frontend origin through its own deployment proxy/CORS configuration. Leaving it unset preserves the existing same-origin `/api` workflow.
+In Node mode, `VITE_API_URL` optionally points solo, leaderboard, and party requests at a separately hosted Node API. Such an API must accept your frontend origin through its own deployment proxy/CORS configuration. Leaving it unset preserves the existing same-origin `/api` workflow. Cloudflare mode sends player, time, leaderboard, and replay requests to `VITE_MULTIPLAYER_URL`.
 
 Node and Cloudflare driver sessions have separate browser storage keys. Cloudflare room membership is remembered per tab in session storage. Switching modes requires no game-code edits.
 
@@ -76,7 +87,7 @@ npm run deploy:cloudflare
 
 Paste the generated random value at Wrangler's secret prompt. Do not use the local example secret in production. For multiple accounts, add your account ID to `wrangler.jsonc` or export `CLOUDFLARE_ACCOUNT_ID` before deployment. CI can use `CLOUDFLARE_API_TOKEN` with Workers deployment permissions instead of interactive login.
 
-Wrangler creates the Worker, `RACE_ROOMS` binding, and SQLite Durable Object class through migration `v1`. You do not need to create room objects, a database, KV, or D1 manually. Do not remove or rename an applied migration. The rate limiter uses namespace `1001`; choose another positive integer if an existing Worker in your account already uses that namespace for unrelated limits.
+Wrangler creates the Worker, `RACE_ROOMS` binding, and SQLite Durable Object class through migration `v1`. The `apex-times` D1 database is already created and configured in `wrangler.jsonc`; apply its SQL migrations before deploying changes. Room objects are created on demand. Do not remove or rename an applied migration. The rate limiter uses namespace `1001`; choose another positive integer if an existing Worker in your account already uses that namespace for unrelated limits.
 
 Use the HTTPS `workers.dev` URL printed by Wrangler as `VITE_MULTIPLAYER_URL`. Optional custom domains can be configured in the Cloudflare dashboard. Check the dashboard for deployment logs and usage; local tests do not verify your account's deployed bindings or origin settings.
 

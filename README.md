@@ -2,6 +2,8 @@
 
 Play live on [GitHub Pages](https://c28aa1-rgb.github.io/apex-racing/). Multiplayer runs on Cloudflare Workers and Durable Objects. Pushes to `main` deploy the frontend automatically.
 
+The live site's casual leaderboard and saved ghosts use Cloudflare D1. Public times are marked unverified; the Node backend retains physics replay verification. Career progress and personal bests stay on your device.
+
 A playable browser racer with seven imported real-world circuits, eleven selectable cars, a Rapier physics vehicle, instant restarts, drifting, medals, personal and online ghosts, and a replay-verified leaderboard. See `VALIDATION.md` for current checks and known route-test limitations.
 
 ## Play locally

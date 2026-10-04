@@ -7,9 +7,8 @@ import { carById, DEFAULT_CAR, type CarDefinition, type CarId } from './cars';
 import { engineState, automaticGear, TRANSMISSIONS } from './transmission';
 import { CONE_PENALTY_MS, CONE_RADIUS, type LotLayout } from './lot';
 
-export const PHYSICS_VERSION = 'apex-rapier0193-v32';
-export const DT = 1 / 60;
-export const MAX_TICKS = 60 * 300;
+import { DT, MAX_TICKS } from './physics-version';
+export { PHYSICS_VERSION, DT, MAX_TICKS } from './physics-version';
 /** Where a Cone Attack run begins: wherever the car stopped inside the start box. Part of the run, so replays start in the same place. */
 export type RunOrigin = { x: number; z: number; heading: number };
 export const Input = { Throttle: 1, Brake: 2, Left: 4, Right: 8, Drift: 16, Respawn: 32, Flip: 64, ShiftUp:128, ShiftDown:256 } as const;

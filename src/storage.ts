@@ -4,7 +4,7 @@ import { runSchema, type Run } from '../shared/replay';
 import type { Track } from '../shared/tracks';
 import { hasLocalStartPlacement } from './dev-spawns';
 export type Player = { id: string; token: string; nickname: string };
-export type Entry = { id: string; playerId: string; nickname: string; carId: string; timeMs: number; rank: number; manual?:boolean|null };
+export type Entry = { id: string; playerId: string; nickname: string; carId: string; timeMs: number; rank: number; manual?:boolean|null; verified?:boolean };
 export function read<T>(key: string, fallback: T): T { try { return JSON.parse(localStorage.getItem(`apex:${key === 'player' && MULTIPLAYER_BACKEND === 'cloudflare' ? 'player:cloudflare' : key}`) ?? 'null') ?? fallback; } catch { return fallback; } }
 export function write(key:string,value:unknown) { try { localStorage.setItem(`apex:${key === 'player' && MULTIPLAYER_BACKEND === 'cloudflare' ? 'player:cloudflare' : key}`,JSON.stringify(value));return true; }catch{return false;} }
 /**
@@ -27,6 +27,6 @@ export function bestRun(track:Track):Run|undefined {
 }
 export async function api<T>(path:string,body?:unknown,method?:string):Promise<T> {
   const player=read<Player|null>('player',null);
-  const response=await fetch(MULTIPLAYER_BACKEND === 'cloudflare' && path.startsWith('/players') ? multiplayerUrl(`/api${path}`) : `${API_URL}/api${path}`,{method:method??(body?'POST':'GET'),headers:{'Content-Type':'application/json',...(player?{Authorization:`Bearer ${player.token}`}:{})},body:body?JSON.stringify(body):undefined,signal:AbortSignal.timeout(25000)});
+  const response=await fetch(MULTIPLAYER_BACKEND === 'cloudflare' && /^\/(players|runs|leaderboards|replays)(\/|$)/.test(path) ? multiplayerUrl(`/api${path}`) : `${API_URL}/api${path}`,{method:method??(body?'POST':'GET'),headers:{'Content-Type':'application/json',...(player?{Authorization:`Bearer ${player.token}`}:{})},body:body?JSON.stringify(body):undefined,signal:AbortSignal.timeout(25000)});
   const data=await response.json();if(!response.ok)throw new Error(data.error??'Leaderboard unavailable. Try again.');return data;
 }

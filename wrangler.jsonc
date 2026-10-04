@@ -33,5 +33,11 @@
     }
   ],
   "account_id": "344d1ddceb093ee4dd447ab6aec7d5dc",
-  "workers_dev": true
+  "workers_dev": true,
+  "d1_databases": [{
+    "binding": "TIMES",
+    "database_name": "apex-times",
+    "database_id": "31088e29-7fc7-4600-8079-bfdc35c302c5",
+    "migrations_dir": "cloudflare/migrations"
+  }]
 }

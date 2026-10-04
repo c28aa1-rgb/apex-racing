@@ -1,19 +1,8 @@
-import { z } from 'zod';
-import { DT, initPhysics, MAX_TICKS, PHYSICS_VERSION, Simulation, type Frame } from './physics';
+import { initPhysics, Simulation, type Frame } from './physics';
 import { trackById } from './tracks';
-import { CAR_IDS } from './cars';
+import { runSchema, type Run } from './replay-schema';
+export { runSchema, type Run } from './replay-schema';
 
-export const runSchema = z.object({
-  trackId: z.string().max(40), trackVersion: z.number().int(), physicsVersion: z.literal(PHYSICS_VERSION),
-  carId: z.enum(CAR_IDS),
-  timeMs: z.number().int().positive().max(Math.round(MAX_TICKS * DT * 1000)),
-  inputs: z.array(z.number().int().min(0).max(511)).min(1).max(MAX_TICKS),
-  manual:z.boolean().optional(),
-  origin: z.object({ x: z.number().finite(), z: z.number().finite(), heading: z.number().min(-7).max(7) }).strict().optional(),
-  steering: z.array(z.number().min(.7).max(2)).min(1).max(MAX_TICKS).optional(),
-  drift: z.array(z.number().min(0).max(2)).min(1).max(MAX_TICKS).optional()
-}).strict().refine(run=>!run.steering||run.steering.length===run.inputs.length,{message:'Steering samples must match the input count.'}).refine(run=>!run.drift||run.drift.length===run.inputs.length,{message:'Drift samples must match the input count.'});
-export type Run = z.infer<typeof runSchema>;
 export type ReplayResult = { timeMs: number; ticks: number; checkpoints: number; respawns: number; frames?: Frame[] };
 
 /** Reproduce live tuner changes as well as keys, on both server and browser. */

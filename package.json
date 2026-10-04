@@ -15,7 +15,7 @@
     "build:collisions": "node --import tsx design/build-model-collisions.ts",
     "build:tracks": "node --import tsx design/build-clean-tracks.ts && npm run build:collisions",
     "build:cars": "node --import tsx design/build-car-runtime.ts",
-    "dev:cloudflare": "concurrently -k -n game,worker \"vite --host 127.0.0.1 --mode cloudflare\" \"wrangler dev --ip 127.0.0.1 --port 8787\"",
+    "dev:cloudflare": "wrangler d1 migrations apply apex-times --local && concurrently -k -n game,worker \"vite --host 127.0.0.1 --mode cloudflare\" \"wrangler dev --ip 127.0.0.1 --port 8787\"",
     "check:cloudflare": "tsc --noEmit -p cloudflare/tsconfig.json",
     "deploy:cloudflare": "npm run check:cloudflare && wrangler deploy",
     "test:multiplayer": "npm run build:server && node --import tsx --test tests/party.test.ts tests/party-race.test.ts tests/cloudflare.test.ts",

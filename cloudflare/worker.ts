@@ -2,9 +2,10 @@ import { DurableObject } from 'cloudflare:workers';
 import { z } from 'zod';
 import { Parties, createSchema, joinSchema, carSchema, settingsSchema, updateSchema, PARTY_PRESENCE_MS } from '../shared/party-room';
 import type { PartyMember, PartyPose } from '../shared/party';
+import { savePlayer, times } from './times';
 
 type Identity = Pick<PartyMember, 'id' | 'nickname'>;
-interface Env { RACE_ROOMS: DurableObjectNamespace<RaceRoom>; SESSION_SECRET: string; ALLOWED_ORIGINS: string; CONNECTION_LIMIT: RateLimit }
+interface Env { RACE_ROOMS: DurableObjectNamespace<RaceRoom>; TIMES: D1Database; SESSION_SECRET: string; ALLOWED_ORIGINS: string; CONNECTION_LIMIT: RateLimit }
 type Session = Identity & { exp: number };
 type Attachment = { player: Identity; seen: number; window: number; count: number; raceId?: string; pose?: PartyPose };
 function restoreAttachment(state: ReturnType<Parties['exportState']>, saved: Attachment) {
@@ -34,6 +35,7 @@ async function key(env: Env) {
 async function issue(env: Env, player: Identity) {
   const payload = encode(new TextEncoder().encode(JSON.stringify({ ...player, exp: Date.now() + 30 * 86400000 })));
   const signature = await crypto.subtle.sign('HMAC', await key(env), new TextEncoder().encode(payload));
+  await savePlayer(env.TIMES, player);
   return { ...player, token: `${payload}.${encode(new Uint8Array(signature))}` };
 }
 async function authenticate(request: Request, env: Env): Promise<Identity> {
@@ -47,12 +49,12 @@ async function authenticate(request: Request, env: Env): Promise<Identity> {
     return { id: session.id, nickname: session.nickname };
   } catch { return fail(401, 'Player session expired. Set your nickname again.'); }
 }
-async function body(request: Request) {
-  if (Number(request.headers.get('Content-Length')) > 4096) fail(413, 'Message too large.');
+async function body(request: Request, limit = 4096) {
+  if (Number(request.headers.get('Content-Length')) > limit) fail(413, 'Message too large.');
   const reader = request.body?.getReader();
   if (!reader) return {};
   let size = 0, text = ''; const decoder = new TextDecoder();
-  while (true) { const part = await reader.read(); if (part.done) break; size += part.value.byteLength; if (size > 4096) { await reader.cancel(); fail(413, 'Message too large.'); } text += decoder.decode(part.value, { stream: true }); }
+  while (true) { const part = await reader.read(); if (part.done) break; size += part.value.byteLength; if (size > limit) { await reader.cancel(); fail(413, 'Message too large.'); } text += decoder.decode(part.value, { stream: true }); }
   return JSON.parse(text + decoder.decode());
 }
 
@@ -70,6 +72,8 @@ export default {
       else if (url.pathname === '/api/health') response = json({ ok: true, backend: 'cloudflare' });
       else if (url.pathname === '/api/players' && request.method === 'POST') response = json(await issue(env, { id: crypto.randomUUID(), ...nickname.parse(await body(request)) }), 201);
       else if (url.pathname === '/api/players/me' && request.method === 'PUT') response = json(await issue(env, { ...await authenticate(request, env), ...nickname.parse(await body(request)) }));
+      else if (request.method === 'GET' && /^\/api\/(leaderboards|replays)\//.test(url.pathname)) response = await times(request, env.TIMES);
+      else if (url.pathname === '/api/runs' && request.method === 'POST') response = await times(request, env.TIMES, await authenticate(request, env), await body(request, 512000));
       else {
         const player = await authenticate(request, env);
         let code: string, action: string, payload: unknown;
@@ -88,6 +92,8 @@ export default {
       }
     } catch (cause) { const result = error(cause); response = json({ error: result.error }, result.status); }
     const headers = new Headers(response.headers);
+    headers.set('Cache-Control', 'no-store');
+    headers.set('X-Content-Type-Options', 'nosniff');
     for (const [name, value] of Object.entries(cors)) headers.set(name, value);
     response = new Response(response.body, { status: response.status, headers, ...(response.webSocket ? { webSocket: response.webSocket } : {}) });
     return response;
