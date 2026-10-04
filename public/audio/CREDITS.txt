@@ -1,0 +1,44 @@
+Audio credits for APEX Racing
+=============================
+Source recordings are kept in audio-src/ (not shipped); compressed copies in public/audio/.
+Project is non-commercial: CC BY-NC samples are allowed.
+
+570258__fritzsounds__porsche-911-gt3-cup-car-engine-ticking-over.wav
+  "Porsche 911 GT3 Cup Car Engine Ticking Over" by Alex Fritz (FritzSounds)
+  https://freesound.org/people/FritzSounds/sounds/570258/  CC BY-NC 4.0
+
+278188__debsound__rally-car-idle-loop-14.wav
+  "Rally Car Idle Loop 14" by Debsound
+  https://freesound.org/people/Debsound/sounds/278188/  CC BY-NC 4.0
+
+71739__audible-edge__chrysler-lhs-tire-squeal-04-04-25-2009.wav
+  "Chrysler LHS tire squeal 04" by audible-edge
+  https://freesound.org/people/audible-edge/sounds/71739/  CC0 1.0
+
+332056__qubodup__fast-collision.flac
+  "Fast Collision" by qubodup
+  https://freesound.org/people/qubodup/sounds/332056/  CC0 1.0
+
+Also included. Every sample ships as .ogg and as .m4a (AAC) for older Safari; the game picks one at runtime.
+Up to this line, OGG/M4A copies are in public/audio/; the rest are listed by source filename:
+
+impact-hard.ogg  <- 332058__qubodup__collision.flac
+  "Collision" by qubodup  https://freesound.org/people/qubodup/sounds/332058/  CC0 1.0
+
+crash.ogg  <- 847085__artninja__custom_metal_crash_with_glass_debris_03022026.wav (first 3 s)
+  "custom_metal_crash_with_glass_debris" by Artninja  https://freesound.org/people/Artninja/sounds/847085/
+  CC BY 4.0 (credit Artninja). Contains layered sounds from other Freesound users; see the source page for their credits.
+
+light.ogg / go.ogg  <- transcendedlifting-race-start-beeps-125125.mp3 ("Race Start Beeps")
+  by transcendedlifting, Pixabay  https://pixabay.com/sound-effects/film-special-effects-race-start-beeps-125125/
+  Pixabay Content License.
+
+ui-click / ui-hover / ui-confirm / ui-back / ui-select.ogg
+  Kenney "Interface Sounds" and "UI Audio" packs  https://kenney.nl/assets/interface-sounds  CC0 1.0
+
+Menu music: public/audio/music/ holds a 43-track playlist (playlist.json lists titles) of commercial game-soundtrack
+and dance tracks the owner supplied for PERSONAL USE. They are NOT licensed for redistribution, so that folder is git-ignored
+and must not be committed, deployed or shared. Without the folder the menu is simply silent.
+
+shift-up.ogg / shift-down.ogg  <- nsqke_sfx-car-gear-shift-park-chevrolet-equinox-267611.mp3 (two clunks, 0.62-1.17 s and 6.02-6.67 s)
+  "SFX Car Gear Shift Park (Chevrolet Equinox)" by nsqke. Believed to be from Pixabay (Pixabay Content License); confirm on the source page.

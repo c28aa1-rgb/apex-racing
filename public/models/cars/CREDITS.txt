@@ -1,0 +1,73 @@
+APEX vehicle model credits
+
+2023 Oracle Red Bull RB19
+Author: Redgrund — https://sketchfab.com/redgrund
+Source: https://sketchfab.com/3d-models/oracle-red-bull-f1-car-rb19-2023-e4afe46f3aab4b23a418da06fc163821
+License (embedded GLB metadata): CC BY 4.0 — https://creativecommons.org/licenses/by/4.0/
+
+2015 NASCAR Toyota Camry
+Author: Ddiaz Design — https://sketchfab.com/ddiaz-design
+Source: https://sketchfab.com/3d-models/2015-nascar-toyota-camry-8535641d8171496697fa4d3b7449f851
+License (embedded GLB metadata): CC BY-NC-SA 4.0 — https://creativecommons.org/licenses/by-nc-sa/4.0/
+
+These two files were supplied by the project owner and preserved unchanged.
+Animated wheel and steering groups are separated at runtime. Engine sounds
+are synthesized game audio, not recordings from these models.
+
+The vehicle models were supplied by the project owner and retain their original licenses.
+
+2018 Ferrari 488 GT3
+Author: Ddiaz Design — https://sketchfab.com/ddiaz-design
+Source: https://sketchfab.com/3d-models/2018-ferrari-488-gt3-bb14ee3833564f349a317d704a506cd3
+License: CC BY 4.0 — https://creativecommons.org/licenses/by/4.0/
+
+2019 McLaren 720S GT3
+Author: Ddiaz Design — https://sketchfab.com/ddiaz-design
+Source: https://sketchfab.com/3d-models/2019-mclaren-720s-gt3-d5600ac3eed54b808ad3c154ca2c8f69
+License: CC BY 4.0 — https://creativecommons.org/licenses/by/4.0/
+
+2020 Bugatti Bolide Concept
+Author: Ddiaz Design — https://sketchfab.com/ddiaz-design
+Source: https://sketchfab.com/3d-models/2020-bugatti-bolide-concept-658684653b154ffba72d5f9511312ca8
+License: CC BY-NC-SA 4.0 — https://creativecommons.org/licenses/by-nc-sa/4.0/
+
+2024 Peugeot 9X8 Hybrid Hypercar LMH
+Author: Ddiaz Design — https://sketchfab.com/ddiaz-design
+Source: https://sketchfab.com/3d-models/2024-peugeot-9x8-hybrid-hypercar-lmh-0f86d9080f9a4ae891f6361dd72b34ea
+License: CC BY-NC-SA 4.0 — https://creativecommons.org/licenses/by-nc-sa/4.0/
+
+Imported visuals are centered, uniformly scaled, axis-aligned, and batched by
+material at runtime. Game performance tuning is independent of the model assets.
+The Chevrolet SS below is retained as an archived source asset, not a selectable car.
+
+2017 NASCAR Chevrolet SS
+Author: Ddiaz Design — https://sketchfab.com/ddiaz-design
+Source: https://sketchfab.com/3d-models/2017-nascar-chevrolet-ss-4e95cd0ea63a43f58d5a8677e7bc016f
+License: CC BY 4.0 — https://creativecommons.org/licenses/by/4.0/
+
+Toyota Celica GT4 Rally
+Author: ColdLasagna — https://sketchfab.com/ColdLasagna
+Source: https://sketchfab.com/3d-models/toyota-celica-gt4-rally-6e63b42ef7ab4d8d98b9990b0caad704
+License: CC BY 4.0 — https://creativecommons.org/licenses/by/4.0/
+
+Porsche 911 GT3
+Author: ChevroletSS — https://sketchfab.com/ChevroletSS
+Source: https://sketchfab.com/3d-models/porsche-911-gt3-78d5c47ab2554c2592b7e499179a0792
+License: CC BY 4.0 — https://creativecommons.org/licenses/by/4.0/
+
+2023 Porsche 963 LMDh Racecar No.5
+Author: Ddiaz Design — https://sketchfab.com/ddiaz-design
+Source: https://sketchfab.com/3d-models/2023-porsche-963-lmdh-racecar-no5-0b46fea1c4484a0c887bd0b9aac86f5d
+License: CC BY-NC-SA 4.0 — https://creativecommons.org/licenses/by-nc-sa/4.0/
+
+Mazda 787B
+Author: vecarz — https://sketchfab.com/heynic
+Source: https://sketchfab.com/3d-models/mazda-787b-wwwvecarzcom-bdcfed4f59f54afebc817960312612c6
+License: CC BY 4.0 — https://creativecommons.org/licenses/by/4.0/
+
+1999 Nissan Skyline GTR R34 C-West 2F2F
+Author: Ddiaz Design — https://sketchfab.com/ddiaz-design
+Source: https://sketchfab.com/3d-models/1999-nissan-skyline-gtr-r34-c-west-2f2f-38247650e5b94f2ea28e2638dce5572a
+License: CC BY-NC-SA 4.0 — https://creativecommons.org/licenses/by-nc-sa/4.0/
+
+The CC BY-NC-SA vehicles are restricted to non-commercial use and require ShareAlike distribution of adaptations. Review each license before publishing or monetizing the game.

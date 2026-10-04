@@ -1,0 +1,37 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "apex-multiplayer",
+  "main": "cloudflare/worker.ts",
+  "compatibility_date": "2026-10-03",
+  "vars": {
+    "ALLOWED_ORIGINS": "https://c28aa1-rgb.github.io,http://127.0.0.1:5173,http://localhost:5173"
+  },
+  "ratelimits": [
+    {
+      "name": "CONNECTION_LIMIT",
+      "namespace_id": "1001",
+      "simple": {
+        "limit": 60,
+        "period": 60
+      }
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "RACE_ROOMS",
+        "class_name": "RaceRoom"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "RaceRoom"
+      ]
+    }
+  ],
+  "account_id": "344d1ddceb093ee4dd447ab6aec7d5dc",
+  "workers_dev": true
+}

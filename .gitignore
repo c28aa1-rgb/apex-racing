@@ -1,0 +1,25 @@
+node_modules/
+node_modules.cloud-backup-*/
+dist/
+dist-server/
+work/
+playwright-report/
+test-results/
+.env
+.dev.vars
+.wrangler/
+.env.local
+
+# Commercial soundtrack tracks for personal use; never commit or deploy these.
+public/audio/music/
+audio-src/
+
+# Local diagnostics and source-model backups; runtime models stay versioned.
+.DS_Store
+.claude/
+.graphify_*.json
+graphify-out/
+design/__pycache__/
+public/models/cars/*.glb
+public/models/tracks/*.glb
+!public/models/tracks/*.clean.glb

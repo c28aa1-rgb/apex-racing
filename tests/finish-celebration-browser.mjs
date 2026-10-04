@@ -1,0 +1,63 @@
+import { chromium } from '@playwright/test';
+import assert from 'node:assert/strict';
+import { mkdir } from 'node:fs/promises';
+
+await mkdir('work/finish-celebration',{recursive:true});
+const browser=await chromium.launch({channel:'chrome',headless:true});
+const page=await browser.newPage({viewport:{width:1440,height:900}});
+const errors=[];
+page.on('pageerror',error=>errors.push(error.message));
+try{
+  await page.goto(process.env.GAME_URL??'http://127.0.0.1:5173/');
+  await page.waitForFunction(()=>window.__apex?.state.modelReady&&window.__apex?.state.trackReady);
+  const started=await page.evaluate(()=>{
+    const game=window.__apex,cues=[];
+    game.setSettings({pointerLock:false,reducedMotion:false});game.start(false);
+    const gate=game.state.track.finish;
+    game.sim.car.setTranslation({...gate.position,y:gate.position.y+1},true);game.sim.car.setRotation(gate.rotation,true);
+    for(let i=0;i<60;i++)game.sim.step(0);
+    game.sim.car.setLinvel({x:gate.forward.x*35,y:0,z:gate.forward.z*35},true);game.sim.finished=true;game.world.chase(game.sim,0,true);
+    game.sound.cue=kind=>cues.push(kind);
+    const physical={...game.sim.car.translation()},visual=game.world.car.position.toArray();
+    game.finish();
+    const ticks=game.sim.ticks,speed=game.sim.speed;
+    for(let i=0;i<30;i++)game.finishDriver.step(game.sim);
+    game.world.chase(game.sim,.5,false,undefined,false);game.world.celebrateFinish(.5);
+    const revealDelay=game.finishRevealAt-performance.now();game.finishRevealAt=performance.now()+10000;
+    return {mode:game.state.mode,physical,visual,confetti:game.world.finishConfetti.mesh.visible,cues,revealDelay,ticks,speed,afterSpeed:game.sim.speed};
+  });
+  assert.equal(started.mode,'celebrating');
+  assert.equal(started.confetti,true);
+  assert.deepEqual(started.cues,['finish']);
+  assert.ok(started.afterSpeed>started.speed*.9,'finish must not apply artificial deceleration');
+  assert.ok(started.revealDelay>3000&&started.revealDelay<=3200);
+  await page.getByText('Finish',{exact:true}).waitFor();
+  await page.waitForTimeout(650);
+  const moving=await page.evaluate(()=>({mode:window.__apex.state.mode,physical:{...window.__apex.sim.car.translation()},visual:window.__apex.world.car.position.toArray(),camera:window.__apex.world.camera.position.toArray(),ticks:window.__apex.sim.ticks,grounded:window.__apex.sim.grounded,solid:!window.__apex.sim.car.collider(0).isSensor()}));
+  assert.equal(moving.mode,'celebrating');
+  assert.notDeepEqual(moving.physical,started.physical,'authoritative car continues after finish');assert.equal(moving.ticks,started.ticks);assert.ok(moving.grounded&&moving.solid);
+  assert.ok(Math.hypot(moving.physical.x-moving.visual[0],moving.physical.z-moving.visual[2])<.1,'model follows physical car');
+  assert.ok(Math.hypot(...moving.visual.map((value,index)=>value-started.visual[index]))>2,'visual car should coast beyond the line');
+  await page.screenshot({path:'work/finish-celebration/celebrating.png'});
+  await page.evaluate(()=>{window.__apex.finishRevealAt=performance.now();});
+  await page.waitForFunction(()=>window.__apex.state.mode==='finished',null,{timeout:5000});
+  assert.equal(await page.locator('.result-card').isVisible(),true);
+  const resultPosition=await page.evaluate(()=>({...window.__apex.sim.car.translation()}));await page.waitForTimeout(300);
+  assert.notDeepEqual(await page.evaluate(()=>({...window.__apex.sim.car.translation()})),resultPosition,'autopilot continues behind results');
+  await page.setViewportSize({width:390,height:844});
+  const reducedDelay=await page.evaluate(()=>{
+    const game=window.__apex;game.setSettings({reducedMotion:true});game.restart();game.sim.car.setLinvel({x:0,y:0,z:20},true);game.sim.finished=true;game.finish();
+    const delay=game.finishRevealAt-performance.now();game.finishRevealAt=performance.now()+10000;return delay;
+  });
+  assert.ok(reducedDelay>1000&&reducedDelay<=1200);
+  await page.getByText('Finish',{exact:true}).waitFor();
+  await page.locator('.overlay').waitFor({state:'detached'});
+  assert.equal(await page.evaluate(()=>window.__apex.world.finishConfetti.mesh.visible),false);
+  const bounds=await page.locator('.finish-callout').boundingBox();
+  assert.ok(bounds&&bounds.x>=0&&bounds.x+bounds.width<=390,'mobile finish callout must fit the viewport');
+  await page.screenshot({path:'work/finish-celebration/mobile-reduced.png'});
+  await page.evaluate(()=>{window.__apex.finishRevealAt=performance.now();});
+  await page.waitForFunction(()=>window.__apex.state.mode==='finished',null,{timeout:2200});
+  assert.deepEqual(errors,[]);
+  console.log('Finish keeps physical driving and collisions active, freezes scoring, follows with the camera, reveals results, and respects reduced motion.');
+}finally{await browser.close();}

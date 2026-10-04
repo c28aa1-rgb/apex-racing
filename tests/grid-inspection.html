@@ -1,0 +1,4 @@
+<!doctype html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Starting grid inspection</title>
+<style>body{margin:0;font:14px system-ui;color:#fff;background:#182329}canvas{display:block;width:100vw;height:100vh}nav{position:fixed;top:12px;left:12px;display:flex;gap:12px;align-items:center;padding:12px;background:#182329e8}select,button{font:inherit;padding:8px}#status{position:fixed;bottom:12px;left:12px;background:#182329e8;padding:10px}</style></head>
+<body><nav><label>Circuit <select id="track"></select></label><label><input id="markers" type="checkbox" checked> Grid markers</label><button id="angle">Angled view</button></nav><canvas></canvas><output id="status">Loading</output><script type="module" src="./grid-inspection.ts"></script></body></html>

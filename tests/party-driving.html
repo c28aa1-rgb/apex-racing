@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>APEX party driving check</title></head>
+<body>
+  <canvas id="world" aria-label="3D race track"></canvas>
+  <div id="app"><div class="boot">Loading race test</div></div>
+  <button id="drive-test" style="position:fixed;left:260px;bottom:20px;z-index:100;padding:12px;background:#fff;color:#132127;border:1px solid #132127">Drive forward for 3 seconds</button>
+  <output id="drive-result" style="position:fixed;left:260px;bottom:65px;z-index:100;background:white;color:#132127"></output>
+  <script type="module" src="/src/main.ts"></script>
+  <script type="module">
+    const button=document.querySelector('#drive-test'), output=document.querySelector('#drive-result');
+    button.onclick=()=>{
+      button.disabled=true;output.textContent='Throttle held';
+      // Exercise the actual keyboard/physics/network path, not a fabricated pose.
+      document.body.dispatchEvent(new KeyboardEvent('keydown',{code:'KeyW',bubbles:true}));
+      setTimeout(()=>{document.body.dispatchEvent(new KeyboardEvent('keyup',{code:'KeyW',bubbles:true}));button.disabled=false;output.textContent='Throttle released';},3000);
+    };
+  </script>
+</body>
+</html>

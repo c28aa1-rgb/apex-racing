@@ -1,0 +1,6 @@
+APEX marshal drone
+
+"Signal Swarm" base mesh generated with Meshy AI and supplied by the project owner.
+Source: design/models/marshal-drone-source.glb
+Runtime model: parts split, propellers and guard rings rebuilt, simplified, UV-mapped
+and textured by design/build-marshal-drone.ts. The game adds the spinning rotor blades.

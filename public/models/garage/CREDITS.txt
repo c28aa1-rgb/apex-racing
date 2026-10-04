@@ -1,0 +1,7 @@
+Car Garage
+Author: praveensharma11198 — https://sketchfab.com/praveensharma11198
+Source: https://sketchfab.com/3d-models/car-garage-2fad766df0194511a9641e3e63798b5f
+License: CC BY 4.0 — https://creativecommons.org/licenses/by/4.0/
+
+Supplied by the project owner. The included display car is hidden at runtime
+and replaced with the player's selected vehicle.
