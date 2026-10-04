@@ -1,12 +1,12 @@
 # Multiplayer backends
 
-Production frontend: https://c28aa1-rgb.github.io/apex-racing/
+Frontend deployment target (publication awaits GitHub push access): https://c28aa1-rgb.github.io/apex-racing/
 
 Production backend: https://apex-multiplayer.c28aa1-rgb.workers.dev
 
 Source repository: https://github.com/c28aa1-rgb/apex-racing
 
-`main` pushes run `.github/workflows/pages.yml` and publish the frontend. Run `npm run build:pages` to produce the same artifact locally. Deployment excludes personal soundtrack files and original model backups; runtime models and licensed effects remain included. Original models stay in the local project for asset regeneration. Backend updates use Wrangler separately; log in to the configured account before deploying.
+`main` pushes run `.github/workflows/pages.yml` and publish the frontend. Run `npm run build:pages` to produce the same artifact locally. Deployment excludes personal soundtrack files and original model backups; runtime models and licensed effects remain included. Original models stay in the local project for asset regeneration and tests that inspect source GLBs. Those source-model tests require the delivered local assets after cloning. Backend updates use Wrangler separately; log in to the configured account before deploying.
 
 Node remains the default. Its HTTP party API and database-backed solo features remain available. Cloudflare runs private race rooms with native WebSockets and one SQLite-backed Durable Object per six-character room code. Both backends use `shared/party-room.ts` and the existing `PartyLobby`, `PartyRace`, and `PartyPose` types.
 
