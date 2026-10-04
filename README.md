@@ -1,6 +1,6 @@
 # APEX Racing
 
-Frontend deployment target: [GitHub Pages](https://c28aa1-rgb.github.io/apex-racing/). Publication awaits repository push access. Multiplayer runs on Cloudflare Workers and Durable Objects. Pushes to `main` deploy the frontend automatically.
+Play live on [GitHub Pages](https://c28aa1-rgb.github.io/apex-racing/). Multiplayer runs on Cloudflare Workers and Durable Objects. Pushes to `main` deploy the frontend automatically.
 
 A playable browser racer with seven imported real-world circuits, eleven selectable cars, a Rapier physics vehicle, instant restarts, drifting, medals, personal and online ghosts, and a replay-verified leaderboard. See `VALIDATION.md` for current checks and known route-test limitations.
 

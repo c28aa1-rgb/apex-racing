@@ -1,6 +1,6 @@
 # Multiplayer backends
 
-Frontend deployment target (publication awaits GitHub push access): https://c28aa1-rgb.github.io/apex-racing/
+Live frontend: https://c28aa1-rgb.github.io/apex-racing/
 
 Production backend: https://apex-multiplayer.c28aa1-rgb.workers.dev
 
