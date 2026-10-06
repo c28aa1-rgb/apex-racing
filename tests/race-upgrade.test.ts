@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {awardFinish,unlocked,UNLOCK_XP} from '../src/progression';
+import {awardFinish,buyCar,unlocked,UNLOCK_XP} from '../src/progression';
 import {TRACKS} from '../shared/tracks';
 import {CAR_IDS} from '../shared/cars';
 import {PHYSICS_VERSION} from '../shared/physics';
@@ -10,14 +10,20 @@ import {Store} from '../server/store';
 import {createApp} from '../server/app';
 import {ENGINE_VOICES} from '../src/race-audio';
 
-test('all cars are unlocked while finishes still award progression XP',()=>{
-  const start={xp:0,finishes:0,medals:{}},track=TRACKS[0];
-  for(const id of CAR_IDS)assert.ok(unlocked(start,id),id);
+test('starter cars are free, others are bought with REP earned from finishes',()=>{
+  const start={xp:0,finishes:0,medals:{},owned:[]},track=TRACKS[0];
+  for(const id of CAR_IDS)assert.equal(unlocked(start,id),UNLOCK_XP[id]===0,id);
+  assert.ok(CAR_IDS.filter(id=>UNLOCK_XP[id]===0).length>=2,'players start with a choice of cars');
   const first=awardFinish(start,track,track.medals[2]+1000);assert.equal(first.earned,200);assert.equal(first.career.finishes,1);
   assert.deepEqual(first.newCars,[]);
-  const repeat=awardFinish(first.career,track,track.medals[2]+1000);assert.equal(repeat.earned,100);assert.deepEqual(repeat.newCars,[]);
+  const repeat=awardFinish(first.career,track,track.medals[2]+1000);assert.equal(repeat.earned,100);assert.deepEqual(repeat.newCars,['nascar-camry'],'300 REP makes the Camry affordable');
   const gold=awardFinish(repeat.career,track,track.medals[0]);assert.equal(gold.earned,250);
   assert.equal(awardFinish(gold.career,track,track.medals[0]).earned,100,'medal bonus cannot be farmed');
+  assert.equal(buyCar(first.career,'nascar-camry'),undefined,'cannot buy without enough REP');
+  assert.equal(buyCar(gold.career,'porsche-911-gt3'),undefined,'starter cars are never charged for');
+  const bought=buyCar(gold.career,'nascar-camry')!;assert.ok(unlocked(bought,'nascar-camry'));assert.equal(bought.xp,gold.career.xp-UNLOCK_XP['nascar-camry']);
+  assert.equal(buyCar(bought,'nascar-camry'),undefined,'a car is only bought once');
+  assert.equal(awardFinish(bought,track,track.medals[2]+1000).career.owned.includes('nascar-camry'),true,'finishing keeps owned cars');
   assert.deepEqual(Object.keys(UNLOCK_XP).sort(),[...CAR_IDS].sort());assert.deepEqual(Object.keys(ENGINE_VOICES).sort(),[...CAR_IDS].sort());
   assert.notDeepEqual(ENGINE_VOICES['red-bull-rb19'],ENGINE_VOICES['nascar-camry']);
 });

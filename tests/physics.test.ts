@@ -125,5 +125,5 @@ test('validator rejects forged times, extra inputs, old versions and unfinished 
 test('timer and medal boundaries are consistent',()=>{
   assert.equal(formatTime(61234),'01:01.234');assert.equal(formatTime(0),'00:00.000');
   assert.equal(medalFor(TRACKS[0],TRACKS[0].medals[0]),'Gold');assert.equal(medalFor(TRACKS[0],TRACKS[0].medals[0]+1),'Silver');
-  assert.equal(PHYSICS_VERSION,'apex-rapier0193-v32');
+  assert.equal(PHYSICS_VERSION,'apex-rapier0193-v34');
 });

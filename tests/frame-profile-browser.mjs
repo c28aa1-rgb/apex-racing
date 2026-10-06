@@ -6,18 +6,25 @@ const [trackId = 'spa', width = '1512', height = '945'] = process.argv.slice(2);
 const browser = await chromium.launch({ channel: 'chrome', headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
 const page = await browser.newPage({ viewport: { width: +width, height: +height }, deviceScaleFactor: 2 });
 page.on('pageerror', e => console.log('pageerror', e.message));
-await page.goto('http://127.0.0.1:5173/' + (process.env.Q ?? ''));
+// SERVE=1 starts a private Vite (no watcher, no HMR reloads mid-profile).
+let base = 'http://127.0.0.1:5173', vite;
+if (process.env.SERVE) {
+  const { createServer } = await import('vite');
+  vite = await createServer({ logLevel: 'warn', cacheDir: 'node_modules/.vite-smooth-visual-audit', server: { host: '127.0.0.1', port: 5199, strictPort: false, watch: null, hmr: false } });
+  await vite.listen(); base = vite.resolvedUrls.local[0].replace(/\/$/, '');
+}
+await page.goto(base + '/' + (process.env.Q ?? ''));
 const cdp = await page.context().newCDPSession(page);
 if (process.env.CPU) { await cdp.send('Profiler.enable'); await cdp.send('Profiler.setSamplingInterval', { interval: 200 }); }
 page.on('console', m => { if (m.text() === '__startprofile' && process.env.CPU) cdp.send('Profiler.start'); });
-await page.waitForFunction(() => window.__apex, null, { timeout: 60000 });
+await page.waitForFunction(() => window.__apex, null, { timeout: 180000 });
 const result = await page.evaluate(async (trackId) => {
   const g = window.__apex, w = g.world;
   const urls = performance.getEntriesByType('resource').map(e => e.name);
   const pick = n => { const u = new URL(urls.filter(u => u.includes('/shared/' + n + '.ts')).sort((a, b) => b.length - a.length)[0]); return u.pathname + u.search; };
   const { TRACKS } = await import(pick('tracks'));
   const track = TRACKS.find(t => t.id === trackId);
-  let t = performance.now(); await g.select(track); const selectMs = performance.now() - t;
+  let t = performance.now(); await g.select(track, true); const selectMs = performance.now() - t;
   t = performance.now(); await w.venueReady; const venueMs = performance.now() - t;
   await new Promise(r => setTimeout(r, 1500));
   const prof = {}, slow = [], long = []; const t0 = performance.now();
@@ -60,3 +67,4 @@ if (process.env.CPU) {
 }
 console.log(JSON.stringify(result, null, 1).replace(/\[\s+(\d+),\s+(\d+)\s+\]/g, '[$1,$2]'));
 await browser.close();
+await vite?.close();

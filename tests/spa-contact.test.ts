@@ -41,7 +41,9 @@ test('all cars cross Spa Eau Rouge without support chatter or chassis snags', as
       }
       t.diagnostic(JSON.stringify({car:car.id,index,maxTilt,airTicks,stalls}));
       assert.ok(index>=150,'reaches the uphill exit');
-      assert.ok(maxTilt<1,`pitch/roll spike: ${maxTilt.toFixed(2)} rad/s`);
+      // Tyres ride the real (baked, capped) Eau Rouge kerbs now, not a hidden 24 m-smoothed skin: a kerb strike
+      // gives a one-tick roll transient up to ~1.6 rad/s. Same limit as tests/smooth-audit.ts spikes.
+      assert.ok(maxTilt<2,`pitch/roll spike: ${maxTilt.toFixed(2)} rad/s`);
       assert.ok(airTicks<10,`lost all wheel contact on ${airTicks} ticks`);
       assert.equal(stalls,0);assert.equal(sim.respawns,0);
     }finally{sim.dispose();}

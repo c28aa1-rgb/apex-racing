@@ -128,6 +128,6 @@ export function SettingsPanel({ game }: { game: Game }) {
         </motion.section>
       </AnimatePresence>
     </div>
-    <footer><span>Saved on this device</span><button className="text-button" onClick={() => { setArmed(undefined); setMessage('Defaults restored.'); game.setSettings(structuredClone(DEFAULT_SETTINGS)); game.setCamera(DEFAULT_SETTINGS.cameraMode); game.setSteeringStrength(1.5); game.setDriftStrength(1.2); }}>Restore defaults</button></footer>
+    <footer><span>Saved on this device</span><button className="text-button" onClick={() => { setArmed(undefined); setMessage('Defaults restored.'); game.setSettings(structuredClone(DEFAULT_SETTINGS)); game.setCamera(DEFAULT_SETTINGS.cameraMode); game.setSteeringStrength(1.5); game.setDriftStrength(1); }}>Restore defaults</button></footer>
   </div>;
 }

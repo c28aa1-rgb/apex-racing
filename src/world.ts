@@ -88,6 +88,16 @@ export class RaceWorld {
   /** Frame-rate ceiling for rendering (0 = unlimited); Game.frame reads it. */
   fpsCap=0;
   private renderRatio=1;
+  /**
+   * High-speed tier (above ~130 mph, back below ~100 mph). Motion hides fine detail, while the speed-widened
+   * field of view draws more scenery: small props cull sooner, far scenery switches to low detail sooner, and
+   * the render resolution drops to 85%.
+   */
+  private fast=false;
+  private static readonly FAST_SCALE=.85;
+  /** Applies the render resolution, including the high-speed reduction. */
+  private applyPixelRatio(){this.renderer.setPixelRatio(this.renderRatio*(this.fast?RaceWorld.FAST_SCALE:1));}
+  private setFast(fast:boolean){if(fast===this.fast)return;this.fast=fast;this.cullFar=-1;this.applyPixelRatio();this.resize();}
   private slowFrames=0;
   private fastFrames=0;
   private clock = 0;
@@ -103,14 +113,13 @@ export class RaceWorld {
   private garageLoad?: Promise<void>;
   private currentCarId: CarId = DEFAULT_CAR.id;
   private garageAngle = -2.8;
+  /** Car unlock reveal: clock time it started (-1 when idle) and a livery-coloured flash light. */
+  private unveilStart = -1; private unveilLight = new THREE.PointLight(0xffffff, 0, 9, 1.6);
   private visualCarPosition = new THREE.Vector3();
   private visualCarQuaternion = new THREE.Quaternion();
   private visualSuspensionLift = 0;
   /** Slowly filtered lift that keeps the tyres on the visible asphalt; see chase(). */
-  private visualClearance = 0;
   private visualCarReady = false;
-  private contactTick = -1;
-  private visibleWheelFloors: (number | undefined)[] = [];
   private lastWheelPosition = new THREE.Vector3();
   private cockpitEye?:THREE.Vector3;
   private legacyCockpitEye?:THREE.Vector3;
@@ -137,6 +146,11 @@ export class RaceWorld {
   private lookDrag?: { x: number; y: number };
   rotateGarage(dx: number) { this.garageAngle = THREE.MathUtils.clamp(this.garageAngle-dx*.009,-2.8,-.65); }
   resetGarageView() { this.garageAngle = -2.8; }
+  /** Plays the unlock reveal around the garage car; snapAt matches the lock snapping open in the UI. */
+  unveilGarage(color: string) { this.unveilStart = this.clock; this.unveilLight.color.set(color); }
+  /** Ends the reveal hold; the camera eases back to the normal garage orbit. */
+  endUnveil() { if (this.unveilStart >= 0) { this.garageAngle = THREE.MathUtils.clamp(this.unveilAngle, -2.8, -.65); this.unveilStart = -1; } }
+  private unveilAngle = -2.8;
   setMouseLook(active: boolean) {
     this.mouseLookEnabled = active;
     this.lookDrag = undefined;
@@ -145,6 +159,8 @@ export class RaceWorld {
   }
   lockMouse() { if(this.pointerLockEnabled&&this.mouseLookEnabled&&!location.pathname.startsWith('/dev'))void this.canvas.requestPointerLock()?.catch(()=>{}); }
   resetMouseLook() { this.lookYaw = 0; this.lookPitch = 0; }
+  /** While true the mouse cannot move the camera (race start); the view stays on its default framing. */
+  lookLocked = false;
   setCockpitOffset(offset?: CockpitOffset) {
     this.cockpitOffset.set(offset?.x ?? 0, offset?.y ?? 0, offset?.z ?? 0);
     // Existing calibrations keep their original origin. New/default positions
@@ -208,7 +224,7 @@ export class RaceWorld {
     void this.startLight.load(this.loader).then(()=>this.prewarm([this.startLight])).catch(error=>console.warn('Marshal drone model unavailable; using the built-in drone.',error));
     const sea = new THREE.Mesh(new THREE.PlaneGeometry(5000,5000), material(0x8fcbd1));
     sea.rotation.x = -Math.PI/2; sea.position.y = -80; sea.receiveShadow = true; this.scene.add(sea);
-    this.garageGroup.visible = false;
+    this.garageGroup.visible = false; this.garageGroup.add(this.unveilLight);
     this.scene.add(this.venueGroup, this.trackGroup, this.garageGroup, this.car, this.ghost, this.editorMarker, this.editorFinishMarker, this.editorRoadGuide);
     this.buildEditorMarker(); this.buildEditorFinishMarker(); this.editorMarker.visible = false; this.editorFinishMarker.visible = false; this.editorRoadGuide.visible = false;
     this.buildPlaceholder(this.car, false);this.buildPlaceholder(this.ghost, true); this.ghost.visible = false;
@@ -248,12 +264,32 @@ export class RaceWorld {
       }
     });
   }
-  setGraphics(next:GraphicsOptions) {
+  /** Expensive graphics changes held back while driving (see setGraphics). */
+  private pendingGraphics?:GraphicsOptions;
+  /**
+   * Shadows on/off or a new shadow size, texture filtering and post-processing passes recompile every
+   * material's shader or re-upload every venue texture in one frame: a long stall at speed. With `deferHeavy`
+   * (mid-race) only the cheap knobs change now; the rest waits for applyPendingGraphics (pause, restart, menu).
+   * Returns true when something was held back.
+   */
+  setGraphics(next:GraphicsOptions,deferHeavy=false):boolean {
+    const current=this.options;
+    if(deferHeavy&&current&&(current.shadows!==next.shadows||current.anisotropy!==next.anisotropy||current.bloom!==next.bloom||current.smoothing!==next.smoothing)){
+      this.pendingGraphics=next;
+      this.applyGraphics({...next,shadows:current.shadows,anisotropy:current.anisotropy,bloom:current.bloom,smoothing:current.smoothing});
+      return true;
+    }
+    this.pendingGraphics=undefined;this.applyGraphics(next);return false;
+  }
+  /** Applies graphics changes held back during a race. Call while the player is not driving. */
+  applyPendingGraphics(){const pending=this.pendingGraphics;if(pending){this.pendingGraphics=undefined;this.applyGraphics(pending);}}
+  get hasPendingGraphics(){return !!this.pendingGraphics;}
+  private applyGraphics(next:GraphicsOptions) {
     const previous=this.options;
     if(previous&&JSON.stringify(previous)===JSON.stringify(next))return;
     this.options=next;this.fpsCap=next.fpsCap;
     this.renderRatio=Math.min(devicePixelRatio,next.renderScale);this.slowFrames=0;this.fastFrames=0;
-    this.renderer.setPixelRatio(this.renderRatio);
+    this.applyPixelRatio();
     this.renderer.shadowMap.enabled=next.shadows>0;
     this.shadow.castShadow=next.shadows>0;
     if(next.shadows>0&&this.shadow.shadow.mapSize.x!==next.shadows){
@@ -315,10 +351,10 @@ export class RaceWorld {
     const ratio=this.slowFrames>=1?Math.max(floor,this.renderRatio-.15):Math.min(limit,this.renderRatio+.05);
     this.slowFrames=0;this.fastFrames=0;
     if(Math.abs(ratio-this.renderRatio)<.01)return;
-    this.renderRatio=ratio;this.renderer.setPixelRatio(ratio);this.resize();
+    this.renderRatio=ratio;this.applyPixelRatio();this.resize();
   }
   private racePointerDown = (event: PointerEvent) => {
-    if (!this.mouseLookEnabled || this.editorActive || event.button !== 0) return;
+    if (!this.mouseLookEnabled || this.lookLocked || this.editorActive || event.button !== 0) return;
     const target=event.target;
     if(target instanceof Element && target.closest('button,input,select,option,textarea,label,a,dialog,[role="slider"]'))return;
     this.lockMouse();
@@ -326,7 +362,7 @@ export class RaceWorld {
   };
   private racePointerMove = (event: PointerEvent) => {
     const locked=document.pointerLockElement===this.canvas;
-    if((!this.lookDrag&&!locked)||!this.mouseLookEnabled||this.editorActive)return;
+    if((!this.lookDrag&&!locked)||!this.mouseLookEnabled||this.lookLocked||this.editorActive)return;
     const dx=locked?event.movementX:event.clientX-this.lookDrag!.x,dy=locked?event.movementY:event.clientY-this.lookDrag!.y;this.lookDrag={x:event.clientX,y:event.clientY};
     this.lookYaw=THREE.MathUtils.euclideanModulo(this.lookYaw+dx*.0055*this.sensitivity+Math.PI,Math.PI*2)-Math.PI;
     this.lookPitch=THREE.MathUtils.clamp(this.lookPitch-dy*.0042*this.sensitivity,-.65,.45);this.lookInputAt=performance.now();event.preventDefault();
@@ -673,10 +709,10 @@ export class RaceWorld {
     const position=this.camera.position;
     if(far===this.cullFar&&position.distanceToSquared(this.cullAt)<625)return;
     this.cullFar=far;this.cullAt.copy(position);
-    const lodAt=this.options?.lodDistance??0;
+    const lodAt=(this.options?.lodDistance??0)*(this.fast?.6:1);
     // Small props vanish sooner: they are already hazy and cover few pixels, while big chunks (ground, stands) stay until fully fogged.
     for(const entry of this.cullEntries){
-      const reach=(entry.radius<30?far*.6:entry.radius<80?far*.85:far)+150;
+      const reach=(entry.radius<30?far*(this.fast?.4:.6):entry.radius<80?far*(this.fast?.7:.85):far)+150;
       const gap=position.distanceTo(entry.center)-entry.radius;
       entry.mesh.visible=gap<reach;
       // Hysteresis keeps a chunk at the LOD boundary from flipping geometry every pass.
@@ -909,7 +945,7 @@ export class RaceWorld {
   }
   async setCar(carId: CarId) {
     const token = ++this.carLoadToken; this.currentCarId = carId; this.wheelGroups = [];this.cockpitEye=undefined;this.legacyCockpitEye=undefined;
-    this.carRig?.dispose();this.carRig=undefined;this.visualCarReady=false;this.contactTick=-1;this.visibleWheelFloors=[];
+    this.carRig?.dispose();this.carRig=undefined;this.visualCarReady=false;
     this.car.clear();
     try {
       const prepared = await this.loadModel(carId);
@@ -918,7 +954,11 @@ export class RaceWorld {
       this.tuneTextures(model);
       const legacy=model.userData.legacyCockpitEye;this.legacyCockpitEye=legacy?new THREE.Vector3(legacy.x,legacy.y,legacy.z):undefined;
       model.traverse(object=>{if(object instanceof THREE.Mesh){const materials=Array.isArray(object.material)?object.material:[object.material];object.castShadow=materials.some(m=>!m.transparent);object.receiveShadow=true;}});
-      this.car.clear();this.car.add(model);this.carRig=new CarRig(model,carById(carId));this.wheelGroups=this.carRig.wheels;this.visualCarReady=false;this.prewarm([this.car]);return true;
+      this.car.clear();this.car.add(model);this.carRig=new CarRig(model,carById(carId));this.wheelGroups=this.carRig.wheels;
+      // Seat each model wheel where its physical tyre rests (hard point - 0.58 m rest length - radius): a few
+      // models place a wheel a few centimetres off, which would otherwise float or sink that tyre.
+      const physicalRadius=carById(carId).dimensions.wheelRadiusM;
+      for(const wheel of this.carRig.wheels){wheel.userData.rest[1]=-.58-physicalRadius+wheel.userData.radius;wheel.position.y=wheel.userData.rest[1];}this.visualCarReady=false;this.prewarm([this.car]);return true;
     } catch (error) {
       console.warn(`Could not load ${carById(carId).name}.`, error); return false;
     }
@@ -948,6 +988,7 @@ export class RaceWorld {
     }
   }
   overview(dt:number,snap=false) {
+    this.setFast(false);
     this.wideView=true;
     this.camera.up.set(0,1,0); this.camera.near = .2;
     this.trackGroup.visible = true; this.venueGroup.visible = true; this.garageGroup.visible = false; this.car.visible = true;
@@ -961,6 +1002,7 @@ export class RaceWorld {
     this.camera.lookAt(this.cameraTarget); this.camera.fov=46;this.camera.filmOffset=innerWidth>900?-5.5:0;this.camera.updateProjectionMatrix();
   }
   editor(dt:number,snap=false) {
+    this.setFast(false);
     this.wideView=true;
     this.trackGroup.visible = false; this.venueGroup.visible = true; this.garageGroup.visible = false; this.car.visible = false; this.ghost.visible = false;
     const radius = Math.max(420, this.trackRadius * 1.45) * this.editorZoom;
@@ -978,6 +1020,7 @@ export class RaceWorld {
     this.camera.lookAt(this.cameraTarget); this.camera.fov = 44; this.camera.filmOffset = 0; this.camera.updateProjectionMatrix();
   }
   garage(dt:number,snap=false) {
+    this.setFast(false);
     this.wideView=false;
     this.camera.up.set(0,1,0); this.camera.near = .2;
     this.clock += dt; this.trackGroup.visible = false; this.venueGroup.visible = false; this.garageGroup.visible = true; this.car.visible = true; this.ghost.visible = false;
@@ -986,13 +1029,29 @@ export class RaceWorld {
     const definition=carById(this.currentCarId);
     this.car.position.set(-3.86,.61+definition.dimensions.wheelRadiusM,2.48);
     this.car.quaternion.setFromAxisAngle(new THREE.Vector3(0,1,0),-Math.PI/2);
-    const angle = this.garageAngle;
-    const focus = this.car.position.clone().add(new THREE.Vector3(0,.28,-.5));
-    const offset = new THREE.Vector3(Math.cos(angle)*7,2.55,-Math.sin(angle)*7);
+    let angle = this.garageAngle, distance = 7, height = 2.55, offsetX = innerWidth > 900 ? 2 : 0, fov = 48, lift = .28;
+    // Unlock reveal: start low and close at the nose, sweep around while the lock strains, and
+    // the car drops onto its springs as the lock snaps (0.62 s). The car stays centred on a slow
+    // turntable until endUnveil(), when the camera eases back to the garage orbit.
+    const reveal = this.unveilStart < 0 || this.reducedMotion ? -1 : this.clock - this.unveilStart;
+    if (reveal >= 0) {
+      const sweep = 1 - Math.pow(1 - Math.min(1, reveal / 2.9), 3), drift = Math.max(0, reveal - 2.9) * .09;
+      angle = this.unveilAngle = THREE.MathUtils.lerp(-.75, -2.55, sweep) + Math.min(drift, 1.9);
+      distance = THREE.MathUtils.lerp(4.3, 7.2, sweep); height = THREE.MathUtils.lerp(.85, 1.7, sweep);
+      offsetX = 0; fov = THREE.MathUtils.lerp(56, 46, sweep); lift = THREE.MathUtils.lerp(-.25, -.85, sweep);
+      const after = reveal - .62;
+      this.car.position.y += after < 0 ? Math.sin(Math.min(1, reveal / .6) * Math.PI) * .025 : -.07 * Math.exp(-after * 4.5) * Math.cos(after * 15);
+      this.unveilLight.position.copy(this.car.position).add(new THREE.Vector3(0, 2.2, 0));
+      this.unveilLight.intensity = after < 0 ? 0 : 60 * Math.exp(-after * 2.4);
+    } else this.unveilLight.intensity = 0;
+    // During the reveal the camera aims below the car so it sits above the title in the lower third.
+    const focus = this.car.position.clone().add(new THREE.Vector3(0,lift,-.5));
+    const offset = new THREE.Vector3(Math.cos(angle)*distance,height,-Math.sin(angle)*distance);
     const target = focus.clone().add(offset);
-    if (snap) this.camera.position.copy(target); else this.camera.position.lerp(target, 1 - Math.exp(-dt * 4));
+    // During the reveal the camera follows its path closely; otherwise it eases to the orbit.
+    if (snap) this.camera.position.copy(target); else this.camera.position.lerp(target, 1 - Math.exp(-dt * (reveal >= 0 ? 14 : 4)));
     this.cameraTarget.lerp(focus, snap ? 1 : 1 - Math.exp(-dt * 7));
-    this.camera.lookAt(this.cameraTarget); this.camera.fov = 48; this.camera.filmOffset = innerWidth > 900 ? 2 : 0; this.camera.updateProjectionMatrix();
+    this.camera.lookAt(this.cameraTarget); this.camera.fov = fov; this.camera.filmOffset = offsetX; this.camera.updateProjectionMatrix();
   }
   chase(sim: Simulation,dt:number,snap=false,frame?:Frame,updateCamera=true) {
     this.wideView=false;
@@ -1002,87 +1061,34 @@ export class RaceWorld {
     const physicalQuaternion = new THREE.Quaternion(f.q.x,f.q.y,f.q.z,f.q.w);
     const travel=snap||!this.visualCarReady?0:physicalPosition.clone().sub(this.lastWheelPosition).dot(new THREE.Vector3(0,0,1).applyQuaternion(physicalQuaternion));
     this.lastWheelPosition.copy(physicalPosition);
-    // Downloaded car models have static wheel meshes, while the simulation has
-    // live suspension. Lift the visual body by the current compression so tire
-    // geometry stays on top of the asphalt, but filter that correction on its
-    // own—using raw wheel travel directly is what previously created jitter.
-    // A suspension ray can still reach the road after the spring unloads at
-    // takeoff. Only load-bearing contacts may fit the model to that road.
-    const loadedWheels=[0,1,2,3].filter(i=>sim.vehicle.wheelIsInContact(i)&&(sim.vehicle.wheelSuspensionForce(i)??0)>0);
-    const lengths=loadedWheels.map(i=>sim.vehicle.wheelSuspensionLength(i)??.58);
-    const targetLift=lengths.length>=3?.58-lengths.reduce((sum,length)=>sum+length,0)/lengths.length:0;
-    if(snap||!this.visualCarReady)this.visualSuspensionLift=targetLift;
-    else this.visualSuspensionLift=THREE.MathUtils.lerp(this.visualSuspensionLift,targetLift,1-Math.exp(-dt*(sim.grounded?3.2:16)));
+    // The venue's drivable surface is baked smooth, so the road the player sees is the road the tyres touch.
+    // The imported bodies are rigid models at rest ride height. Draw the body on the plane through the four
+    // physical wheel centres (suspension compression and body roll against the road become a pose change), so
+    // every tyre sits on the road; each wheel only keeps the small diagonal twist the plane cannot absorb.
+    // No filtering and no floor raycasts: a lagging filter is what used to push bodies and tyres into the road.
+    const d=carById(this.currentCarId).dimensions,halfTrack=d.trackM/2,halfBase=d.wheelbaseM/2;
+    const centres=[0,1,2,3].map(i=>-(sim.vehicle.wheelSuspensionLength(i)??.58));
+    const side=(i:number)=>i%2?1:-1,end=(i:number)=>i<2?1:-1;
+    const plane=centres.reduce((sum,y)=>sum+y,0)/4;
+    const roll=Math.atan(centres.reduce((sum,y,i)=>sum+side(i)*y,0)/(4*halfTrack));
+    const pitch=-Math.atan(centres.reduce((sum,y,i)=>sum+end(i)*y,0)/(4*halfBase));
+    physicalQuaternion.multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(pitch,0,roll,'ZXY')));
+    this.visualSuspensionLift=.58+plane;
     physicalPosition.add(new THREE.Vector3(0,this.visualSuspensionLift,0).applyQuaternion(physicalQuaternion));
-    if (snap || !this.visualCarReady) {
-      this.visualCarPosition.copy(physicalPosition); this.visualCarQuaternion.copy(physicalQuaternion); this.visualCarReady=true;
-    } else {
-      // Keep horizontal placement tight while filtering the small vertical,
-      // pitch and roll changes created by dense imported asphalt triangles.
-      const verticalAlpha=1-Math.exp(-dt*(sim.grounded?4.5:16));
-      // The game already interpolates fixed physics ticks. A second horizontal
-      // filter put the model metres behind its contacts at racing speeds.
-      this.visualCarPosition.x=physicalPosition.x;
-      this.visualCarPosition.z=physicalPosition.z;
-      this.visualCarPosition.y=THREE.MathUtils.lerp(this.visualCarPosition.y,physicalPosition.y,verticalAlpha);
-      this.visualCarQuaternion.slerp(physicalQuaternion,1-Math.exp(-dt*(sim.grounded?4:20)));
-      // Pitch/roll may be filtered, but delaying yaw hides the real rear slip
-      // and makes the visual nose point away from the tire forces during turns.
-      if(sim.grounded){
-        const visual=new THREE.Euler().setFromQuaternion(this.visualCarQuaternion,'YXZ');
-        visual.y=new THREE.Euler().setFromQuaternion(physicalQuaternion,'YXZ').y;
-        this.visualCarQuaternion.setFromEuler(visual);
-      }
-    }
+    this.visualCarPosition.copy(physicalPosition); this.visualCarQuaternion.copy(physicalQuaternion); this.visualCarReady=true;
     this.car.position.copy(this.visualCarPosition);this.car.quaternion.copy(this.visualCarQuaternion);
     if(this.carRig){
-      const wheelContacts=this.carRig.wheels.map(w=>sim.track.id==='daytona'?sim.vehicle.wheelIsInContact(w.userData.index):loadedWheels.includes(w.userData.index));
-      const supportedBody=loadedWheels.length>=3;
-      // Four accelerated physics rays, once per physics tick (also in a static
-      // preview). They sample the visible mesh, not the lower smoothed skin.
-      if(snap||this.contactTick!==sim.ticks+sim.finishTicks||!this.visibleWheelFloors.length){
-        this.visibleWheelFloors=this.carRig.wheels.map((w,i)=>{
-          // Visual road fitting must not invent support under an unloaded tire.
-          if(!wheelContacts[i])return undefined;
-          const p=new THREE.Vector3().fromArray(w.userData.rest).applyQuaternion(this.car.quaternion).add(this.car.position);
-          return sim.visibleGroundAt(p);
-        });this.contactTick=sim.ticks+sim.finishTicks;
-      }
       const up=new THREE.Vector3(0,1,0).applyQuaternion(this.car.quaternion);
-      if(up.y>.65){
-        let clearance=-Infinity;
-        this.carRig.wheels.forEach((wheel,i)=>{
-          const floor=this.visibleWheelFloors[i];if(!wheelContacts[i]||floor===undefined)return;
-          const bottom=new THREE.Vector3().fromArray(wheel.userData.rest).applyQuaternion(this.car.quaternion).add(this.car.position).y-wheel.userData.radius;
-          clearance=Math.max(clearance,floor+.012-bottom);
-        });
-        // Fit the body and wheels as one assembly. The old upward-only body
-        // correction left it hovering while each tire extended up to 42 cm to
-        // reach the road. Only a body supported by at least three real tire
-        // contacts is fitted to the visible skin. With fewer contacts, keep the
-        // physical trajectory so a curb, crest or jump can lift the car.
-        if(supportedBody&&Number.isFinite(clearance)){
-          // The physics rolls on a smoothed surface; the visible venue mesh still has seams,
-          // kerbs and triangle steps. Follow only sustained differences (slow filter, bounded),
-          // so tyres stay on the asphalt without the body picking up every visible blip.
-          const target=THREE.MathUtils.clamp(clearance,-.12,.12);
-          this.visualClearance=snap?target:this.visualClearance+(target-this.visualClearance)*(1-Math.exp(-dt*1.6));
-          this.car.position.y+=this.visualClearance;
-        }else this.visualClearance*=Math.exp(-dt*3);
-        this.carRig.wheels.forEach((wheel,i)=>{
-          const floor=this.visibleWheelFloors[i],rest=new THREE.Vector3().fromArray(wheel.userData.rest);
-          if(wheelContacts[i]&&floor!==undefined){
-            const center=rest.clone().applyQuaternion(this.car.quaternion).add(this.car.position);
-            const travel=sim.track.id==='daytona'?Math.min(.22,wheel.userData.radius*.6):Math.min(.045,wheel.userData.radius*.12);
-            // Wheels ease toward the visible floor instead of snapping, so mesh texture does not rattle them.
-            const fitted=rest.y+THREE.MathUtils.clamp((floor+.012+wheel.userData.radius-center.y)/up.y,-travel,travel);
-            wheel.position.y=snap?fitted:THREE.MathUtils.lerp(wheel.position.y,fitted,1-Math.exp(-dt*9));
-          }else wheel.position.y=THREE.MathUtils.lerp(wheel.position.y,rest.y,1-Math.exp(-dt*10));
-        });
-      }else this.carRig.wheels.forEach(w=>{w.position.y=THREE.MathUtils.lerp(w.position.y,w.userData.rest[1],1-Math.exp(-dt*10));});
+      this.carRig.wheels.forEach(wheel=>{
+        const i=wheel.userData.index,twist=centres[i]-(plane+side(i)*halfTrack*Math.tan(roll)-end(i)*halfBase*Math.tan(pitch));
+        // Where the road under a tyre tilts away from the body (bank transitions), a round tyre on a suspension
+        // ray would clip the slope: raise it by the clipped depth so it sits on the surface.
+        const normal=sim.vehicle.wheelIsInContact(i)?sim.vehicle.wheelContactNormal(i):null,tilt=normal?Math.max(.5,normal.x*up.x+normal.y*up.y+normal.z*up.z):1;
+        wheel.position.y=wheel.userData.rest[1]+THREE.MathUtils.clamp(twist+wheel.userData.radius*(1/tilt-1),-.04,.04);
+      });
       // Update before the cockpit-camera branch so interior and exterior views
       // share the same animations; signed travel spins backward in reverse.
-      this.carRig.animate(sim.steering,Math.abs(travel)<10?travel:0,sim.brake,sim.track.id==='daytona'?.22:.045);
+      this.carRig.animate(sim.steering,Math.abs(travel)<10?travel:0,sim.brake,.16);
       this.carRig.instruments.update(sim,dt,this.firstPerson);
     }
     if(!updateCamera)return;
@@ -1108,6 +1114,7 @@ export class RaceWorld {
       rig.carQ.slerp(this.car.quaternion,1-Math.exp(-dt*14));
     }
     const speedMps=sim.speed*sim.track.metersPerUnit;
+    this.setFast(this.fast?speedMps>45:speedMps>58);
     // Bumps and wall hits shake the exterior views; reduced motion and the shake setting turn it off.
     if(sim.hitCount!==rig.hits){rig.hits=sim.hitCount;rig.shake=Math.min(1.2,rig.shake+sim.lastHitSpeed/18);}
     rig.shake=Math.min(1.2,rig.shake+Math.min(.12,Math.max(0,sim.suspensionJolt-.02)*1.5))*Math.exp(-dt*6.5);

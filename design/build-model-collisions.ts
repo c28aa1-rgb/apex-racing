@@ -6,6 +6,7 @@ import { Matrix4, Vector3 } from 'three';
 import { writeFile, mkdir } from 'node:fs/promises';
 import { createCanvas, loadImage } from '@napi-rs/canvas';
 import { TRACKS } from '../shared/tracks';
+import { chassisWalls, sealCracks } from './seal-cracks';
 
 const io = new NodeIO().registerExtensions(ALL_EXTENSIONS).registerDependencies({ 'meshopt.decoder': MeshoptDecoder });
 const sheets = process.argv.includes('--sheets');
@@ -63,8 +64,12 @@ for (const track of TRACKS.filter(track=>!selected||track.id===selected)) {
       for (let i = 0; i < primitiveIndices.length; i += 3) types.push(type);
     }
   });
+  // Bridge the few-centimetre cracks between separate floor meshes so a single-ray tyre cannot drop into them.
+  const flanges = sealCracks(vertices, indices, types, { reach: 1.25, drop: .02, tolerance: .1 });
+  // Which steep faces stop the car body (APEXCOL3 appends one byte per triangle).
+  const walls = chassisWalls(vertices, indices, .15);
   const v = new Float32Array(vertices), i = new Uint32Array(indices), t = new Uint8Array(types);
-  const header = Buffer.alloc(16); header.write('APEXCOL2'); header.writeUInt32LE(v.length / 3, 8); header.writeUInt32LE(i.length, 12);
-  await writeFile(`public/models/tracks/${track.collision}`, Buffer.concat([header, Buffer.from(v.buffer), Buffer.from(i.buffer), Buffer.from(t.buffer)]));
-  console.log(`${track.id}: ${types.length} visible physical triangles, ${(v.byteLength+i.byteLength+t.byteLength)/1e6} MB`);
+  const header = Buffer.alloc(16); header.write('APEXCOL3'); header.writeUInt32LE(v.length / 3, 8); header.writeUInt32LE(i.length, 12);
+  await writeFile(`public/models/tracks/${track.collision}`, Buffer.concat([header, Buffer.from(v.buffer), Buffer.from(i.buffer), Buffer.from(t.buffer), Buffer.from(walls.buffer)]));
+  console.log(`${track.id}: ${types.length - flanges * 2} visible physical triangles + ${flanges} crack flanges, ${walls.reduce((sum, w) => sum + w, 0)} chassis walls, ${(v.byteLength+i.byteLength+t.byteLength)/1e6} MB`);
 }

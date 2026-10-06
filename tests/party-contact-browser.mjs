@@ -29,10 +29,10 @@ try {
   for (const p of [a, b]) await p.waitForFunction(() => window.__apex.state.mode === 'racing', null, { timeout: 120000 });
   await a.waitForTimeout(1500);
   // HUD: standings and minimap must not overlap.
-  const layout = await b.evaluate(() => { const box = s => { const r = document.querySelector(s)?.getBoundingClientRect(); return r && [r.left, r.top, r.right, r.bottom].map(Math.round); }; return { map: box('.race-left'), order: box('.party-race-order'), status: box('.party-race-status'), camera: box('.camera-toggle'), tuner: box('.steering-tuner') }; });
+  const layout = await b.evaluate(() => { const box = s => { const r = document.querySelector(s)?.getBoundingClientRect(); return r && [r.left, r.top, r.right, r.bottom].map(Math.round); }; return { map: box('.race-left'), order: box('.party-race-order'), status: box('.party-race-status'), camera: box('.camera-toggle') }; });
   console.log('layout', layout);
   const overlap = (p, q) => p && q && p[0] < q[2] && q[0] < p[2] && p[1] < q[3] && q[1] < p[3];
-  for (const k of ['order', 'status', 'camera', 'tuner']) assert.ok(!overlap(layout.map, layout[k]), `minimap overlaps ${k}`);
+  for (const k of ['order', 'status', 'camera']) assert.ok(!overlap(layout.map, layout[k]), `minimap overlaps ${k}`);
   await b.screenshot({ path: `${shots}/hud.png` });
   // Contact: put Alpha 9 m behind Bravo's car on Alpha's screen and floor it.
   const contact = await a.evaluate(async () => {

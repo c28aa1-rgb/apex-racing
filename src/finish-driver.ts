@@ -9,9 +9,20 @@ export class FinishDriver {
   private segment=-1;
   private roadTarget?:Vec3;
   private heading=0;
+  /** Follow the visible asphalt: a custom finish with no route to trust. */
+  private readonly followRoad:boolean;
+  /** Saved lap to rejoin, while driving the circuit's own loop past a finish the lap does not continue from. */
+  private readonly lap?:Vec3[];
+  private bridging=false;
   constructor(private track:Track){
     const points=track.mapPath?.length?track.mapPath:buildRoadMesh(track).points.map(p=>p.center);
     const end=points.at(-1)!;
+    // A saved lap that starts somewhere else (Daytona: the pit lane) has no road beyond its finish line.
+    // Joining its start would cut across the infield, so drive on along the track and rejoin the lap later.
+    const lapGap=Math.hypot(end.x-points[0].x,end.z-points[0].z)*track.metersPerUnit;
+    if(track.mapPath?.length&&lapGap>25)this.lap=points;
+    this.followRoad=!track.mapPath&&!!track.localFinish;
+
     let join=0,best=Infinity;
     // Timing routes overlap the opening straight. Skip that duplicate run-up,
     // otherwise wrapping the route asks the driver to make a U-turn at the flag.
@@ -21,27 +32,33 @@ export class FinishDriver {
     }
     this.route=points.slice(join);
   }
-  begin(sim:Simulation){this.speed=Math.max(0,sim.forwardSpeed);this.segment=-1;this.heading=Math.atan2(this.track.finish.forward.x,this.track.finish.forward.z);this.roadTarget=undefined;}
+  begin(sim:Simulation){this.speed=Math.max(0,sim.forwardSpeed);this.segment=-1;
+    // Past a finish the saved lap does not continue from: read the road ahead until the lap is met again.
+    this.bridging=!!this.lap;this.heading=Math.atan2(this.track.finish.forward.x,this.track.finish.forward.z);this.roadTarget=undefined;}
   step(sim:Simulation){
     const p=sim.car.translation(),q=sim.car.rotation(),forward=rotate(q,{x:0,y:0,z:1}),right=rotate(q,{x:1,y:0,z:0});
-    if(!this.track.mapPath&&this.track.localFinish){
+    if(this.bridging&&this.lap&&sim.finishTicks%10===0){
+      // Rejoin the saved lap where the car meets it heading the same way (route ahead, not the opening pit run).
+      for(let i=Math.floor(this.lap.length*.05);i<Math.floor(this.lap.length*.6);i++){
+        const a=this.lap[i],b=this.lap[i+1],dx=b.x-a.x,dz=b.z-a.z,length=Math.hypot(dx,dz)||1;
+        if(Math.hypot(p.x-a.x,p.z-a.z)*this.track.metersPerUnit<10&&(dx*forward.x+dz*forward.z)/length>.9){(this.route as Vec3[]).splice(0,this.route.length,...this.lap.slice(i));this.segment=-1;this.bridging=false;break;}
+      }
+    }
+    if(this.followRoad||this.bridging){
       // Custom finish placements can be far from the original timing route.
       // Read the visible asphalt edges instead of steering toward obsolete points.
       if(!this.roadTarget||sim.finishTicks%6===0){
         const look=Math.max(12,sim.speed*.8),fx=Math.sin(this.heading),fz=Math.cos(this.heading);
         const center={x:p.x+fx*look,y:p.y,z:p.z+fz*look};
-        const floor=sim.roadHeightAt(center)??p.y-.75;
-        const probe={...center,y:floor+.6};
-        const left=sim.roadEdgeDistance(probe,{x:-fz,y:0,z:fx}),right=sim.roadEdgeDistance(probe,{x:fz,y:0,z:-fx});
-        let best=Infinity,offset=0,start:number|undefined;
-        for(let x=-40;x<=42;x+=2){
-          const height=x<=40?sim.roadHeightAt({x:center.x+fz*x,y:center.y,z:center.z-fx*x}):undefined;
-          const road=x>-left+.5&&x<right-.5&&height!==undefined&&Math.abs(height-floor)<.65;
-          if(road&&start===undefined)start=x;
-          if(!road&&start!==undefined){const end=x-2,middle=(start+end)/2,width=end-start;
-            if(width>=4&&Math.abs(middle)<best){best=Math.abs(middle);offset=middle;}
-            start=undefined;
-          }
+        // The asphalt band across the road ahead: walk out from the centre while each 2 m step stays on road
+        // and climbs no steeper than banking (33 degrees). Walls and grass end it; banking does not.
+        const floor=sim.roadHeightAt({...center,y:p.y+3/this.track.metersPerUnit})??sim.roadHeightAt(center);
+        let offset=0;
+        if(floor!==undefined){
+          const reach=[-1,1].map(side=>{let previous=floor,edge=0;
+            for(let x=2;x<=40;x+=2){const h=sim.roadHeightAt({x:center.x+fz*x*side,y:previous+3/this.track.metersPerUnit,z:center.z-fx*x*side});if(h===undefined||Math.abs(h-previous)>1.3/this.track.metersPerUnit)break;previous=h;edge=x;}
+            return edge;});
+          offset=(reach[1]-reach[0])/2;
         }
         offset=Math.max(-look*.45,Math.min(look*.45,offset));
         this.roadTarget={x:center.x+fz*offset,y:center.y,z:center.z-fx*offset};

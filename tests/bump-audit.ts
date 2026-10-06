@@ -4,7 +4,7 @@
 //   rough   RMS of pitch+roll rate, deg/s (body rattle)
 //   bump    RMS of high-passed vertical acceleration, m/s^2 (road texture felt)
 //   jolt    mean suspension travel change per tick, mm
-//   skin    share of ticks with all four tyres on the smooth support surface
+//   skin    share of ticks with all four tyres on the road
 // Run with the API up (saved layouts): node --import tsx tests/bump-audit.ts [--track=spa] [--seconds=40]
 import { DT, Input, Simulation, initPhysics, rotate } from '../shared/physics';
 import { driveTrack } from './driver';
@@ -35,7 +35,7 @@ export async function audit(trackId: string, ticks = seconds * 60): Promise<Bump
     const vy = sim.car.linvel().y * mpu, ay = (vy - lastVy) / DT; lastVy = vy;
     ema += (ay - ema) * (1 - Math.exp(-DT / .3)); bumpSum += (ay - ema) ** 2;
     joltSum += sim.suspensionJolt * 1000;
-    if ([0, 1, 2, 3].every(k => sim.wheelUsesSmoothSupport(k))) skin++;
+    if ([0, 1, 2, 3].every(k => sim.vehicle.wheelIsInContact(k))) skin++;
     if (!sim.grounded) air++;
     speedSum += sim.speed * mpu; n++;
     trace.push([i, sim.car.translation().y * mpu, vy, ay, pitch, roll, sim.suspensionJolt * 1000, sim.speed * mpu]);

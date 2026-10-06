@@ -3,6 +3,7 @@ import { rotate, type Simulation } from '../shared/physics';
 import type { Settings } from './settings';
 import { assetUrl } from '../shared/assets';
 import { loadSample, loadSamples } from './audio/loader';
+import { TRANSMISSIONS } from '../shared/transmission';
 
 // Synthesized engine voices: firing order harmonics, rev range and intake color.
 // Low-rev character comes from short idle recordings (see public/audio/CREDITS.txt); the rest of
@@ -159,6 +160,45 @@ export class RaceAudio {
     osc.frequency.setValueAtTime(pitch,c.currentTime);osc.frequency.exponentialRampToValueAtTime(kind==='impact'?25:pitch*1.25,c.currentTime+duration);
     gain.gain.setValueAtTime(.0001,c.currentTime);gain.gain.exponentialRampToValueAtTime(.035*volume,c.currentTime+.018);gain.gain.exponentialRampToValueAtTime(.0001,c.currentTime+duration);
     osc.connect(gain).connect(this.master);osc.start();osc.stop(c.currentTime+duration+.02);osc.onended=()=>{osc.disconnect();gain.disconnect();};
+  }
+  /**
+   * Car unlock sting, timed to the garage reveal: the lock rattles, snaps open with a clank
+   * and whoosh at snapAt seconds, then the car's own engine voice blips twice.
+   */
+  unlock(carId:CarId,snapAt=.62) {
+    const c=this.context,bus=this.uiBus;if(this.muted||!c||!bus||!this.noise||c.state!=='running')return;
+    const t0=c.currentTime+.02,snap=t0+snapAt,out=c.createGain();out.gain.value=.9;out.connect(bus);
+    const hit=(at:number,volume:number,frequency:number,duration:number,type:BiquadFilterType='bandpass',q=1.4,sweepTo?:number)=>{
+      const source=c.createBufferSource(),filter=c.createBiquadFilter(),gain=c.createGain();
+      source.buffer=this.noise!;filter.type=type;filter.Q.value=q;filter.frequency.setValueAtTime(frequency,at);
+      if(sweepTo)filter.frequency.exponentialRampToValueAtTime(sweepTo,at+duration);
+      gain.gain.setValueAtTime(.0001,at);gain.gain.exponentialRampToValueAtTime(volume,at+(sweepTo?duration*.7:.005));gain.gain.exponentialRampToValueAtTime(.0001,at+duration);
+      source.connect(filter).connect(gain).connect(out);source.start(at,Math.random()*1.5,duration+.05);
+    };
+    // Rattle: the lock strains against its shackle three times.
+    [.12,.27,.42].forEach((at,i)=>{hit(t0+at,.18+i*.05,3200+i*500,.05,'bandpass',6);hit(t0+at+.012,.1,900,.04,'bandpass',3);});
+    // Snap: metallic clank, sub thump and a rising whoosh into the reveal.
+    hit(snap,.5,4200,.09,'bandpass',8);hit(snap,.35,1700,.16,'bandpass',4);
+    hit(snap-.45,.28,320,.5,'bandpass',1.1,5200);
+    const sub=c.createOscillator(),subGain=c.createGain();sub.type='sine';sub.frequency.setValueAtTime(120,snap);sub.frequency.exponentialRampToValueAtTime(34,snap+.45);
+    subGain.gain.setValueAtTime(.0001,snap);subGain.gain.exponentialRampToValueAtTime(.55,snap+.01);subGain.gain.exponentialRampToValueAtTime(.0001,snap+.5);
+    sub.connect(subGain).connect(out);sub.start(snap);sub.stop(snap+.55);
+    this.play('confirm',.55,1,out);
+    // Engine: two throttle blips in this car's voice, idle -> near redline -> settle.
+    const voice=ENGINE_VOICES[carId],{idle,redline}=TRANSMISSIONS[carId],hz=(rpm:number)=>rpm/60*voice.cylinders/2;
+    const real=new Float32Array([0,...voice.harmonics]),wave=c.createPeriodicWave(real,new Float32Array(real.length));
+    const engine=c.createOscillator(),exhaust=c.createOscillator(),filter=c.createBiquadFilter(),gain=c.createGain(),start=snap+.12;
+    engine.setPeriodicWave(wave);exhaust.type='triangle';filter.type='lowpass';filter.frequency.value=voice.filter;filter.Q.value=.8;
+    const peak=idle+(redline-idle)*.88,rpm=[[0,idle],[.28,peak],[.62,idle*1.6],[.78,idle*1.6],[1.02,peak*.94],[1.6,idle*1.15],[2.3,idle]] as const;
+    engine.frequency.setValueAtTime(hz(idle),start);exhaust.frequency.setValueAtTime(hz(idle)/2,start);
+    for(const [at,value] of rpm.slice(1)){engine.frequency.exponentialRampToValueAtTime(hz(value),start+at);exhaust.frequency.exponentialRampToValueAtTime(hz(value)/2,start+at);}
+    gain.gain.setValueAtTime(.0001,start);gain.gain.exponentialRampToValueAtTime(.16,start+.05);gain.gain.setValueAtTime(.16,start+1.6);gain.gain.exponentialRampToValueAtTime(.0001,start+2.3);
+    const bass=c.createGain();bass.gain.value=.5;exhaust.connect(bass).connect(gain);engine.connect(filter).connect(gain);gain.connect(out);
+    engine.start(start);exhaust.start(start);engine.stop(start+2.35);exhaust.stop(start+2.35);
+    // Exhaust crackle as each blip falls away, plus turbo flutter on boosted cars.
+    [.66,1.7].forEach(at=>{for(let i=0;i<4;i++)hit(start+at+i*.07+Math.random()*.04,.16,180+Math.random()*260,.07,'bandpass',1.4);});
+    if(voice.turbo>0)hit(start+.62,voice.turbo*1.4,2600,.22,'bandpass',2,1200);
+    engine.onended=()=>{out.disconnect();};
   }
   /** Menu and interface sounds. They work outside race modes once the player has interacted with the page. */
   ui(kind:UiCue) {

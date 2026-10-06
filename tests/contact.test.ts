@@ -19,7 +19,8 @@ test('visible asphalt in every GLB has physical contact, including away from tim
   const io = new NodeIO().registerExtensions(ALL_EXTENSIONS).registerDependencies({ 'meshopt.decoder': MeshoptDecoder });
   for (const track of TRACKS) await t.test(track.id, async () => {
     await initPhysics(track);
-    const sim = new Simulation(track), doc = await io.read(`public/models/tracks/${track.model}`);
+    // The rendered runtime model: its road is baked smooth, and collision is regenerated from it.
+    const sim = new Simulation(track), doc = await io.read(`public/models/tracks/${track.runtimeModel ?? track.model}`);
     const materials = doc.getRoot().listMaterials(), samples: {p:Vector3;name:string;alpha:string}[] = [];
     doc.getRoot().getDefaultScene()!.traverse(node => {
       const mesh = node.getMesh(); if (!mesh) return;
@@ -69,23 +70,23 @@ test('all eleven cars accelerate with four-wheel asphalt contact; retired select
   }
 });
 
-test('each imported circuit starts on the non-solid smooth wheel support',async()=>{
+test('each imported circuit starts with its tyres on the visible (baked) road',async()=>{
   for(const track of TRACKS){await initPhysics(track);const sim=new Simulation(track);try{
-    assert.ok([0,1,2,3].filter(i=>sim.wheelUsesSmoothSupport(i)).length>=2,track.id);
-    const ground=sim.vehicle.wheelGroundObject([0,1,2,3].find(i=>sim.wheelUsesSmoothSupport(i))!);
-    assert.equal(ground?.isSensor(),true,`${track.id}: support must never collide with the chassis`);
+    assert.ok([0,1,2,3].filter(i=>sim.vehicle.wheelIsInContact(i)).length>=2,track.id);
+    const ground=sim.vehicle.wheelGroundObject([0,1,2,3].find(i=>sim.vehicle.wheelIsInContact(i))!);
+    assert.equal(ground?.isSensor(),false,`${track.id}: tyres must rest on the visible venue road, not a hidden helper`);
   }finally{sim.dispose();}}
 });
 
-test('wheels stay on smooth support down the Bugatti acceleration straight',async()=>{
+test('wheels stay on the road down the Bugatti acceleration straight',async()=>{
   const track=TRACKS.find(track=>track.id==='bugatti') ?? TRACKS[0];await initPhysics(track);const sim=new Simulation(track);
   try{
     let supportedFrames=0;
     for(let frame=0;frame<300;frame++){
       sim.step(Input.Throttle);
-      if([0,1,2,3].filter(i=>sim.wheelUsesSmoothSupport(i)).length>=2)supportedFrames++;
+      if([0,1,2,3].filter(i=>sim.vehicle.wheelIsInContact(i)).length>=2)supportedFrames++;
     }
-    assert.ok(supportedFrames>285,`${track.id}: smooth support active for only ${supportedFrames}/300 frames`);
+    assert.ok(supportedFrames>285,`${track.id}: road contact for only ${supportedFrames}/300 frames`);
     assert.equal(sim.respawns,0);
   }finally{sim.dispose();}
 });
@@ -96,14 +97,14 @@ test('Daytona banking supports the RB19 at speed',async()=>{
   track.spawn={...track.start,position:{x:811,y:1.04,z:-450},forward,rotation:orientation(forward)};
   await initPhysics(track);const sim=new Simulation(track,'red-bull-rb19');
   try{
-    assert.equal([0,1,2,3].filter(i=>sim.wheelUsesSmoothSupport(i)).length,4,'banked spawn has four supported tires');
+    assert.equal([0,1,2,3].filter(i=>sim.vehicle.wheelIsInContact(i)).length,4,'banked spawn has four tyres on the road');
     sim.car.setLinvel({x:4.5,y:0,z:-89.9},true);
     let supported=0;
     for(let i=0;i<30;i++){
       sim.step(Input.Throttle);
-      if([0,1,2,3].filter(index=>sim.wheelUsesSmoothSupport(index)).length>=3)supported++;
+      if([0,1,2,3].filter(index=>sim.vehicle.wheelIsInContact(index)).length>=3)supported++;
     }
-    assert.ok(supported>=27,`banked tires used smooth support on ${supported}/30 high-speed ticks`);
+    assert.ok(supported>=27,`banked tyres on the road for ${supported}/30 high-speed ticks`);
     assert.equal(sim.respawns,0);
   }finally{sim.dispose();}
 });
@@ -157,7 +158,7 @@ test('a custom pre-route grid has four-wheel support and can launch',async()=>{
   track.spawn={...track.start,position:{x:-17.043,y:-.2,z:191.201},forward:{x:.10023,y:0,z:-.99496},rotation:{x:0,y:.99874,z:0,w:.05018}};
   await initPhysics(track);const sim=new Simulation(track);
   try{
-    assert.equal([0,1,2,3].filter(i=>sim.wheelUsesSmoothSupport(i)).length,4);
+    assert.equal([0,1,2,3].filter(i=>sim.vehicle.wheelIsInContact(i)).length,4);
     for(let frame=0;frame<180;frame++)sim.step(Input.Throttle);
     assert.ok(sim.speed*track.metersPerUnit*2.23694>20);
   }finally{sim.dispose();}

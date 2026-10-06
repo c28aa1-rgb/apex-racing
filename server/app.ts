@@ -66,7 +66,13 @@ export async function createApp(store: Store, validate: (run: Run) => Promise<Re
   app.post('/api/runs', { bodyLimit: 512000, config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (request, reply) => {
     const player = await authenticate(request.headers.authorization);
     if (!player) return reply.code(401).send({ error: 'Player session expired. Set your nickname again.' });
-    const run = runSchema.parse(request.body);
+    // A malformed or out-of-date run is a client problem: answer with a readable 422, never a raw validation dump.
+    const parsed = runSchema.safeParse(request.body);
+    if (!parsed.success) {
+      const outdated = parsed.error.issues.some(issue => issue.path[0] === 'physicsVersion');
+      return reply.code(422).send({ error: outdated ? 'The game was updated since this run. Reload the page to post new times.' : 'This run could not be read. Try the run again.' });
+    }
+    const run = parsed.data;
     try {
       const result = await validate(run);
       const saved = await store.save(player.id, { ...run, timeMs: result.timeMs });

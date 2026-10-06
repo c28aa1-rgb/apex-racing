@@ -2,6 +2,7 @@ import { API_URL } from './multiplayer-config';
 import { createElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import { TRACKS } from '../shared/tracks';
+import { LoadingScreen } from './LoadingScreen';
 import type { Game } from './game';
 import { applyFinishPlacement, applyRoadWidthOverrides, applySavedFinishPlacements, applySavedRoadWidthOverrides, applySavedStartPlacements, applyStartPlacement, saveCockpitOffsets, type CockpitOffsets } from './dev-spawns';
 import './style.css';
@@ -30,14 +31,21 @@ async function boot() {
       if (config.cockpits) saveCockpitOffsets(config.cockpits);
     }
   } catch { /* Browser drafts remain available while the local server is offline. */ }
-  await Promise.all([initPhysics(TRACKS[0]), document.fonts.ready]);
+  await Promise.all([initPhysics(location.pathname.startsWith('/dev')?TRACKS[0]:undefined), document.fonts.ready]);
   const game=new Game(document.querySelector<HTMLCanvasElement>('#world')!);
   const root = createRoot(document.getElementById('app')!);
   root.render(createElement(location.pathname.startsWith('/dev') ? DevApp : App,{game}));
   // Diagnostic hooks are available only in the development build.
   if(import.meta.env.DEV)(window as unknown as {__apex:Game}).__apex=game;
 }
-boot().catch(error=>{
+const booting=boot();
+// The trailer reel covers the boot on the player-facing game; dev tools and the trailer skip it.
+if(!location.pathname.startsWith('/dev')){
+  const host=document.createElement('div');host.id='loader';document.body.append(host);
+  const loader=createRoot(host);
+  loader.render(createElement(LoadingScreen,{ready:booting,onContinue:()=>{loader.unmount();host.remove();}}));
+}
+booting.catch(error=>{
   console.error(error);const root=document.getElementById('app')!;root.replaceChildren();
   const section=document.createElement('section');section.className='boot';
   const heading=document.createElement('h1');heading.textContent='The engine could not start.';

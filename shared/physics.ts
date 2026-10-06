@@ -13,25 +13,25 @@ export { PHYSICS_VERSION, DT, MAX_TICKS } from './physics-version';
 export type RunOrigin = { x: number; z: number; heading: number };
 export const Input = { Throttle: 1, Brake: 2, Left: 4, Right: 8, Drift: 16, Respawn: 32, Flip: 64, ShiftUp:128, ShiftDown:256 } as const;
 let ready: Promise<void> | undefined;
-type CollisionMesh = { vertices: Float32Array; indices: Uint32Array; surfaces: Uint8Array };
+/** walls (APEXCOL3): 1 for steep faces that stop the car body; without it every steep face does. */
+type CollisionMesh = { vertices: Float32Array; indices: Uint32Array; surfaces: Uint8Array; walls?: Uint8Array };
 const collisionMeshes = new Map<string, CollisionMesh>();
 const collisionLoads = new Map<string, Promise<void>>();
-const supportSkinCache = new WeakMap<Track,{route:string;vertices:Float32Array;indices:Uint32Array}>();
-/** Smooth wheel-support skin: how far it extends past the authored lane, its lateral resolution, and the along-road smoothing radius (metres). */
-const SKIN = { margin: 9, step: 2.2, radius: 24, lift: .07 };
+/** Every scene query and wheel ray: static venue geometry (sensors excluded). */
+const QUERY_GROUPS = 0xffffffff;
 /**
- * Collision groups (membership << 16 | filter). Where the smooth skin exists, the chassis ignores the raw
- * venue floor and rests instead on a smooth solid copy of the skin (chassisFloor), so the body can never
- * dig into seams or the crease where banking meets flat asphalt. Walls and everything off the skin are unchanged.
+ * Collision groups (membership << 16 | filter). Venue triangles are split into floor and wall: a wall is a steep face
+ * standing at least 15 cm above the floor beside it (flagged at build time; kerb risers and seam skirts are floor).
+ * The main chassis box meets walls, barriers and other cars but never the floor: at speed the suspension may
+ * compress fully, and a low box would otherwise scrape and kick on perfectly smooth asphalt. A taller "safety"
+ * box, well above the floor even at full compression, rests on the road when the car is rolled or upside down.
  */
-const GROUP = { floor: 0x0002, chassis: 0x0004, chassisFloor: 0x0008 };
+const GROUP = { floor: 0x0002, wall: 0x0004, chassis: 0x0008, safety: 0x0010 };
 const groups = (member: number, filter: number) => ((member << 16) | filter) >>> 0;
-/** Every scene query ignores the chassis-only floor. */
-const QUERY_GROUPS = groups(0xffff, 0xffff & ~GROUP.chassisFloor);
 /** Ride: suspension spring and damping per wheel, and how much vertical/tilt chatter the chassis filter removes on the road. */
 const RIDE = { stiffness: 19, compression: 11.5, relaxation: 13, vertical: .82, tilt: .82 };
 // One layout at a time: a venue snapshot is tens of megabytes.
-let staticWorld: { key: string; snapshot: Uint8Array; surfaces: [number, number][]; support: number[]; route: Track['segments'] } | undefined;
+let staticWorld: { key: string; snapshot: Uint8Array; surfaces: [number, number][]; route: Track['segments'] } | undefined;
 /** Everything the static colliders are built from. */
 const staticWorldKey = (track: Track) => JSON.stringify([track.id, !!collisionMeshes.get(track.id), track.segments, track.spawn ?? null, track.mapPath ?? null]);
 async function loadCollision(track: Track) {
@@ -53,12 +53,14 @@ async function loadCollision(track: Track) {
       buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
     }
     const view = new DataView(buffer);
-    if (new TextDecoder().decode(new Uint8Array(buffer, 0, 8)) !== 'APEXCOL2') throw new Error(`Invalid collision mesh for ${track.name}. Rebuild model collisions.`);
+    const magic = new TextDecoder().decode(new Uint8Array(buffer, 0, 8));
+    if (magic !== 'APEXCOL2' && magic !== 'APEXCOL3') throw new Error(`Invalid collision mesh for ${track.name}. Rebuild model collisions.`);
     const vertexCount = view.getUint32(8, true), indexCount = view.getUint32(12, true);
     const vertices = new Float32Array(buffer, 16, vertexCount * 3);
     const sourceIndices = new Uint32Array(buffer, 16 + vertexCount * 12, indexCount);
     const surfaces = new Uint8Array(buffer, 16 + vertexCount * 12 + indexCount * 4, indexCount / 3);
-    collisionMeshes.set(track.id, { vertices, indices: sourceIndices, surfaces });
+    const walls = magic === 'APEXCOL3' ? new Uint8Array(buffer, 16 + vertexCount * 12 + indexCount * 4 + indexCount / 3, indexCount / 3) : undefined;
+    collisionMeshes.set(track.id, { vertices, indices: sourceIndices, surfaces, walls });
   })();
   collisionLoads.set(track.id, loading);
   try { await loading; } finally { collisionLoads.delete(track.id); }
@@ -94,7 +96,7 @@ export function rearSlipDemand(speedMps:number,steeringLoad:number,throttle:numb
   const amount=Math.max(0,Math.min(2,driftStrength));
   const cornerDemand=Math.min(.78,Math.max(0,(speedMps-9)/40))*Math.pow(load,.85)*(.8+throttle*.2)*(1-brake*.8)*amount;
   const speed=Math.max(0,Math.min(1,(speedMps-4)/24));
-  const extra=manual?.42*amount*speed*speed*(3-2*speed)*Math.pow(load,1.15)*(1-brake*.85):0;
+  const extra=manual?.75*amount*speed*speed*(3-2*speed)*Math.pow(load,.7)*(1-brake*.85):0;
   // A small automatic tail movement remains at speed. Deliberate, large-angle
   // slides are reserved for Shift; switching modes still uses the shared ramp.
   // Keep tire coefficients positive even at the maximum drift slider setting.
@@ -126,6 +128,8 @@ export class Simulation {
   get shiftReady(){return this.shiftTicks<=1;}  // the countdown ticks once before the shift check
   get engine(){return engineState(this.carSpec,Math.abs(this.forwardSpeed)*this.track.metersPerUnit,this.gear,this.throttle);}
   private steerHold = 0;
+  /** Left Shift slide state: how firmly the slide is held (0..1) and which way the tail went (+1 left, -1 right). */
+  private slideHold = 0; private slideDir = 0;
   respawns = 0; splits: number[] = []; previousInput = 0;
   /** Training Grounds only: tick each cone was knocked (-1 standing), and touched cones on the timed course. */
   coneHits: Int32Array; penalties = 0;
@@ -134,7 +138,6 @@ export class Simulation {
   readonly carSpec: CarDefinition;
   readonly recoveryFloor: number;
   private colliderSurfaces = new Map<number, number>();
-  private wheelSupportHandles = new Set<number>();
   private smoothRouteSegments: Track['segments'];
   private gateSource?: { checkpoints: Gate[]; finish: Gate; gates: { checkpoints: FittedGate[]; finish: FittedGate } };
   /** Timing gates measured across the full physical road and run-off. */
@@ -162,7 +165,7 @@ export class Simulation {
     const staticKey = staticWorldKey(track), cached = staticWorld?.key === staticKey ? staticWorld : undefined;
     if (cached) {
       this.world = RAPIER.World.restoreSnapshot(cached.snapshot);
-      this.colliderSurfaces = new Map(cached.surfaces); this.wheelSupportHandles = new Set(cached.support); this.smoothRouteSegments = cached.route;
+      this.colliderSurfaces = new Map(cached.surfaces); this.smoothRouteSegments = cached.route;
     } else {
     this.world = new RAPIER.World({ x: 0, y: -22, z: 0 });
     this.world.timestep = DT;
@@ -215,31 +218,25 @@ export class Simulation {
         ...mappedRoute];
     })() : mappedRoute;
     const road = buildRoadMesh(track);
-    const supportRoad = this.smoothRouteSegments === track.segments ? road : buildRoadMesh({ ...track, segments: this.smoothRouteSegments });
     const nativeCollision = collisionMeshes.get(track.id);
     if (nativeCollision) {
-      const covered = this.skinCoverage(track, supportRoad, nativeCollision);
-      for (const surface of [0, 1, 2]) for (const underSkin of [false, true]) {
+      // The venue model's drivable surface is baked smooth at build time (design/bake-road.ts), so the
+      // visible triangles are the physical road: tyres, chassis and queries all use them directly.
+      const v = nativeCollision.vertices, walls = nativeCollision.walls, floor = (triangle: number) => {
+        if (walls) return !walls[triangle];
+        const a = nativeCollision.indices[triangle * 3] * 3, b = nativeCollision.indices[triangle * 3 + 1] * 3, c = nativeCollision.indices[triangle * 3 + 2] * 3;
+        const ux = v[b] - v[a], uy = v[b + 1] - v[a + 1], uz = v[b + 2] - v[a + 2], wx = v[c] - v[a], wy = v[c + 1] - v[a + 1], wz = v[c + 2] - v[a + 2];
+        const nx = uy * wz - uz * wy, ny = uz * wx - ux * wz, nz = ux * wy - uy * wx;
+        return Math.abs(ny) >= .6 * Math.hypot(nx, ny, nz);
+      };
+      for (const surface of [0, 1, 2]) for (const isFloor of [true, false]) {
         const indices: number[] = [];
-        nativeCollision.surfaces.forEach((kind, triangle) => { if (kind === surface && covered[triangle] === +underSkin) indices.push(...nativeCollision.indices.subarray(triangle * 3, triangle * 3 + 3)); });
+        nativeCollision.surfaces.forEach((kind, triangle) => { if (kind === surface && floor(triangle) === isFloor) indices.push(...nativeCollision.indices.subarray(triangle * 3, triangle * 3 + 3)); });
         if (!indices.length) continue;
-        const desc = RAPIER.ColliderDesc.trimesh(nativeCollision.vertices, new Uint32Array(indices), RAPIER.TriMeshFlags.FIX_INTERNAL_EDGES).setFriction(surface === 0 ? .84 : .45);
-        // Floor under the skin: wheels and queries still see it; the chassis does not.
-        if (underSkin) desc.setCollisionGroups(groups(GROUP.floor, 0xffff & ~GROUP.chassis));
-        const collider = this.world.createCollider(desc);
+        const collider = this.world.createCollider(RAPIER.ColliderDesc.trimesh(nativeCollision.vertices, new Uint32Array(indices), RAPIER.TriMeshFlags.FIX_INTERNAL_EDGES)
+          .setFriction(surface === 0 ? .84 : .45).setCollisionGroups(groups(isFloor ? GROUP.floor : GROUP.wall, 0xffff)));
         this.colliderSurfaces.set(collider.handle, surface);
       }
-      // A non-solid support skin follows the authored visible racing asphalt.
-      // Wheel rays see its continuous surface before the source model's tiny
-      // seams and grooves; the chassis does not collide with it, so every wall,
-      // kerb, grass area and obstacle still comes from visible venue geometry.
-      this.world.step();
-      const {vertices:supportVertices,indices:supportIndices}=this.buildSupportSkin(track,supportRoad);
-      const support=this.world.createCollider(RAPIER.ColliderDesc.trimesh(supportVertices,supportIndices,RAPIER.TriMeshFlags.FIX_INTERNAL_EDGES).setSensor(true));
-      this.colliderSurfaces.set(support.handle,0);this.wheelSupportHandles.add(support.handle);
-      // The chassis never touches ground under the skin while driving (the tyres hold it up); this solid copy 60 cm lower only catches a crashed or upside-down car.
-      const floorVertices=supportVertices.slice();for(let i=1;i<floorVertices.length;i+=3)floorVertices[i]-=(SKIN.lift+.55)/track.metersPerUnit;
-      this.world.createCollider(RAPIER.ColliderDesc.trimesh(floorVertices,supportIndices,RAPIER.TriMeshFlags.FIX_INTERNAL_EDGES).setFriction(.3).setCollisionGroups(groups(GROUP.chassisFloor,GROUP.chassis)));
     } else if (track.lot) {
       this.buildLot(track.lot);
     } else {
@@ -261,7 +258,7 @@ export class Simulation {
     // meshes supply fixture collisions; the ribbons above only follow rendered
     // road and terrain contact surfaces.
     this.world.step();
-    staticWorld = { key: staticKey, snapshot: this.world.takeSnapshot(), surfaces: [...this.colliderSurfaces], support: [...this.wheelSupportHandles], route: this.smoothRouteSegments };
+    staticWorld = { key: staticKey, snapshot: this.world.takeSnapshot(), surfaces: [...this.colliderSurfaces], route: this.smoothRouteSegments };
     // Canonicalize the first world too: restored query/arena bookkeeping must
     // match ghosts and server replays constructed from the cache.
     this.world.free();
@@ -272,12 +269,16 @@ export class Simulation {
     this.car = this.world.createRigidBody(RAPIER.RigidBodyDesc.dynamic()
       .setTranslation(spawnPosition.x, spawnPosition.y, spawnPosition.z)
       .setRotation(spawn.rotation).setLinearDamping(0.015).setAngularDamping(.6).setCanSleep(false)
-      // Hard CCD shape-casts repeatedly stop on Daytona's dense bank seams.
-      // Soft prediction retains nearby wall contact without freezing motion.
-      .setCcdEnabled(track.id!=='daytona').setSoftCcdPrediction(track.id==='daytona'?.25:0));
+      // Hard CCD clips a whole step to the first predicted contact, even one the body never makes (it stalled
+      // cars over crests such as Raidillon). Soft prediction keeps wall contact without freezing motion.
+      .setCcdEnabled(false).setSoftCcdPrediction(.25));
     const dimensions = this.carSpec.dimensions;
     this.world.createCollider(RAPIER.ColliderDesc.cuboid(dimensions.bodyWidthM * .43, Math.max(.22, dimensions.heightM * .24), dimensions.lengthM * .42).setTranslation(0,-0.18,0)
       .setMass(this.carSpec.physics.massKg).setFriction(0.08).setRestitution(0).setCollisionGroups(groups(GROUP.chassis, 0xffff & ~GROUP.floor)), this.car);
+    // Safety box: 10 cm below the body centre up to roof height. Massless, so handling is unchanged.
+    const safetyTop = Math.max(.25, dimensions.heightM - .55), safetyBottom = -.1;
+    this.world.createCollider(RAPIER.ColliderDesc.cuboid(dimensions.bodyWidthM * .4, (safetyTop - safetyBottom) / 2, dimensions.lengthM * .4).setTranslation(0, (safetyTop + safetyBottom) / 2, 0)
+      .setDensity(0).setFriction(.3).setRestitution(0).setCollisionGroups(groups(GROUP.safety, 0xffff)), this.car);
     this.vehicle = this.createVehicle();
     // Build the scene query acceleration structures before the first wheel raycast.
     for (let i = 0; i < 30; i++) { this.updateWheelContacts(); this.world.step(); }
@@ -343,83 +344,6 @@ export class Simulation {
   get speed() { const vel = this.car.linvel(); return Math.hypot(vel.x, vel.y, vel.z); }
   get forwardSpeed() { const vel = this.car.linvel(), forward = rotate(this.car.rotation(), { x: 0, y: 0, z: 1 }); return vel.x*forward.x + vel.y*forward.y + vel.z*forward.z; }
   frame(): Frame { return { p: { ...this.car.translation() }, q: { ...this.car.rotation() } }; }
-  /**
-   * The surface every tyre actually rolls on. Heights are sampled from the venue
-   * across the lane plus run-off, then smoothed along the road (over ~24 m) and
-   * across it, so kerbs, seams and triangle-level texture vanish while real hills,
-   * crests and banking remain. Wheels read only this skin wherever it reaches.
-   */
-  /** 1 for each upward-facing venue triangle inside the skin's footprint (same reach as buildSupportSkin), else 0. */
-  private skinCoverage(track:Track,road:ReturnType<typeof buildRoadMesh>,mesh:CollisionMesh) {
-    const mpu=track.metersPerUnit,points=road.points;
-    const halfWidth=Math.max(...points.map(p=>Math.hypot(p.right.x-p.left.x,p.right.z-p.left.z)/2));
-    const reach=halfWidth+(SKIN.margin-1)/mpu,cell=Math.max(reach,10/mpu),grid=new Map<string,number[]>();
-    points.forEach((p,i)=>{const key=`${Math.floor(p.center.x/cell)},${Math.floor(p.center.z/cell)}`;const list=grid.get(key)??[];list.push(i);grid.set(key,list);});
-    const v=mesh.vertices,covered=new Uint8Array(mesh.indices.length/3);
-    for(let t=0;t<covered.length;t++){
-      const a=mesh.indices[t*3]*3,b=mesh.indices[t*3+1]*3,c=mesh.indices[t*3+2]*3;
-      const ux=v[b]-v[a],uy=v[b+1]-v[a+1],uz=v[b+2]-v[a+2],wx=v[c]-v[a],wy=v[c+1]-v[a+1],wz=v[c+2]-v[a+2];
-      const nx=uy*wz-uz*wy,ny=uz*wx-ux*wz,nz=ux*wy-uy*wx;if(Math.abs(ny)<.6*Math.hypot(nx,ny,nz))continue;
-      const x=(v[a]+v[b]+v[c])/3,y=(v[a+1]+v[b+1]+v[c+1])/3,z=(v[a+2]+v[b+2]+v[c+2])/3,gx=Math.floor(x/cell),gz=Math.floor(z/cell);
-      search:for(let i=-1;i<=1;i++)for(let j=-1;j<=1;j++)for(const k of grid.get(`${gx+i},${gz+j}`)??[]){
-        const p=points[k],f=p.forward,dx=x-p.center.x,dz=z-p.center.z;
-        // Within reach sideways, within a row spacing along, and near the road's height (not a bridge above or tunnel below).
-        if(Math.abs(dx*f.z-dz*f.x)<reach&&Math.abs(dx*f.x+dz*f.z)<4.5/mpu&&Math.abs(y-p.center.y)<4/mpu){covered[t]=1;break search;}
-      }
-    }
-    return covered;
-  }
-  private buildSupportSkin(track:Track,road:ReturnType<typeof buildRoadMesh>) {
-    const key=road.vertices.join(','),cached=supportSkinCache.get(track);
-    if(cached?.route===key)return cached;
-    const mpu=track.metersPerUnit,points=road.points;
-    const halfWidth=Math.max(...points.map(p=>Math.hypot(p.right.x-p.left.x,p.right.z-p.left.z)/2));
-    const reach=halfWidth+SKIN.margin/mpu,columns=Math.max(5,Math.ceil(reach*2*mpu/SKIN.step)+1);
-    const offset=(c:number)=>-reach+reach*2*c/(columns-1);
-    const at=(p:typeof points[number],c:number)=>{const r={x:p.forward.z,z:-p.forward.x},o=offset(c);return {x:p.center.x+r.x*o,y:p.center.y,z:p.center.z+r.z*o};};
-    // Raw heights: start at the lane centre, then walk outward column by column, each sample taken
-    // relative to its neighbour, so the profile follows the real surface up and down banking instead of
-    // jumping to platforms, fences or the infield. Steps steeper than ~37 degrees count as walls.
-    const banked=track.id==='daytona';
-    const raw=points.map(p=>{
-      const lane=Math.hypot(p.right.x-p.left.x,p.right.z-p.left.z)/2,step=reach*2/(columns-1);
-      const center=Math.floor((columns-1)/2),row=new Array<number>(columns);
-      row[center]=this.nearestSurfaceY(at(p,center),true,banked?2:1.5,banked);
-      for(const direction of [-1,1])for(let c=center+direction;c>=0&&c<columns;c+=direction){
-        const previous=row[c-direction],inLane=Math.abs(offset(c))<=lane;
-        const y=this.nearestSurfaceY({...at(p,c),y:previous},true,inLane?.9:.6);
-        const rise=(inLane?.75:.35)*step+.15/mpu;
-        row[c]=Math.max(previous-rise,Math.min(previous+rise,y));
-      }
-      return row;
-    });
-    /** Along the road: triangle-weighted average over a radius, using real distances (bend samples cluster). */
-    const alongRoad=(radiusM:number,source:ArrayLike<number>[]=raw,lateral=3)=>{const radius=radiusM/mpu;return points.map((p,i)=>{
-      const row=new Float64Array(columns);let weight=0,first=i;
-      while(first>0&&p.distance-points[first-1].distance<radius)first--;
-      for(let j=first;j<points.length&&points[j].distance-p.distance<radius;j++){
-        const spacing=(points[Math.min(points.length-1,j+1)].distance-points[Math.max(0,j-1)].distance)/2;
-        const w=(1-Math.abs(points[j].distance-p.distance)/radius)*Math.max(spacing,1e-3);
-        for(let c=0;c<columns;c++)row[c]+=source[j][c]*w;weight+=w;
-      }
-      for(let c=0;c<columns;c++)row[c]/=weight;
-      // Across the road: three [1,2,1] passes take out kerb-sized steps but keep banking.
-      for(let pass=0;pass<lateral;pass++){const copy=row.slice();for(let c=0;c<columns;c++)row[c]=(copy[Math.max(0,c-1)]+2*copy[c]+copy[Math.min(columns-1,c+1)])/4;}
-      return row;
-    });};
-    // Long smoothing removes everything bump-sized. A short along-road average (no sideways blur) is the
-    // reference for the real surface: the skin may sit at most 3 cm under it (never scrape over a crest or
-    // into banking) and 15 cm over it (where it bridges a dip). Bounded twice, around a final light smoothing.
-    const tight=alongRoad(8,raw,0),bound=(rows:ArrayLike<number>[])=>rows.map((row,i)=>Array.from(row,(y,c)=>Math.max(tight[i][c]-.03/mpu,Math.min(tight[i][c]+.15/mpu,y))));
-    const along=bound(alongRoad(10,bound(alongRoad(SKIN.radius)),0));
-    const vertices=new Float32Array(points.length*columns*3),triangles:number[]=[];
-    points.forEach((p,i)=>{for(let c=0;c<columns;c++){
-      const position=at(p,c),v=(i*columns+c)*3;
-      vertices[v]=position.x;vertices[v+1]=along[i][c]+SKIN.lift/mpu;vertices[v+2]=position.z;
-      if(i&&c){const a=(i-1)*columns+c-1,b=i*columns+c-1;triangles.push(a,b,a+1,a+1,b,b+1);}
-    }});
-    const built={route:key,vertices,indices:new Uint32Array(triangles)};supportSkinCache.set(track,built);return built;
-  }
   private nearestSurfaceY(position:Vec3,preferRoadTop=false,roadTopRange=1.5,roadOnly=false) {
     // Old placements may be a few metres below the imported road. Choose the
     // closest physical floor, not the top of a grandstand or bridge overhead.
@@ -427,7 +351,7 @@ export class Simulation {
     if (this.colliderSurfaces.size) {
       let top = position.y + 5;
       for (let attempt = 0; attempt < 12 && top > position.y - 5; attempt++) {
-        const hit = this.world.castRayAndGetNormal(new RAPIER.Ray({ x: position.x, y: top, z: position.z }, { x: 0, y: -1, z: 0 }), top - position.y + 5, false, RAPIER.QueryFilterFlags.EXCLUDE_DYNAMIC | RAPIER.QueryFilterFlags.EXCLUDE_KINEMATIC, QUERY_GROUPS, undefined, undefined, collider=>roadOnly?this.colliderSurfaces.get(collider.handle)===0:!this.wheelSupportHandles.has(collider.handle));
+        const hit = this.world.castRayAndGetNormal(new RAPIER.Ray({ x: position.x, y: top, z: position.z }, { x: 0, y: -1, z: 0 }), top - position.y + 5, false, RAPIER.QueryFilterFlags.EXCLUDE_DYNAMIC | RAPIER.QueryFilterFlags.EXCLUDE_KINEMATIC, QUERY_GROUPS, undefined, undefined, roadOnly?collider=>this.colliderSurfaces.get(collider.handle)===0:undefined);
         if (!hit) break;
         const y = top - hit.timeOfImpact, distance = Math.abs(y - position.y);
         if (Math.abs(hit.normal.y) > .5) { candidates.push(y);if (distance < closest) { floor = y; closest = distance; } }
@@ -459,15 +383,7 @@ export class Simulation {
     }
     return vehicle;
   }
-  /** Venue material class (0 road, 1 grass, 2 gravel) directly below a point, ignoring the smooth skin. */
-  private materialUnder(point:Vec3|null) {
-    if(!point)return 0;
-    const hit=this.world.castRay(new RAPIER.Ray({x:point.x,y:point.y+.6,z:point.z},{x:0,y:-1,z:0}),1.8,true,
-      RAPIER.QueryFilterFlags.EXCLUDE_DYNAMIC|RAPIER.QueryFilterFlags.EXCLUDE_KINEMATIC|RAPIER.QueryFilterFlags.EXCLUDE_SENSORS,QUERY_GROUPS);
-    return hit?(this.colliderSurfaces.get(hit.collider.handle)??0):0;
-  }
-  wheelUsesSmoothSupport(index:number) { const ground=this.vehicle.wheelGroundObject(index);return !!ground&&this.wheelSupportHandles.has(ground.handle); }
-  /** Visible floor beneath a rendered tire, excluding the smoothed support skin. */
+  /** Visible (and physical) floor beneath a rendered tire. */
   visibleGroundAt(position: Vec3): number | undefined {
     const top=position.y+.65;
     const hit=this.world.castRayAndGetNormal(new RAPIER.Ray({x:position.x,y:top,z:position.z},{x:0,y:-1,z:0}),1.8,false,
@@ -492,38 +408,11 @@ export class Simulation {
     return hit?.timeOfImpact??40;
   }
   private updateWheelContacts() {
-    // Rapier returns the first surface reached by each suspension ray. The
-    // imported visual mesh can therefore win over the support skin wherever a
-    // groove or triangle sits a few millimetres higher, which reintroduces the
-    // exact chatter the skin is meant to remove. While the chassis is on the
-    // authored racing lane, make wheel suspension read only the smooth skin.
-    // Outside that lane (grass, paved runoff and pit areas), read only visible
-    // venue geometry so those materials and elevations continue to behave as
-    // modelled.
-    // The skin covers the lane and run-off, so use it wherever at least three tyres are over it.
-    let useSmoothSupport = this.wheelSupportHandles.size > 0;
-    if(useSmoothSupport){
-      const position=this.car.translation(),rotation=this.car.rotation(),down=rotate(rotation,{x:0,y:-1,z:0}),dimensions=this.carSpec.dimensions;
-      // A crest may unload one tire. Keep the supported axle on the smooth
-      // road instead of switching every tire onto the source mesh for one tick.
-      // Fewer than three supported rays still falls back at the ribbon edge.
-      let supported=0;
-      for(let i=0;i<4;i++){
-        const axle=rotate(rotation,{x:(i%2?1:-1)*dimensions.trackM/2,y:0,z:(i<2?1:-1)*dimensions.wheelbaseM/2});
-        const hit=this.world.castRay(new RAPIER.Ray({x:position.x+axle.x,y:position.y+axle.y,z:position.z+axle.z},down),.58+dimensions.wheelRadiusM,false,
-          RAPIER.QueryFilterFlags.EXCLUDE_DYNAMIC|RAPIER.QueryFilterFlags.EXCLUDE_KINEMATIC,QUERY_GROUPS,undefined,undefined,collider=>this.wheelSupportHandles.has(collider.handle));
-        if(hit)supported++;
-      }
-      useSmoothSupport=supported>=3;
-    }
     this.vehicle.updateVehicle(
       DT,
       // Kinematic bodies are other party drivers' cars: solid to the chassis, never a road surface for the tires.
-      RAPIER.QueryFilterFlags.EXCLUDE_DYNAMIC | RAPIER.QueryFilterFlags.EXCLUDE_KINEMATIC,
+      RAPIER.QueryFilterFlags.EXCLUDE_DYNAMIC | RAPIER.QueryFilterFlags.EXCLUDE_KINEMATIC | RAPIER.QueryFilterFlags.EXCLUDE_SENSORS,
       QUERY_GROUPS,
-      collider => useSmoothSupport
-        ? this.wheelSupportHandles.has(collider.handle)
-        : !this.wheelSupportHandles.has(collider.handle),
     );
   }
   private approach(value: number, target: number, amount: number) {
@@ -566,9 +455,7 @@ export class Simulation {
     // paved runoff. Route traces are irrelevant to tire grip on imported venues.
     const wheelOffRoad = [0,1,2,3].map(i => {
       const ground = this.vehicle.wheelGroundObject(i);
-      let surface = ground ? (this.colliderSurfaces.get(ground.handle) ?? 0) : -1;
-      // On the smooth skin, grip still comes from the venue material under the tyre (grass, gravel).
-      if (ground && this.wheelSupportHandles.has(ground.handle)) surface = this.materialUnder(this.vehicle.wheelContactPoint(i));
+      const surface = ground ? (this.colliderSurfaces.get(ground.handle) ?? 0) : -1;
       this.wheelSurface[i] = surface;
       return this.colliderSurfaces.size ? !!ground && surface > 0 : this.roadDistance(before) > 1.1;
     });
@@ -594,7 +481,9 @@ export class Simulation {
     const holdBoost=1+(!(input&Input.Drift)?1:0)*.45*(1-Math.exp(-this.steerHold*3));
     const target = cruise?Math.max(-tuning.steerAngle,Math.min(tuning.steerAngle,cruise.steering)):steeringInput * speedSteering * offRoadSteer * this.steeringStrength * holdBoost;
     const counterSteering = steeringInput && Math.sign(steeringInput) !== Math.sign(this.steering);
-    const response = cruise?9:steeringInput ? (counterSteering ? 2.15+this.autoDrift*4 : 4.2 + (1.35 - 4.2) * easedSpeed) : 4.5;
+    // Arcade feel: the wheels answer the keys quickly at any speed, snap
+    // across on a direction change and self-centre fast on release.
+    const response = cruise?9:steeringInput ? (counterSteering ? 5+this.autoDrift*9 : 7 + (3.2 - 7) * easedSpeed) : 8;
     this.steering += (target - this.steering) * (1 - Math.exp(-response * DT));
     // Keep a released car planted on its grid spot. Imported circuits are not
     // mathematically flat, so gravity and tiny left/right suspension differences
@@ -605,9 +494,12 @@ export class Simulation {
     // Loaded corners loosen the rear naturally. Left Shift increases that
     // breakaway according to actual smoothed wheel lock and road speed. Both
     // engagement and release share the ramp, so there is no binary rear lock.
+    const manualDrift=!cruise&&!!(input&Input.Drift);
     const autoTarget = !cruise && this.grounded && !this.offRoad && forwardSpeed>0 && steeringInput
-      ? rearSlipDemand(speedMps,steeringLoad,this.throttle,this.brake,!!(input&Input.Drift),this.driftStrength) : 0;
-    this.autoDrift += (autoTarget-this.autoDrift)*(1-Math.exp(-DT*(autoTarget>this.autoDrift?2.4:this.autoDrift>.2?2.2:3.8)));
+      ? rearSlipDemand(speedMps,steeringLoad,this.throttle,this.brake,manualDrift,this.driftStrength) : 0;
+    this.autoDrift += (autoTarget-this.autoDrift)*(1-Math.exp(-DT*(autoTarget>this.autoDrift?(manualDrift?3.2:2.4):this.autoDrift>.2?1.6:3.8)));
+    this.slideHold=this.approach(this.slideHold,manualDrift&&this.grounded?1:0,(manualDrift?4:2.5)*DT);
+    if(this.autoDrift<.12||!this.slideDir)this.slideDir=steeringInput||Math.sign(this.steering);
     const topSpeed = tuning.topSpeedKph / 3.6 / this.track.metersPerUnit;
     const speedRatio = Math.min(speed / topSpeed, 1.2);
     const torqueCurve = Math.max(0, 1 - Math.pow(Math.max(0, (speedRatio - .32) / .68), 1.45));
@@ -674,7 +566,7 @@ export class Simulation {
       {
         const right = rotate(this.car.rotation(), { x: 1, y: 0, z: 0 });
         const lateralSpeed = velocity.x * right.x + velocity.y * right.y + velocity.z * right.z;
-        const stability = Math.max(0, Math.min(1, (speedMps - 8) / 42)) * (steeringInput ? 2.2 : 5.5)*Math.max(0,1-this.autoDrift*3);
+        const stability = Math.max(0, Math.min(1, (speedMps - 8) / 42)) * (steeringInput ? 2.2 : 5.5)*Math.max(0,1-this.autoDrift*(3+this.slideHold*4));
         const correctedLateral=Math.max(-4,Math.min(4,lateralSpeed));
         this.car.applyImpulse({ x: -right.x * correctedLateral * tuning.massKg * stability * DT, y: -right.y * correctedLateral * tuning.massKg * stability * DT, z: -right.z * correctedLateral * tuning.massKg * stability * DT }, true);
       }
@@ -720,8 +612,36 @@ export class Simulation {
       // Bicycle-model steering keeps the response tied to wheelbase, actual
       // wheel lock and travel direction, including countersteering and reverse.
       const requestedYaw=forwardSpeed*Math.tan(this.steering)/this.carSpec.dimensions.wheelbaseM*(1+this.autoDrift*.2);
-      const targetYaw=Math.max(-yawLimit,Math.min(yawLimit,requestedYaw));
-      const limitedYaw=this.approach(previousYaw,targetYaw,1.8*DT);
+      let targetYaw=Math.max(-yawLimit,Math.min(yawLimit,requestedYaw));
+      // Arcade Shift slide: steer the body toward a target angle past the
+      // direction of travel. Holding into the slide with throttle swings it
+      // nearly sideways; neutral holds a medium angle; countersteer or lifting
+      // Shift straightens it. Chasing a target angle also stops a spin-out.
+      const slide=Math.min(1,this.autoDrift*this.slideHold*2.5);
+      if(slide>0&&this.slideDir&&nextSpeed>2){
+        const front=rotate(q,{x:0,y:0,z:1}),heading=Math.atan2(front.x,front.z),travel=Math.atan2(vx,vz);
+        const wrap=(a:number)=>Math.atan2(Math.sin(a),Math.cos(a));
+        const over=wrap(heading-travel),pathYaw=wrap(travel-Math.atan2(velocityBefore.x,velocityBefore.z))/DT;
+        // Countersteer swings the body back through straight; once it gets
+        // there the slide flips the other way, so S-bends chain together.
+        if(steeringInput===-this.slideDir&&over*this.slideDir<.05)this.slideDir=steeringInput;
+        const steerMod=steeringInput===this.slideDir?1:steeringInput?-.2:.6;
+        const maxAngle=Math.min(1.3,.95*Math.pow(this.driftStrength,.6));
+        const targetOver=this.slideDir*maxAngle*this.autoDrift*(.55+.45*this.throttle)*steerMod;
+        const slideYaw=Math.max(-2.2,Math.min(2.2,pathYaw+3.2*(targetOver-over)));
+        targetYaw+=(slideYaw-targetYaw)*slide;
+        // Momentum keeper: sideways tires would scrub a real car to a crawl.
+        // Here a slide sheds only a little speed, so it carries through the corner.
+        const kept=Math.hypot(vx,vz),loss=previousSpeed-kept;
+        if(loss>0&&kept>.01){
+          const scrub=(.5+1.0*Math.abs(over))*(1-.5*this.throttle)*DT/this.track.metersPerUnit;
+          const allowed=loss-(loss-Math.min(loss,scrub))*slide*(1-this.brake);
+          const k=(previousSpeed-allowed)/kept;vx*=k;vz*=k;
+          this.car.setLinvel({x:vx,y:v.y,z:vz},true);
+        }
+      }
+      // Fast yaw build gives crisp turn-in and a quick straighten on release.
+      const limitedYaw=this.approach(previousYaw,targetYaw,(5+slide*6)*DT);
       const normals=[0,1,2,3].filter(i=>this.vehicle.wheelIsInContact(i)).map(i=>this.vehicle.wheelContactNormal(i)!).filter(Boolean);
       if(normals.length>=3&&up.y>.6){
         // Suspension forces were slowly winding pitch/roll into the road until
@@ -736,6 +656,13 @@ export class Simulation {
       }else this.car.setAngvel({x:angular.x+up.x*(limitedYaw-yaw),y:angular.y+up.y*(limitedYaw-yaw),z:angular.z+up.z*(limitedYaw-yaw)},true);
     }
     this.world.step();
+    // A car never goes faster than its rated top speed: not down a hill, off a boost pad or in a draft.
+    // Only on the ground; a car in the air keeps its fall.
+    if (this.grounded) {
+      const v = this.car.linvel(), now = Math.hypot(v.x, v.y, v.z);
+      // Excess bleeds off at up to 6 m/s^2 (stronger than gravity on any hill or a boost pad), never in one jolt.
+      if (now > topSpeed) { const k = Math.max(topSpeed, now - 6 / this.track.metersPerUnit * DT) / now; this.car.setLinvel({ x: v.x * k, y: v.y * k, z: v.z * k }, true); }
+    }
     this.readAudioSignals();
     const lateral=rotate(this.car.rotation(),{x:1,y:0,z:0}),motion=this.car.linvel();
     const slip=Math.atan2(Math.abs(motion.x*lateral.x+motion.y*lateral.y+motion.z*lateral.z),Math.max(1,Math.abs(this.forwardSpeed)));
@@ -787,20 +714,6 @@ export class Simulation {
       const roll=Math.max(-.7,Math.min(.7,(restore.x*length.x+restore.y*length.y+restore.z*length.z)*gain)),follow={x:length.x*roll,y:length.y*roll,z:length.z*roll};
       this.car.setAngvel({ x: yaw.x + follow.x + (angular.x-yaw.x-follow.x)*tiltRetention, y: yaw.y + follow.y + (angular.y-yaw.y-follow.y)*tiltRetention, z: yaw.z + follow.z + (angular.z-yaw.z-follow.z)*tiltRetention }, true);
     }
-    if(this.track.id==='daytona'){
-      // Without CCD, triangle seams no longer halt a 200 mph car. Bound the
-      // occasional contact impulse around pitch/roll, not steering yaw.
-      const angular=this.car.angvel(),up=rotate(this.car.rotation(),{x:0,y:1,z:0});
-      const yaw=angular.x*up.x+angular.y*up.y+angular.z*up.z;
-      const tilt={x:angular.x-up.x*yaw,y:angular.y-up.y*yaw,z:angular.z-up.z*yaw};
-      const length=Math.hypot(tilt.x,tilt.y,tilt.z);
-      // Tyres cannot turn a car faster than its grip allows (about 28 m/s^2
-      // over its speed), so a larger yaw rate at speed is a seam or wall impulse.
-      const yawCap=Math.max(1.5,36/Math.max(5,speedMps));
-      const boundedYaw=Math.max(-yawCap,Math.min(yawCap,yaw));
-      const scale=length>3?3/length:1;
-      if(length>3||boundedYaw!==yaw)this.car.setAngvel({x:up.x*boundedYaw+tilt.x*scale,y:up.y*boundedYaw+tilt.y*scale,z:up.z*boundedYaw+tilt.z*scale},true);
-    }
     // Continue authoritative tire, gravity and wall contact without scoring a second lap.
     if(cruise){this.finishTicks++;return;}
     this.ticks++;
@@ -833,7 +746,7 @@ export class Simulation {
     this.car.setTranslation(this.surfaceSpawn({ x: gate.position.x + gate.forward.x * 3, y: gate.position.y, z: gate.position.z + gate.forward.z * 3 }), true);
     this.car.setRotation(gate.rotation, true); this.car.setLinvel({ x: 0, y: 0, z: 0 }, true); this.car.setAngvel({ x: 0, y: 0, z: 0 }, true);
     this.vehicle = this.createVehicle();
-    this.steering = 0; this.steerHold = 0; this.throttle = 0; this.reverse = 0; this.brake = 0; this.autoDrift = 0; this.drifting = false; this.respawns++;
+    this.steering = 0; this.steerHold = 0; this.throttle = 0; this.reverse = 0; this.brake = 0; this.autoDrift = 0; this.slideHold = 0; this.slideDir = 0; this.drifting = false; this.respawns++;
   }
   flipCar() {
     if (this.speed * this.track.metersPerUnit * 3.6 > 25) return false;

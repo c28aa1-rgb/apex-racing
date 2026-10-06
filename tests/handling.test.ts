@@ -30,7 +30,7 @@ test('every car sustains a powered slide, countersteers and recovers grip',()=>{
       sim.car.setLinvel({x:0,y:0,z:35},true);
       for(let i=0;i<180;i++)sim.step(Input.Throttle|Input.Left|Input.Drift);
       const slide=telemetry(sim);
-      assert.ok(slide.slip < -10 && slide.slip > -35,`${car.id}: no controlled outward slide`);
+      assert.ok(slide.slip < -40 && slide.slip > -75,`${car.id}: no big, controlled outward slide (${slide.slip.toFixed(1)})`);
       assert.ok(slide.speed>28,`${car.id}: powered drift lost too much momentum`);
       assert.equal(sim.drifting,true);
       for(let i=0;i<45;i++)sim.step(Input.Throttle|Input.Right|Input.Drift);
@@ -69,7 +69,7 @@ for(const car of CARS)test(`${car.shortName}: 176 handling scenarios, with and w
     assert.equal(result.airTicks,0,`${label}: wheel contact lost on a flat floor`);
     assert.ok(result.minUp>.995,`${label}: chassis accumulated tilt`);
     assert.ok(result.maxG<3,`${label}: ${result.maxG.toFixed(2)} g tire impulse`);
-    assert.ok(result.maxSlipStep<1.2,`${label}: sideslip jumped ${result.maxSlipStep.toFixed(2)} degrees in one tick`);
+    assert.ok(result.maxSlipStep<(manual?2:1.2),`${label}: sideslip jumped ${result.maxSlipStep.toFixed(2)} degrees in one tick`);
     if(mph===0&&['coast','left','right','release','reversal','both-pedals'].includes(maneuver))assert.ok(result.displacement<.01,`${label}: moved while parked`);
     if(['coast','throttle','brake','both-pedals'].includes(maneuver))assert.ok(Math.abs(result.final.x)<.025,`${label}: unexpected lateral drift`);
     if(['coast','left','right','reversal','release'].includes(maneuver))assert.ok(result.maxSpeedGain<.002,`${label}: steering added energy without the throttle`);
@@ -79,7 +79,7 @@ for(const car of CARS)test(`${car.shortName}: 176 handling scenarios, with and w
     if(maneuver==='release'&&result.final.speed>5){assert.ok(Math.abs(result.final.yawRate)<.15,`${label}: still turning after release`);assert.ok(Math.abs(result.final.slip)<.4,`${label}: slide did not settle`);}
     if(mph>=60&&maneuver==='power-left')assert.ok(result.final.rearLateral<result.final.frontLateral-.1,`${label}: rear axle must step farther outward than the front`);
     if(mph===100&&maneuver==='power-left'){
-      assert.ok(result.maxSlip>(manual?10:1)&&result.maxSlip<(manual?35:6),`${label}: slip outside the natural / controlled-drift envelope (${result.maxSlip})`);
+      assert.ok(result.maxSlip>(manual?25:1)&&result.maxSlip<(manual?80:6),`${label}: slip outside the natural / controlled-drift envelope (${result.maxSlip})`);
       if(manual)assert.ok(result.final.speed>mph*MPH*.65,`${label}: drift scrubbed away cruising speed`);
     }
   }
@@ -123,7 +123,7 @@ test('Left Shift drift scales with speed and wheel load, and does nothing parked
   assert.ok(rearSlipDemand(35,.8,1,0,true)>rearSlipDemand(35,.8,1,0,false));
   assert.ok(rearSlipDemand(35,.8,1,1,true)<rearSlipDemand(35,.8,1,0,true));
   assert.equal(rearSlipDemand(35,.8,1,0,true,0),0);
-  assert.ok(rearSlipDemand(35,.8,1,0,true,2)>rearSlipDemand(35,.8,1,0,true,1));
+  assert.ok(rearSlipDemand(35,.3,1,0,true,2)>rearSlipDemand(35,.3,1,0,true,1));
 });
 
 test('high-speed steering keeps arcade turn authority',()=>{

@@ -1,0 +1,43 @@
+Track preview images
+
+Original saved Sketchfab thumbnails, reproduced without image edits under CC BY 4.0.
+The home page may crop images to fit the display and applies a separate readability overlay.
+
+Detailed circuit venue models
+
+Bugatti Circuit 2017 layout
+Author: Dave Love SketchFab (Tyler_Dave)
+Source: https://sketchfab.com/3d-models/bugatti-circuit-2017-layout-1d1c967a60ef44d4a7a77c6d75528d83
+License: CC BY 4.0 — https://creativecommons.org/licenses/by/4.0/
+
+Circuit de Spa-Francorchamps 2022 layout
+Author: Dave Love SketchFab (Tyler_Dave)
+Source: https://sketchfab.com/3d-models/circuit-de-spa-francorchamps-2022-layout-ac681fbf548144498c130c3aa0adeb54
+License: CC BY 4.0 — https://creativecommons.org/licenses/by/4.0/
+
+Hungaroring 2020 layout
+Author: Dave Love SketchFab (Tyler_Dave)
+Source: https://sketchfab.com/3d-models/hungaroring-2020-layout-33392c9fe6884df6b696ab84053fd0c7
+License: CC BY 4.0 — https://creativecommons.org/licenses/by/4.0/
+
+Barcelona-Catalunya Grand Prix 2023 layout
+Author: Dave Love SketchFab (Tyler_Dave)
+Source: https://sketchfab.com/3d-models/barcelona-catalunya-grand-prix-2023-layout-60075d2b2d124fb18da7bfaa3b02fab1
+License: CC BY 4.0 — https://creativecommons.org/licenses/by/4.0/
+
+Indianapolis Motor Speedway
+Author: Dave Love SketchFab (Tyler_Dave)
+Source: https://sketchfab.com/3d-models/indianapolis-motor-speedway-63935d209ac14ff495b913669619855a
+License: CC BY 4.0 — https://creativecommons.org/licenses/by/4.0/
+
+Daytona International Speedway 2007 layout
+Author: Dave Love SketchFab (Tyler_Dave)
+Source: https://sketchfab.com/3d-models/daytona-international-speedway-2007-layout-070db794e8ee46d399ee882f67e9a18d
+License: CC BY 4.0 — https://creativecommons.org/licenses/by/4.0/
+
+Marina Bay Street Circuit
+Author: Dave Bored SketchFab (Tyler_Dave)
+Source: https://sketchfab.com/3d-models/marina-bay-street-circuit-e665d831c57546609d4c15287a6107b7
+License: CC BY 4.0 — https://creativecommons.org/licenses/by/4.0/
+
+Models were supplied by the project owner and optimized for real-time browser rendering.

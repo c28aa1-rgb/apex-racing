@@ -140,7 +140,7 @@ export class SkidMarks {
     const stress=tireStress(sim);if(stress<.09){this.last=[];return;}
     let written=false;
     for(let wheel=0;wheel<4;wheel++){
-      if(wheel<2&&sim.brake<.35){this.last[wheel]=undefined;continue;}
+      if(wheel<2&&sim.brake<.35&&stress<.35){this.last[wheel]=undefined;continue;}
       if(!sim.vehicle.wheelIsInContact(wheel)){this.last[wheel]=undefined;continue;}
       const contact=sim.vehicle.wheelContactPoint(wheel);if(!contact)continue;
       const point=new THREE.Vector3(contact.x,contact.y,contact.z);

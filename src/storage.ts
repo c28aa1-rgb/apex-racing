@@ -28,5 +28,8 @@ export function bestRun(track:Track):Run|undefined {
 export async function api<T>(path:string,body?:unknown,method?:string):Promise<T> {
   const player=read<Player|null>('player',null);
   const response=await fetch(MULTIPLAYER_BACKEND === 'cloudflare' && /^\/(players|runs|leaderboards|replays)(\/|$)/.test(path) ? multiplayerUrl(`/api${path}`) : `${API_URL}/api${path}`,{method:method??(body?'POST':'GET'),headers:{'Content-Type':'application/json',...(player?{Authorization:`Bearer ${player.token}`}:{})},body:body?JSON.stringify(body):undefined,signal:AbortSignal.timeout(25000)});
-  const data=await response.json();if(!response.ok)throw new Error(data.error??'Leaderboard unavailable. Try again.');return data;
+  // Proxies and crashes can answer with HTML or nothing; never show raw parser or validation text to the player.
+  const text=await response.text();let data:{error?:unknown}={};try{data=text?JSON.parse(text):{};}catch{data={};}
+  if(!response.ok){const message=typeof data.error==='string'&&!/^\s*[[{]/.test(data.error)?data.error:response.status>=500?'Leaderboard server error. Your best is saved on this device.':'Leaderboard unavailable. Try again.';throw new Error(message);}
+  return data as T;
 }

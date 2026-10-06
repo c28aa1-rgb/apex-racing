@@ -6,10 +6,12 @@ import { MeshoptDecoder, MeshoptEncoder, MeshoptSimplifier } from 'meshoptimizer
 import { Matrix4, Vector3, Box3 } from 'three';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { TRACKS } from '../shared/tracks';
+import { bakeRoad } from './bake-road';
+import { TRACK_BAKE } from './track-bake';
 
 await Promise.all([MeshoptEncoder.ready,MeshoptSimplifier.ready]);
 const io=new NodeIO().registerExtensions(ALL_EXTENSIONS).registerDependencies({'meshopt.decoder':MeshoptDecoder,'meshopt.encoder':MeshoptEncoder});
-const selected=process.argv.find(arg=>arg.startsWith('--track='))?.slice(8),reports=[];
+const selected=process.argv.find(arg=>arg.startsWith('--track='))?.slice(8),reports=[],skipBake=process.argv.includes('--no-bake');
 for(const track of TRACKS.filter(t=>!selected||t.id===selected)){
   const doc=await io.read(`public/models/tracks/${track.model}`),root=doc.getRoot();
   const race=await io.read(`public/models/tracks/${track.model!.replace('.glb','.race.glb')}`);
@@ -67,7 +69,11 @@ for(const track of TRACKS.filter(t=>!selected||t.id===selected)){
     const material=p.getMaterial(),name=material?.getName()??'';
     // Preserve thin roads/markings, fences, vegetation and poles exactly. For
     // generic scenery allow at most 5 mm error, never a venue-sized percentage.
-    const protectedSurface=/road|asph|tarmac|line|groove|stripe|rubber|kerb|curb|fence|pole|light|tree|bush/i.test(name)||material?.getAlphaMode()!=='OPAQUE';
+    // Baked road materials keep every source triangle: the bake refines them itself, and simplifying the
+    // anonymous Daytona asphalt previously produced zero-area needles that stood up in the lane.
+    const bake=TRACK_BAKE[track.id],materialIndex=root.listMaterials().indexOf(material!);
+    const baked=!!bake&&[...bake.surface,...bake.kerbs,...bake.overlays].includes(materialIndex);
+    const protectedSurface=baked||/road|asph|tarmac|line|groove|stripe|rubber|kerb|curb|fence|pole|light|tree|bush/i.test(name)||material?.getAlphaMode()!=='OPAQUE';
     const radius=bounds.getSize(new Vector3()).length();
     if(keep.length>9000&&!protectedSurface){
       simplifyPrimitive(p,{simplifier:MeshoptSimplifier,ratio:.65,error:Math.min(.00001,.005/Math.max(1,radius)),lockBorder:true});
@@ -87,13 +93,21 @@ for(const track of TRACKS.filter(t=>!selected||t.id===selected)){
     sourceTriangles+=count/3;removedDegenerate+=degenerate;removedDuplicate+=duplicates;simplified+=keep.length/3-final;
     rows.push({mesh:mesh.getName(),material:name,source:count/3,degenerate,duplicates,final,protected:protectedSurface});
   }
+  // Visible road == physical road: conform the drivable surface to one smooth field (design/bake-road.ts).
+  let bakeReport;
+  if(TRACK_BAKE[track.id]&&!skipBake){
+    bakeReport=bakeRoad(doc,track,TRACK_BAKE[track.id]);
+    await mkdir('work/track-cleanup',{recursive:true});
+    await writeFile(`work/track-cleanup/bake-${track.id}.json`,JSON.stringify(bakeReport,null,2));
+    console.log(track.id,'bake',{...bakeReport,materials:undefined});
+  }
   // No new POSITION quantization: old quantization moved thin road decals and
   // poles by centimeters on large meshes. Meshopt entropy encoding is lossless.
   doc.createExtension(EXTMeshoptCompression).setRequired(true).setEncoderOptions({method:EXTMeshoptCompression.EncoderMethod.QUANTIZE});
   await doc.transform(prune({propertyTypes:[PropertyType.ACCESSOR],keepAttributes:true,keepExtras:true}));
   const filename=track.model!.replace('.glb','.clean.glb');
   await io.write(`public/models/tracks/${filename}`,doc);
-  const report={id:track.id,filename,sourceTriangles,removedDegenerate,removedDuplicate,simplified,final:sourceTriangles-removedDegenerate-removedDuplicate-simplified,cutouts,rows};
+  const report={id:track.id,filename,bake:bakeReport?{...bakeReport,materials:undefined}:undefined,sourceTriangles,removedDegenerate,removedDuplicate,simplified,final:sourceTriangles-removedDegenerate-removedDuplicate-simplified,cutouts,rows};
   reports.push(report);console.log(track.id,{...report,rows:undefined});
 }
 await mkdir('work/track-cleanup',{recursive:true});
