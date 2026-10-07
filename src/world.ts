@@ -143,7 +143,9 @@ export class RaceWorld {
     velocity: new THREE.Vector3(), accel: new THREE.Vector3(), roll: 0, fov: 58, shake: 0, hits: 0, time: 0, ready: false,
     /** Stabilisation: the point the camera follows (height filtered), its smoothed heading, and a smoothed car orientation for interior views. */
     anchor: new THREE.Vector3(), heading: new THREE.Vector3(0, 0, 1), carQ: new THREE.Quaternion(), stable: false };
-  private tv?: { position: THREE.Vector3; side: number };  private mouseLookEnabled = false;
+  /** True while the camera wheel is open: the mouse picks a view instead of looking around. */
+  lookSuspended = false;
+  private mouseLookEnabled = false;
   private lookYaw = 0;
   private lookPitch = 0;
   private lookDrag?: { x: number; y: number };
@@ -367,7 +369,7 @@ export class RaceWorld {
   };
   private racePointerMove = (event: PointerEvent) => {
     const locked=document.pointerLockElement===this.canvas;
-    if((!this.lookDrag&&!locked)||!this.mouseLookEnabled||this.lookLocked||this.editorActive)return;
+    if((!this.lookDrag&&!locked)||!this.mouseLookEnabled||this.lookLocked||this.lookSuspended||this.editorActive)return;
     // Half the old speed, and one event can move at most 60 px, so a flick or a pointer-lock spike never whips the view round.
     const clamp=(v:number)=>Math.max(-60,Math.min(60,v));
     const dx=clamp(locked?event.movementX:event.clientX-this.lookDrag!.x),dy=clamp(locked?event.movementY:event.clientY-this.lookDrag!.y);this.lookDrag={x:event.clientX,y:event.clientY};
@@ -1159,7 +1161,6 @@ export class RaceWorld {
       this.applyShake(.35);this.setFov(options.fov+10+(still?0:Math.min(speedMps*.1,10)),dt,snap);this.camera.near=.05;this.camera.updateProjectionMatrix();
       rig.ready=false;return;
     }
-    if(this.cameraMode==='tv'){this.tvCamera(sim,dt,snap,heading,right,speedMps);rig.ready=false;return;}
     // Chase, far chase and drone: a camera offset held on a spring in the car's frame.
     const preset=this.cameraMode==='far'?{distance:15,height:6.4,look:9,stiffness:3.6,aim:7}:this.cameraMode==='drone'?{distance:15,height:21,look:10,stiffness:1.9,aim:3.2}:{distance:9.2,height:3.2,look:6.5,stiffness:5.2,aim:9};
     const zoom=options.distance,pull=still?0:Math.min(speedMps*.032,2.4);
@@ -1214,32 +1215,6 @@ export class RaceWorld {
     const t=this.rig.time,e=this.rig.shake*scale;if(e<.002)return;
     const n=(a:number,b:number,c:number)=>Math.sin(t*a)*.5+Math.sin(t*b+1.7)*.3+Math.sin(t*c+4.1)*.2;
     this.camera.rotateX(n(31,47,73)*.012*e);this.camera.rotateY(n(29,53,67)*.012*e);this.camera.rotateZ(n(23,41,59)*.008*e);
-  }
-  /**
-   * Trackside TV camera: a long lens planted ahead of the car, beside its line.
-   * It holds still and pans as the car passes, then cuts to the next spot ahead.
-   */
-  private tvCamera(sim:Simulation,dt:number,snap:boolean,heading:THREE.Vector3,right:THREE.Vector3,speedMps:number) {
-    const car=this.car.position,mpu=sim.track.metersPerUnit;
-    const behind=this.tv?this.tv.position.clone().sub(car).dot(heading)<0:false,distance=this.tv?this.tv.position.distanceTo(car):Infinity;
-    if(snap||!this.tv||distance>110/mpu||(behind&&distance>38/mpu)){
-      const ahead=(42+Math.min(speedMps*1.6,95))/mpu,side=this.tv?-this.tv.side:1;
-      let placed:THREE.Vector3|undefined;
-      for(const s of [side,-side]){
-        const spot=car.clone().addScaledVector(heading,ahead).addScaledVector(right,s*(11+Math.random()*6)/mpu);
-        // Ground near the car's own level; fall back to the car's height on open run-off.
-        const ground=sim.visibleGroundAt({x:spot.x,y:car.y+1.15,z:spot.z});
-        spot.y=(ground??car.y-.7)+(3.5+Math.random()*3)/mpu;
-        if(sim.lineOfSight(spot,{x:car.x,y:car.y+1,z:car.z})){placed=spot;this.tv={position:spot,side:s};break;}
-      }
-      if(!placed){const spot=car.clone().addScaledVector(heading,ahead*.6).addScaledVector(new THREE.Vector3(0,1,0),12/mpu);this.tv={position:spot,side};}
-      this.cameraTarget.copy(car);
-    }
-    this.camera.position.copy(this.tv!.position);this.camera.up.set(0,1,0);
-    this.cameraTarget.lerp(car.clone().add(new THREE.Vector3(0,.8,0)),snap?1:1-Math.exp(-dt*9));this.camera.lookAt(this.cameraTarget);
-    // Zoom so the car fills a steady part of the frame, like a broadcast camera operator.
-    const span=this.camera.position.distanceTo(car)*mpu,fov=THREE.MathUtils.clamp(2*Math.atan(5.2/Math.max(span,1))*180/Math.PI,4,50);
-    this.applyShake(.2);this.setFov(fov,dt,snap);
   }
   private followLast=new THREE.Vector3();
   /** Spectator chase camera behind another driver's car (party races), same framing as the player's own chase view. */

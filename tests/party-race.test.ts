@@ -38,7 +38,7 @@ test('race waits for all drivers, locks setup, orders updates and returns result
   parties.join(guest, lobby.code, 'celica-gt4');
   assert.throws(() => parties.start(guest, {}), /Only the host/);
   const race = parties.start(host, {}).race!;
-  assert.deepEqual(race.racers.map(r => r.slot), [0, 1]);
+  assert.deepEqual(race.racers.map(r => r.slot).sort(), [0, 1]);
   assert.throws(() => parties.car(guest, 'mazda-787b'), /locked/);
   assert.throws(() => parties.settings(host, { laps: 3 }), /locked/);
   assert.throws(() => parties.join({ id: 'late', nickname: 'Late' }, lobby.code, 'celica-gt4'), /progress/);
@@ -93,4 +93,17 @@ test('eight drivers receive distinct slots and share one countdown and pose snap
     assert.equal(snapshot.startAt, start);
     assert.equal(snapshot.racers.filter(r => r.pose).length, 8);
   }
+});
+
+test('grid order is drawn at random, so the host does not always start on pole', () => {
+  const poles = new Set<string>();
+  for (const roll of [0, .99]) {
+    const parties = new Parties(() => 1000, () => roll);
+    const lobby = parties.create(host, 'porsche-911-gt3', {});
+    parties.join(guest, lobby.code, 'celica-gt4');
+    const race = parties.start(host, {}).race!;
+    assert.deepEqual(race.racers.map(r => r.slot).sort(), [0, 1]);
+    poles.add(race.racers.find(r => r.slot === 0)!.id);
+  }
+  assert.equal(poles.size, 2, 'either driver can draw pole');
 });

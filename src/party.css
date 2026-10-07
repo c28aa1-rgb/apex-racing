@@ -22,7 +22,7 @@ body:has(.is-party){overflow:auto}#app:has(.is-party){height:auto;min-height:100
 .party-race{position:absolute;inset:85px 22px 20px;pointer-events:none;z-index:12;display:flex;flex-direction:column;align-items:center;gap:10px}
 .party-race-status{align-self:flex-start;display:flex;flex-direction:column;align-items:flex-start;background:#132127e8;color:white;padding:10px 16px;border-radius:4px;max-width:230px;text-align:left}
 .party-race-status strong{font-size:20px}.party-race-status span{font-size:12px;color:#c6dadb}
-.party-race-order{position:absolute;left:0;top:65px;width:230px;max-height:31vh;overflow-y:auto;pointer-events:auto;padding:8px 12px 8px 32px;background:#132127e8;color:white;border-radius:4px;font-size:12px}
+.party-race-order{position:absolute;left:0;top:65px;width:250px;max-height:40vh;overflow-y:auto;pointer-events:auto;padding:8px 12px;list-style:none;margin:0;background:#132127e8;color:white;border-radius:4px;font-size:12px}
 .party-race-order li{padding:7px 0}.party-race-order li span{display:inline-block;max-width:125px;overflow-wrap:anywhere}.party-race-order strong{float:right;font-size:11px}.party-race-order .is-you{color:#84e1d4}
 .party-race-actions{margin-top:auto;display:flex;gap:10px;pointer-events:auto}.party-race-actions button{background:#132127;color:white;border:1px solid #506567;padding:10px 14px}
 .party-race-error{background:#731e28;color:white;padding:10px;max-width:480px;pointer-events:auto}
@@ -56,3 +56,5 @@ body:has(.is-party){overflow:auto}#app:has(.is-party){height:auto;min-height:100
 /* The party top bar shares the menu top bar geometry so the tab underline glides between views. */
 @media(max-height:760px) and (min-width:901px){.party{height:calc(100dvh - 74px)}}
 @media(max-width:900px) and (min-width:621px){.party{height:calc(100dvh - 76px)}}
+
+.party-race-order li{display:grid;grid-template-columns:30px 1fr auto;align-items:baseline;column-gap:6px}.party-race-order li span{max-width:none}.party-race-order strong{float:none}.party-place{font-family:Shoulders,sans-serif;font-size:17px;color:#ff784c}.party-race-order .is-you .party-place{color:#84e1d4}.party-best{grid-column:2/4;font-size:10px;color:#a8c4c7;margin-top:2px}.party-best.fastest{color:#c9a6ff}

@@ -15,7 +15,7 @@ const still: Variants = { hidden: { opacity: 0 }, shown: { opacity: 1, transitio
 import { ArrowRight, Check, Copy, Crown, DoorOpen, Flag, Hash, Minus, Plus, Sun, CloudRain, Snowflake, CloudFog, UsersRound, Wifi, WifiOff } from 'lucide-react';
 import { CARS, DEFAULT_CAR, carById } from '../shared/cars';
 import { UNLOCK_XP, unlocked } from './progression';
-import { TRACKS } from '../shared/tracks';
+import { TRACKS, formatTime } from '../shared/tracks';
 import { DEFAULT_PARTY_SETTINGS, PARTY_WEATHER, type PartyWeather, type PartyRace } from '../shared/party';
 import { Game } from './game';
 import { api, write, type Player } from './storage';
@@ -60,10 +60,11 @@ export function PartyPanel({ game, active, player, onPlayer, reduced }: {
     setRaceState(lobby.race); setRaceError('');
     void game.prepareParty(lobby, player.id).then(() => { ready = true; }).catch(cause => { if (!disposed) setRaceError(cause instanceof Error ? cause.message : 'Race assets failed to load.'); });
     const poll = async () => {
-      const sent = Date.now();
+      const sent = performance.now();
       try {
         const result = await requestParty<{race: PartyRace; serverNow: number}>('/race', player.token, 'POST', { raceId: lobby.race!.id, ready, ...(ready ? { pose: game.partyPose() } : {}) });
-        if (!disposed) { game.syncParty(result.race, result.serverNow + (Date.now() - sent) / 2); setRaceState(result.race); if (ready) setRaceError(''); }
+        const received = performance.now();
+        if (!disposed) { game.noteServerClock(result.serverNow, sent, received); game.syncParty(result.race, result.serverNow + (received - sent) / 2); setRaceState(result.race); if (ready) setRaceError(''); }
       } catch (cause) { if (!disposed) setRaceError(cause instanceof Error ? cause.message : 'Race connection interrupted.'); }
       finally { if (!disposed) timer = setTimeout(poll, ready ? 50 : 500); }
     };
@@ -112,7 +113,9 @@ export function PartyPanel({ game, active, player, onPlayer, reduced }: {
   };
 
   if (lobby?.race && raceState) {
-    const racers = [...raceState.racers].sort((a,b) => (a.finishedAt ?? Infinity) - (b.finishedAt ?? Infinity) || (b.pose?.lap ?? 1) - (a.pose?.lap ?? 1) || (b.pose?.checkpoint ?? 0) - (a.pose?.checkpoint ?? 0) || a.slot - b.slot);
+    const racers = game.partyStandings(raceState);
+    const bestLap = (racer: PartyRace['racers'][number]) => racer.id === player?.id ? game.partyBestLap ?? racer.pose?.best : racer.pose?.best;
+    const fastest = Math.min(...racers.map(r => bestLap(r) ?? Infinity));
     const loading = !raceState.ended && !(game.partyRace?.ready && raceState.startAt);
     const ready = raceState.racers.filter(r => r.ready && !r.disconnected).length, total = raceState.racers.filter(r => !r.disconnected).length;
     const step = !game.partyRace ? 'Finding your lobby' : game.partyLoadStep || (!raceState.startAt ? `Waiting for drivers · ${ready} / ${total} ready` : 'Starting');
@@ -138,7 +141,14 @@ export function PartyPanel({ game, active, player, onPlayer, reduced }: {
         {!watchable.length && <small>Everyone has finished</small>}
       </div>}
       <div className="party-race-status"><strong>{raceState.ended ? 'Race results' : !game.partyRace?.ready ? 'Preparing grid' : !raceState.startAt ? 'Waiting for drivers' : game.partyRace.finished ? 'Finished' : `Lap ${game.partyRace.lap} / ${settings.laps}`}</strong><span>{track.name} · {weatherNames[settings.weather]}</span></div>
-      <ol className="party-race-order">{racers.map(racer => <li key={racer.id} className={racer.id === player?.id ? 'is-you' : ''}><span>{racer.nickname}</span><strong>{racer.disconnected ? 'DNF' : racer.finishedAt ? `${((racer.finishedAt - raceState.startAt!) / 1000).toFixed(2)}s` : !racer.ready ? 'Loading' : !raceState.startAt ? 'Ready' : `Lap ${racer.pose?.lap ?? 1}`}</strong></li>)}</ol>
+      <ol className="party-race-order">{racers.map((racer, i) => {
+        const best = bestLap(racer), finished = !!racer.finishedAt || raceState.ended;
+        return <li key={racer.id} className={racer.id === player?.id ? 'is-you' : ''}>
+          <b className="party-place">{racer.disconnected ? '–' : `P${i + 1}`}</b><span>{racer.nickname}</span>
+          <strong>{racer.disconnected ? 'DNF' : racer.finishedAt ? formatTime(racer.finishedAt - raceState.startAt!) : !racer.ready ? 'Loading' : !raceState.startAt ? 'Ready' : `Lap ${racer.id === player?.id ? game.partyRace?.lap ?? 1 : racer.pose?.lap ?? 1}`}</strong>
+          {finished && best && <small className={best === fastest ? 'party-best fastest' : 'party-best'}>{best === fastest ? 'Fastest lap ' : 'Best lap '}{formatTime(best)}</small>}
+        </li>;
+      })}</ol>
       {(raceError || error) && <p className="party-race-error" role="alert">{raceError || error}</p>}
       <div className="party-race-actions">{host && <button className="party-leave" disabled={busy} onClick={() => void party.reopen()}><Flag size={17}/>{raceState.ended ? 'Back to lobby' : 'Cancel race'}</button>}<button className="party-leave" disabled={busy} onClick={() => void party.leave()}><DoorOpen size={17}/>Leave race</button></div>
     </section>;

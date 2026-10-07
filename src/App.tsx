@@ -18,6 +18,7 @@ import { CarUnlock } from './CarUnlock';
 import { PartyPanel } from './PartyPanel';
 import { LotMap } from './LotMap';
 import { CAMERA_LABELS } from './camera-modes';
+import { CameraWheel } from './CameraWheel';
 import { PRESET_LABELS } from './graphics';
 
 const ease=[.2,.8,.2,1] as const;
@@ -178,13 +179,20 @@ function PerfTip({game,tip,reduced}:{game:Game;tip:NonNullable<GameState['perfTi
 }
 const ordinal=(n:number)=>`${n}${['th','st','nd','rd'][n%100>10&&n%100<14?0:n%10]??'th'}`;
 /** Party race: the moment you cross the line. Same callout as time trials, with your place once the server confirms it; fades after a few seconds while the car rolls on. */
-function PartyFinishCallout({time,place,still}:{time:number;place?:number;still:boolean}) {
+/** Jump-start penalty: says why the car will not pull, and drains a bar until full power returns. */
+function JumpStartPenalty({duration,still}:{duration:number;still:boolean}) {
+  return <motion.div className="jump-penalty" role="status" initial={{opacity:0,y:still?0:-14,scale:still?1:.94}} animate={{opacity:1,y:0,scale:1}} exit={{opacity:0,y:still?0:-8}} transition={{duration:still?0:.25}}>
+    <strong>Jump start</strong><span>You held the throttle through the lights. Engine bogged for {(duration/1000).toFixed(1)} s</span>
+    <i><b style={{animationDuration:`${duration}ms`}}/></i>
+  </motion.div>;
+}
+function PartyFinishCallout({time,place,best,still}:{time:number;place?:number;best?:number;still:boolean}) {
   const [shown,setShown]=useState(true);
   useEffect(()=>{const timer=setTimeout(()=>setShown(false),4500);return()=>clearTimeout(timer);},[]);
   return <AnimatePresence>{shown&&<motion.div className="finish-callout party-finish-callout" role="status"
     initial={{opacity:0,x:'-50%',y:still?0:-28,scale:still?1:.88}} animate={{opacity:1,x:'-50%',y:still?0:[-28,8,0],scale:still?1:[.88,1.06,1]}} exit={{opacity:0,x:'-50%',y:still?0:-10,transition:{duration:.2}}}
     transition={still?{duration:.18}:{duration:.68,ease:[.05,.7,.1,1],times:[0,.62,1]}}>
-    <span>{place?`Finished ${ordinal(place)}`:'Finished'}</span><strong>{formatTime(time)}</strong>
+    <span>{place?`Finished ${ordinal(place)}`:'Finished'}</span><strong>{formatTime(time)}</strong>{best&&<small className="finish-best">Best lap {formatTime(best)}</small>}
   </motion.div>}</AnimatePresence>;
 }
 /** Cone Attack result, shown while free roam carries on, then gone after five seconds. */
@@ -221,11 +229,12 @@ function RaceHud({game,state}:{game:Game;state:GameState}) {
             <AnimatePresence>{state.penalties>0&&<motion.b key={state.penalties} className="cone-penalty" initial={{scale:.4,opacity:0,y:-6}} animate={{scale:1,opacity:1,y:0}} exit={{opacity:0}} transition={{type:'spring',stiffness:520,damping:18}}>+{state.penalties} s<small>{state.penalties===1?'1 cone':`${state.penalties} cones`}</small></motion.b>}</AnimatePresence></div>}
           <div className="race-left"><div className="map-panel"><LiveMinimap game={game} track={track}/></div>{!game.partyRace&&!free&&<p><Icon name="ghost" size={15}/>{game.ghostRun&&state.ghost?formatTime(game.ghostRun.timeMs):'No ghost this run'}</p>}{free&&<p className="lot-hint">Any car · no clock</p>}</div>
           <LiveSpeed game={game} car={state.car}/><LiveRpm game={game}/>
-          <button className="camera-toggle" onClick={()=>game.toggleCamera()} title="Cycle camera views"><kbd>{game.keyHint('camera')}</kbd> Camera · {CAMERA_LABELS[game.world.cameraMode]}</button>
+          <button className="camera-toggle" onClick={()=>game.toggleCamera()} title="Tap to cycle camera views, hold to pick from a wheel"><kbd>{game.keyHint('camera')}</kbd> Camera · {CAMERA_LABELS[game.world.cameraMode]}</button>
           <span className="mouse-look-hint">{game.settings.pointerLock?'Mouse to look':'Drag to look'} · wheel zooms · hold {game.keyHint('lookBack')} to look behind</span>
           <div className="race-shortcuts">{!game.partyRace&&<button onClick={()=>game.restart()}><kbd>{game.keyHint('restart')}</kbd> {free?'Reset car':'Restart'}</button>}{!free&&<button onClick={()=>game.recover()} disabled={state.mode!=='racing'}><kbd>{game.keyHint('recover')}</kbd> Checkpoint</button>}<FlipButton game={game} racing={state.mode==='racing'}/>{!game.partyRace&&<button onClick={()=>game.pause()}><kbd>Esc</kbd> Pause</button>}</div>
           <AnimatePresence>{free&&state.atStart&&state.mode==='racing'&&<motion.button key="cone-prompt" className="cone-prompt" onClick={()=>game.requestConeRun()} initial={{opacity:0,y:18,scale:.96}} animate={{opacity:1,y:0,scale:1}} exit={{opacity:0,y:10}} transition={{type:'spring',stiffness:420,damping:30}}><span className="cone-prompt-key"><kbd>Enter</kbd></span><span><strong>Start Cone Attack</strong><small>Stop in the box · every cone you touch costs 1 s</small></span></motion.button>}</AnimatePresence>
-          <AnimatePresence>{state.notice&&state.mode==='racing'&&<motion.div key={state.notice} className="race-notice" role="status" initial={{opacity:0,y:-12,scale:.95}} animate={{opacity:1,y:0,scale:1}} exit={{opacity:0,y:-8}}>{state.notice}</motion.div>}</AnimatePresence>
+          <AnimatePresence>{state.cameraWheel&&<CameraWheel key="camera-wheel" current={game.world.cameraMode} pick={state.cameraWheel.pick} keyHint={game.keyHint('camera').split(' / ')[0]} onPick={mode=>game.pickCamera(mode)}/>}</AnimatePresence>
+          <AnimatePresence>{state.notice&&state.mode==='racing'&&!state.cameraWheel&&<motion.div key={state.notice} className="race-notice" role="status" initial={{opacity:0,y:-12,scale:.95}} animate={{opacity:1,y:0,scale:1}} exit={{opacity:0,y:-8}}>{state.notice}</motion.div>}</AnimatePresence>
         </>;
 }
 export function App({game}:{game:Game}) {
@@ -348,8 +357,10 @@ export function App({game}:{game:Game}) {
         </motion.div>}
       </AnimatePresence>
       <AnimatePresence>
-        {state.mode==='countdown'&&<motion.div className="countdown" key="countdown" initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0,scale:1.1}}><span>{track.kind==='cones'?(state.countdown===6?'Cone Attack':'Watch the lights'):state.countdown===6?'Settle on the grid':'Watch the lights'}</span><small>{track.kind==='cones'?'Every cone you touch costs a second':`Hold ${game.keyHint('throttle')} · launch on green`}</small></motion.div>}
-        {state.mode==='party-finished'&&game.partyFinishedAt>0&&<PartyFinishCallout key={game.partyFinishedAt} time={state.time} place={game.partyPlace} still={still}/>}
+        {state.mode==='countdown'&&<motion.div className="countdown" key="countdown" initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0,scale:1.1}}><span>{track.kind==='cones'?(state.countdown===6?'Cone Attack':'Watch the lights'):state.countdown===6?'Settle on the grid':'Watch the lights'}</span><small>{track.kind==='cones'?'Every cone you touch costs a second':game.partyRace?`Press ${game.keyHint('throttle').split(' / ')[0]} as the lights go out · holding it early is a jump start`:`Hold ${game.keyHint('throttle')} · launch on green`}</small>
+          <AnimatePresence>{state.jumpWarning&&<motion.p key="jump-warning" className="jump-warning" role="alert" initial={{opacity:0,y:-6}} animate={{opacity:1,y:0}} exit={{opacity:0}}>Lift off! Holding {game.keyHint('throttle').split(' / ')[0]} now will jump the start</motion.p>}</AnimatePresence></motion.div>}
+        <AnimatePresence>{state.mode==='racing'&&state.penalty&&<JumpStartPenalty key="jump-start" duration={state.penalty} still={still}/>}</AnimatePresence>
+        {state.mode==='party-finished'&&game.partyFinishedAt>0&&<PartyFinishCallout key={game.partyFinishedAt} time={state.time} place={game.partyPlace} best={game.partyBestLap} still={still}/>}
         {state.mode==='celebrating'&&<motion.div className="finish-callout" key="finish-callout" role="status" initial={{opacity:0,x:'-50%',y:still?0:-28,scale:still?1:.88}} animate={{opacity:1,x:'-50%',y:still?0:[-28,8,0],scale:still?1:[.88,1.06,1]}} exit={{opacity:0,x:'-50%',y:still?0:-10,scale:still?1:.97}} transition={still?{duration:.18}:{duration:.68,ease:[.05,.7,.1,1],times:[0,.62,1]}}><span>Finish</span><strong>{formatTime(state.time)}</strong></motion.div>}
         {state.mode==='paused'&&<motion.div className="overlay" key="pause" initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}}><motion.section className="result-card" initial={{y:still?0:18,scale:still?1:.97}} animate={{y:0,scale:1}} exit={{y:still?0:8,scale:still?1:.99}} transition={{duration:still?0:.3,ease}}><p className="result-eyebrow">{track.kind==='lot'?'Training Grounds':track.kind==='cones'?'Cone Attack':'Take a breath'}</p><h2>Paused</h2>{state.notice&&<p>{state.notice}</p>}<button className="start-button" onClick={()=>game.resume()}><Icon name="play"/>{track.kind==='lot'?'Keep driving':'Resume race'}<kbd>Esc</kbd></button><button className="secondary-button" onClick={()=>game.restart()}><Icon name="restart"/>{track.kind==='lot'?'Reset car':'Restart run'}</button>{track.kind==='cones'&&<button className="secondary-button" onClick={()=>void game.enterTraining()}>Back to free roam</button>}<button className="secondary-button" onClick={()=>open('settings')}>Settings & controls</button><button className="text-button" onClick={()=>game.menu()}>{track.lot?'Leave the Training Grounds':'Back to tracks'}</button></motion.section></motion.div>}
         {state.mode==='finished'&&<motion.div className="overlay finish-results" key="finish" initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}}><motion.section className="result-card" initial={{y:still?0:20,scale:still?1:.97}} animate={{y:0,scale:1}}>

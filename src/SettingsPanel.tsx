@@ -70,7 +70,7 @@ export function SettingsPanel({ game }: { game: Game }) {
                 <strong>{CAMERA_LABELS[mode]}</strong><small>{CAMERA_HELP[mode]}</small>
               </button>)}
             </motion.div>
-            <motion.p className="camera-keys muted-text" {...rowMotion}><kbd>{game.keyHint('camera')}</kbd> cycles views · <kbd>Wheel</kbd> zooms chase views · hold <kbd>{game.keyHint('lookBack')}</kbd> to look behind · move the mouse to look around</motion.p>
+            <motion.p className="camera-keys muted-text" {...rowMotion}>Tap <kbd>{game.keyHint('camera')}</kbd> to cycle views or hold it for the camera wheel · <kbd>Wheel</kbd> zooms chase views · hold <kbd>{game.keyHint('lookBack')}</kbd> to look behind · move the mouse to look around</motion.p>
             {row('fov', <span>Field of view<small>Speed widens it further in exterior views.</small></span>, <><input type="range" min="45" max="80" step="1" value={s.cameraFov} onChange={e => game.setSettings({ cameraFov: +e.target.value })} /><output>{s.cameraFov}°</output></>)}
             {row('distance', <span>Camera distance<small>Chase, far chase and drone. The mouse wheel changes it too.</small></span>, <><input type="range" min=".6" max="1.8" step=".02" value={s.cameraDistance} onChange={e => game.setSettings({ cameraDistance: +e.target.value })} /><output>{Math.round(s.cameraDistance * 100)}%</output></>)}
             {row('sensitivity', <span>Mouse sensitivity<small>Looking around in every view.</small></span>, <><input type="range" min=".25" max="2.5" step=".05" value={s.sensitivity} onChange={e => game.setSettings({ sensitivity: +e.target.value })} /><output>{s.sensitivity.toFixed(2)}×</output></>)}

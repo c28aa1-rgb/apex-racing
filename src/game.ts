@@ -13,7 +13,7 @@ import { keyLabel, type Action } from './controls';
 import { Quaternion, Vector3 } from 'three';
 import { FinishDriver } from './finish-driver';
 import { CarRig } from './car-rig';
-import type { PartyLobby, PartyPose, PartyRace, PartyWeather } from '../shared/party';
+import type { PartyLobby, PartyPose, PartyRace, PartyRacer, PartyWeather } from '../shared/party';
 import { Group, CanvasTexture, Sprite, SpriteMaterial } from 'three';
 
 export type Mode='menu'|'countdown'|'racing'|'paused'|'celebrating'|'finished'|'replay'|'party-loading'|'party-finished';
@@ -25,6 +25,10 @@ export type GameState={mode:Mode;track:Track;trackReady:boolean;trackLoading?:bo
   atStart:boolean;
   /** Low frame rate notice: the preset in use, the lighter one suggested, and the measured average. */
   perfTip?:{from:GraphicsQuality;to:GraphicsPreset;fps:number;target:number};
+  /** Camera wheel, open while the camera key is held: the view the mouse points at, if any. */
+  cameraWheel?:{pick?:CameraMode};
+  /** Party countdown with the throttle held (a jump start in the making); and the length of a jump-start penalty being served, in ms. */
+  jumpWarning?:boolean;penalty?:number;
   /** The last finished Cone Attack run, shown while the driver keeps rolling in free roam. `at` makes repeat results distinct. */
   coneResult?:{run:Run;timeMs:number;medal:string;newBest:boolean;previousBest?:number;penalties:number;offCourse:number;at:number}};
 export class Game {
@@ -68,6 +72,20 @@ export class Game {
   partyRace?: { id: string; lap: number; laps: number; ready: boolean; started: boolean; finished: boolean };
   private partySequence=0;
   private partySelf='';
+  /** Estimated (server clock − performance.now()) in ms, from the quickest race reply so far; undefined until the first reply. */
+  private serverOffset?:number;private serverOffsetRtt=Infinity;
+  /** Party lap timing: the tick the current lap began on (-1 when unknown, after rejoining mid-race), and your fastest full lap in ms. */
+  private lapStartTick=0;partyBestLap?:number;
+  /**
+   * Records one race reply's server time. NTP-style: the server stamped it about halfway through the round trip,
+   * so the reply with the shortest round trip gives the most accurate offset. The bound loosens slowly so clock drift is still followed.
+   */
+  noteServerClock(serverNow:number,sentAt:number,receivedAt:number){
+    const rtt=receivedAt-sentAt;this.serverOffsetRtt+=.5;
+    if(rtt>=0&&rtt<=this.serverOffsetRtt){this.serverOffsetRtt=rtt;this.serverOffset=serverNow+rtt/2-receivedAt;}
+  }
+  /** The shared server clock, as best this machine can tell. Both drivers time poses and the start lights against it. */
+  serverTime(now=performance.now()){return now+(this.serverOffset??0);}
   /** performance.now() when you crossed the line in a party race, for the finish callout. */
   partyFinishedAt=0;
   private partyWeather?:PartyWeather;
@@ -94,7 +112,7 @@ export class Game {
     this.state={mode:'menu',track:TRACKS[0],trackReady:location.pathname.startsWith('/dev'),car:selectedCar,modelReady:false,time:0,speed:0,checkpoint:0,countdown:3,boost:false,drifting:false,ghost:read('ghost',true),muted:read('muted',false),steeringStrength:this.steeringStrength,driftStrength:this.driftStrength,personalBest:bestRun(TRACKS[0])?.timeMs,newBest:false,notice:'',worstFrame:0,fps:60,penalties:0,driftCombo:0,driftBest:0,atStart:false};
     this.coarse=this.state;
     void this.world.setCar(selectedCar.id).then(modelReady=>{if(this.carToken!==0)return;this.modelError=modelReady?'':'Car could not load. Check your connection and retry.';this.emit({modelReady});});
-    addEventListener('keydown',this.keyDown);addEventListener('keyup',event=>this.keys.delete(event.code));
+    addEventListener('keydown',this.keyDown);addEventListener('keyup',event=>{this.keys.delete(event.code);if(this.settings.bindings.camera.includes(event.code))this.cameraKeyUp();});
     addEventListener('blur',()=>this.pause());document.addEventListener('visibilitychange',()=>{if(document.hidden)this.pause();});
     document.addEventListener('pointerlockchange',()=>{if(!document.pointerLockElement)this.pause();});
     // Browsers keep audio locked until the first gesture; unlock it and give every button a click/hover sound.
@@ -143,7 +161,7 @@ export class Game {
     if(event.code==='Enter'&&(event.target as HTMLElement).closest('button')&&!(event.target as HTMLElement).closest('.topbar nav button,.track-card'))return;
     event.preventDefault();this.keys.add(event.code);if(event.repeat)return;
     if(has('mute'))this.toggleMute();
-    if(has('camera'))this.toggleCamera();
+    if(has('camera'))this.cameraKeyDown();
     if(has('ghost'))this.toggleGhost();
     if(has('recover'))this.recover();
     if(has('flip'))this.flip();
@@ -199,6 +217,41 @@ export class Game {
     const next=CAMERA_MODES[(CAMERA_MODES.indexOf(this.world.cameraMode)+1)%CAMERA_MODES.length];
     this.setCamera(next);
   }
+  private cameraHoldTimer=0;
+  private wheelAim={x:0,y:0};
+  /** Tap the camera key to cycle views; hold it while driving to open the camera wheel. */
+  private cameraKeyDown(){
+    if(!['racing','countdown','replay'].includes(this.state.mode)){this.toggleCamera();return;}
+    clearTimeout(this.cameraHoldTimer);
+    this.cameraHoldTimer=window.setTimeout(()=>{this.cameraHoldTimer=0;this.openCameraWheel();},220);
+  }
+  private cameraKeyUp(){
+    if(this.state.cameraWheel){const pick=this.state.cameraWheel.pick;this.closeCameraWheel();if(pick&&pick!==this.world.cameraMode)this.setCamera(pick);return;}
+    if(this.cameraHoldTimer){clearTimeout(this.cameraHoldTimer);this.cameraHoldTimer=0;this.toggleCamera();}
+  }
+  private openCameraWheel(){
+    this.wheelAim={x:0,y:0};this.world.lookSuspended=true;
+    addEventListener('pointermove',this.wheelMove,true);this.emit({cameraWheel:{}});
+  }
+  closeCameraWheel(){
+    clearTimeout(this.cameraHoldTimer);this.cameraHoldTimer=0;
+    if(!this.state.cameraWheel)return;
+    removeEventListener('pointermove',this.wheelMove,true);this.world.lookSuspended=false;this.emit({cameraWheel:undefined});
+  }
+  /** Picks a camera from a click on the wheel itself (mouse not locked). */
+  pickCamera(mode:CameraMode){this.closeCameraWheel();if(mode!==this.world.cameraMode)this.setCamera(mode);}
+  /** Mouse movement steers a virtual pointer from the wheel's centre; works with the pointer locked or free. */
+  private wheelMove=(event:PointerEvent)=>{
+    const aim=this.wheelAim;aim.x+=event.movementX;aim.y+=event.movementY;
+    const length=Math.hypot(aim.x,aim.y);if(length>140){aim.x*=140/length;aim.y*=140/length;}
+    let pick:CameraMode|undefined;
+    if(length>28){
+      // Segments run clockwise from the top, matching the wheel drawn by CameraWheel.
+      const angle=(Math.atan2(aim.x,-aim.y)+Math.PI*2)%(Math.PI*2);
+      pick=CAMERA_MODES[Math.round(angle/(Math.PI*2/CAMERA_MODES.length))%CAMERA_MODES.length];
+    }
+    if(pick!==this.state.cameraWheel?.pick)this.emit({cameraWheel:{pick}});
+  };
   setCamera(mode:CameraMode) {
     this.world.cameraMode=mode;this.world.resetMouseLook();this.setSettings({cameraMode:mode});
     if(['racing','countdown','replay'].includes(this.state.mode)){this.emit({notice:`Camera · ${CAMERA_LABELS[mode]}`});this.noticeUntil=performance.now()+1100;}
@@ -274,10 +327,10 @@ export class Game {
     await initPhysics(CONE_TRACK);if(token!==this.selectionToken)return;
     this.emit({trackReady:true});this.start(true);
   }
-  menu() {if(this.partyRace)return;
+  menu() {this.closeCameraWheel();if(this.partyRace)return;
     // Leaving the Training Grounds goes back to the Garage, where it is opened from.
     if(this.state.track.lot){this.cockpitPreview=false;this.world.firstPerson=false;this.world.endFinish();this.world.setMouseLook(false);this.onLeaveTraining?.();void this.select(this.lastCircuit).then(()=>this.setGarage(true));return;}this.keys.clear();this.finishRevealAt=0;this.world.endFinish();this.cockpitPreview=false;this.world.firstPerson=false;this.world.setMouseLook(false);this.emit({mode:'menu',notice:''});this.world.ghostFrame(undefined);}
-  pause() {this.keys.clear();this.world.applyPendingGraphics();if(this.partyRace)return;if(['racing','countdown','replay'].includes(this.state.mode)){this.pausedMode=this.state.mode;this.pausedCountdown=Math.max(0,this.countdownUntil-performance.now());this.emit({mode:'paused'});this.world.setMouseLook(false);}}
+  pause() {this.closeCameraWheel();this.keys.clear();this.world.applyPendingGraphics();if(this.partyRace)return;if(['racing','countdown','replay'].includes(this.state.mode)){this.pausedMode=this.state.mode;this.pausedCountdown=Math.max(0,this.countdownUntil-performance.now());this.emit({mode:'paused'});this.world.setMouseLook(false);}}
   resume() {this.keys.clear();this.accumulator=0;if(!this.freeRoam&&this.sim.ticks>=MAX_TICKS){this.restart();return;}if(this.pausedMode==='countdown')this.countdownUntil=performance.now()+this.pausedCountdown;this.emit({mode:this.pausedMode});this.world.setMouseLook(true);this.world.lockMouse();this.prepareAudio();}
   recover() {if(this.state.mode==='racing')this.queuedRespawn=true;}
   flip() {
@@ -353,7 +406,7 @@ export class Game {
     track.spawn=structuredClone(race.grid[me.slot]);track.checkpoints=structuredClone(race.checkpoints);track.finish=structuredClone(race.finish);
     this.partyFinishDriver=undefined;this.spectating=undefined;
     this.partyRace={id:race.id,lap:me.pose?.lap??1,laps:lobby.settings.laps,ready:false,started:false,finished:!!(me.finishedAt||me.disconnected||race.ended)};
-    this.partySequence=me.pose?.sequence??0;this.partyView=false;this.keys.clear();this.garageView=false;this.reward=undefined;this.awaitingPedal=false;
+    this.partySequence=me.pose?.sequence??0;this.lapStartTick=me.pose?-1:0;this.partyBestLap=me.pose?.best;this.partyView=false;this.keys.clear();this.garageView=false;this.reward=undefined;this.awaitingPedal=false;
     this.inputs=[];this.steeringInputs=[];this.driftInputs=[];this.accumulator=0;this.previousFrame=undefined;
     this.lastCheckpoint=0;this.lastRespawns=0;this.queuedRespawn=false;this.queuedFlip=false;this.pendingShifts=0;this.seenBlockedShifts=0;
     this.ghostSim?.dispose();this.ghostSim=undefined;this.ghostRun=undefined;this.world.ghostFrame(undefined);this.world.endFinish();
@@ -363,7 +416,7 @@ export class Game {
     await initPhysics(track);
     if(this.partyRace?.id!==race.id)return;
     this.sim.dispose();this.sim=new Simulation(track,me.carId);this.sim.maxTicks=60*3600;this.sim.steeringStrength=this.steeringStrength;this.sim.driftStrength=this.driftStrength;this.sim.manual=this.settings.advancedDriving;
-    if(me.pose){this.sim.car.setTranslation(me.pose.p,true);this.sim.car.setRotation(me.pose.q,true);this.sim.car.setLinvel({x:0,y:0,z:0},true);this.sim.car.setAngvel({x:0,y:0,z:0},true);this.sim.checkpoint=me.pose.checkpoint;this.sim.ticks=Math.max(0,Math.round((Date.now()-(race.startAt??Date.now()))/1000/DT));this.sim.finished=this.partyRace.finished;}
+    if(me.pose){this.sim.car.setTranslation(me.pose.p,true);this.sim.car.setRotation(me.pose.q,true);this.sim.car.setLinvel({x:0,y:0,z:0},true);this.sim.car.setAngvel({x:0,y:0,z:0},true);this.sim.checkpoint=me.pose.checkpoint;this.sim.ticks=Math.max(0,Math.round((this.serverTime()-(race.startAt??this.serverTime()))/1000/DT));this.sim.finished=this.partyRace.finished;}
     this.world.setCockpitOffset(loadCockpitOffsets()[me.carId]);
     this.partyLoadStep='Loading your car';this.emit();
     const loaded=await this.world.setCar(me.carId);this.partyLoadStep='Loading the circuit scenery';this.emit();await this.world.venueReady;
@@ -394,22 +447,45 @@ export class Game {
   syncParty(race:PartyRace,serverNow:number) {
     const local=this.partyRace;if(!local||local.id!==race.id)return;
     for(const racer of race.racers){const remote=this.remoteCars.get(racer.id);if(remote){
-      if(racer.pose&&racer.pose.sequence>remote.sequence){remote.sequence=racer.pose.sequence;remote.target=racer.pose;addSample(remote,racer.pose,performance.now());}
+      if(racer.pose&&racer.pose.sequence>remote.sequence){remote.sequence=racer.pose.sequence;remote.target=racer.pose;addSample(remote,racer.pose,this.serverTime());}
       if(racer.finishedAt||racer.pose?.finished)remote.finishedAt??=performance.now();
       if(racer.disconnected)remote.group.visible=false;else if(!remote.finishedAt)remote.group.visible=true;
     }}
     const mine=race.racers.find(racer=>racer.id===this.partySelf);
     if(mine?.finishedAt){const place=race.racers.filter(racer=>racer.finishedAt&&racer.finishedAt<=mine.finishedAt!).length;if(place!==this.partyPlace){this.partyPlace=place;this.emit();}}
     if(local.ready&&local.finished&&this.state.mode!=='party-finished')this.emit({mode:'party-finished'});
+    // Lights out at the same server instant on every screen; refined while the countdown runs as better clock readings arrive.
+    if(local.started&&race.startAt&&this.state.mode==='countdown'&&this.serverOffset!==undefined)this.countdownUntil=race.startAt-this.serverOffset;
     if(local.ready&&race.startAt&&!local.started&&!race.ended&&!local.finished){
-      local.started=true;this.countdownUntil=performance.now()+race.startAt-serverNow;this.goAt=-Infinity;
+      local.started=true;this.countdownUntil=this.serverOffset!==undefined?race.startAt-this.serverOffset:performance.now()+race.startAt-serverNow;this.goAt=-Infinity;
       this.prepareAudio();this.world.setMouseLook(true);this.emit({mode:'countdown',countdown:6});
     }
     if(race.ended&&!local.finished){local.finished=true;this.keys.clear();this.emit({mode:'party-finished'});}
   }
   partyPose():PartyPose|undefined {
     const race=this.partyRace;if(!race?.ready||!race.started)return;
-    return {...this.sim.frame(),sequence:++this.partySequence,lap:race.lap,checkpoint:this.sim.checkpoint,finished:race.finished,t:+(performance.now()-this.accumulator*1000).toFixed(1)};  // time of the physics tick the pose came from
+    // t: the moment of the physics tick the pose came from, on the shared server clock.
+    return {...this.sim.frame(),sequence:++this.partySequence,lap:race.lap,checkpoint:this.sim.checkpoint,finished:race.finished,
+      ...(this.serverOffset!==undefined?{t:+this.serverTime(performance.now()-this.accumulator*1000).toFixed(1)}:{}),...(this.partyBestLap?{best:this.partyBestLap}:{})};
+  }
+  /**
+   * Race order, first to last: finishers by finishing time, then drivers still racing by lap, gates passed and
+   * distance to their next gate. Your own car and remote cars use the positions drawn on this screen, so the
+   * order matches what you see rather than waiting for the next network update.
+   */
+  partyStandings(race:PartyRace){
+    const gates=race.checkpoints,mine=this.partyRace;
+    const progress=(racer:PartyRacer)=>{
+      const self=racer.id===this.partySelf,remote=this.remoteCars.get(racer.id);
+      const lap=self&&mine?mine.lap:racer.pose?.lap??1,checkpoint=self?this.sim.checkpoint:racer.pose?.checkpoint??0;
+      const at=self?this.sim.car.translation():remote?.group.visible&&remote.target?remote.group.position:racer.pose?.p??race.grid[racer.slot].position;
+      const next=(gates[checkpoint]??race.finish).position;
+      return {lap,checkpoint,distance:Math.hypot(at.x-next.x,at.y-next.y,at.z-next.z)};
+    };
+    const rows=race.racers.map(racer=>({racer,...progress(racer)}));
+    return rows.sort((a,b)=>Number(!!a.racer.disconnected)-Number(!!b.racer.disconnected)
+      ||(a.racer.finishedAt??Infinity)-(b.racer.finishedAt??Infinity)
+      ||b.lap-a.lap||b.checkpoint-a.checkpoint||a.distance-b.distance||a.racer.slot-b.racer.slot).map(row=>row.racer);
   }
   /** Drivers you can watch: still racing, connected and visible. */
   spectateCandidates(){
@@ -516,13 +592,17 @@ export class Game {
     if(now-this.fpsTime>1000){this.state={...this.state,fps:Math.round(this.frameCount*1000/(now-this.fpsTime)),worstFrame:Math.round(this.worstFrame)};this.worstFrame=0;this.world.adaptResolution(this.state.fps);this.frameCount=0;this.fpsTime=now;this.watchFrameRate(now);}
     // Track how long the throttle has been held, for false-start detection at the lights.
     if(this.held('throttle')){if(this.throttleDownAt<0)this.throttleDownAt=now;}else this.throttleDownAt=-1;
+    // Party countdown: warn while the throttle is held, since holding it through the lights is a jump start.
+    const warn=!!this.partyRace&&this.state.mode==='countdown'&&this.throttleDownAt>=0;
+    if(warn!==!!this.state.jumpWarning)this.emit({jumpWarning:warn});
+    if(this.state.penalty&&now>=this.bogUntil)this.emit({penalty:undefined});
     if(this.state.mode==='countdown'){
       const count=Math.min(6,Math.ceil((this.countdownUntil-now)/900));if(count!==this.state.countdown){this.emit({countdown:Math.max(0,count)});if(count>0&&count<6)this.sound.cue('light',this.settings.effectsVolume);}
       if(now>=this.countdownUntil){
         // Online, holding the throttle through the lights is a jump start: the engine bogs down for a moment. Pressing right as they go out is fine.
         const jumped=!!this.partyRace&&this.throttleDownAt>=0&&this.throttleDownAt<this.countdownUntil-150;
-        this.bogUntil=jumped?now+2500:0;
-        this.accumulator=0;this.goAt=now;this.lookUnlockAt=now+Game.LOOK_LOCK_AFTER_GO_MS;this.sound.cue('go',this.settings.effectsVolume);this.emit({mode:'racing',notice:jumped?'False start! Engine bogged down':'Go!'});this.noticeUntil=now+(jumped?2500:800);
+        this.bogUntil=jumped?now+2500:0;this.lapStartTick=this.sim.ticks;
+        this.accumulator=0;this.goAt=now;this.lookUnlockAt=now+Game.LOOK_LOCK_AFTER_GO_MS;this.sound.cue('go',this.settings.effectsVolume);this.emit({mode:'racing',notice:jumped?'':'Go!',jumpWarning:false,penalty:jumped?2500:undefined});this.noticeUntil=now+800;
       }
     }
     if(this.state.mode==='celebrating'&&now>=this.finishRevealAt)this.emit({mode:'finished'});
@@ -543,6 +623,8 @@ export class Game {
         if(this.authoring||this.routeRecording)this.sim.finished=false;
         if(this.sim.finished){
           if(this.partyRace){
+            if(this.lapStartTick>=0){const lap=Math.round((this.sim.ticks-this.lapStartTick)*DT*1000);if(lap>0&&(!this.partyBestLap||lap<this.partyBestLap))this.partyBestLap=lap;}
+            this.lapStartTick=this.sim.ticks;
             if(this.partyRace.lap<this.partyRace.laps){this.partyRace.lap++;this.sim.finished=false;this.sim.checkpoint=0;this.lastCheckpoint=0;this.emit({checkpoint:0,notice:`Lap ${this.partyRace.lap} / ${this.partyRace.laps}`});}
             else {this.partyRace.finished=true;this.keys.clear();this.world.confettiBurst();this.sound.cue('finish',this.settings.effectsVolume);this.partyFinishedAt=now;this.partyFinishDriver=new FinishDriver(this.state.track);this.partyFinishDriver.begin(this.sim);this.partyFinishDriver.speed=Math.max(this.partyFinishDriver.speed,14/this.state.track.metersPerUnit);this.accumulator=0;this.emit({mode:'party-finished',time:Math.max(0,Math.round(now-this.countdownUntil))});break;}
           }else {if(this.state.mode==='replay'){this.replayInput=undefined;this.menu();}else this.finish();break;}
@@ -588,7 +670,7 @@ export class Game {
     for(const [id,remote] of this.remoteCars){
       const {group,target}=remote;
       // Drawn slightly in the past on a smooth curve through the sender's timed poses, instead of chasing each 10 Hz update.
-      const pose=target&&sampleRemote(remote,now);
+      const pose=target&&sampleRemote(remote,this.serverTime(now));
       // Prediction is corrected as new poses arrive; ease into the corrected spot instead of jumping. Big jumps (respawns) snap.
       if(pose){
         const jump=Math.hypot(pose.p.x-group.position.x,pose.p.y-group.position.y,pose.p.z-group.position.z),blend=jump>8?1:1-Math.exp(-elapsed*20);
@@ -619,7 +701,7 @@ type PoseSample={t:number;p:Vec3;q:{x:number;y:number;z:number;w:number}};
 type RemoteCar={group:Group;carId:CarId;target?:Frame;sequence:number;samples:PoseSample[];
   /** Wheel, steering and brake-lamp rig; poses carry no inputs, so these are inferred from the drawn motion. */
   rig:CarRig;wheels:{last?:Vector3;heading?:Quaternion;speed:number;steer:number;brake:number};
-  /** Smallest (receipt time - sender time) seen: maps the sender's clock onto ours with the least network delay. */
+  /** Smallest delivery delay seen (receipt − pose time, both on the server clock), in ms. */
   offset:number;
   /** Smoothed spacing between the sender's poses, in ms. */
   interval:number;
@@ -633,7 +715,7 @@ function addSample(remote:RemoteCar,pose:{p:Vec3;q:{x:number;y:number;z:number;w
   // A jump of more than 15 m (respawn, recovery) restarts the curve instead of drawing a streak across the track.
   if(last&&(t<=last.t||Math.hypot(pose.p.x-last.p.x,pose.p.y-last.p.y,pose.p.z-last.p.z)>15)){remote.samples.length=0;remote.clock=undefined;}
   if(last&&remote.samples.length)remote.interval+=(Math.min(500,t-last.t)-remote.interval)*.2;
-  // Let the clock offset creep upward slowly so a one-off fast packet cannot pin it forever.
+  // Let the fastest delay creep upward slowly so a one-off fast packet cannot pin it forever.
   remote.offset=Math.min(remote.offset+.5,receivedAt-t);
   remote.spread=Math.max(remote.spread*.97,receivedAt-t-remote.offset);
   remote.samples.push({t,p:pose.p,q:pose.q});if(remote.samples.length>12)remote.samples.shift();
@@ -644,10 +726,10 @@ const remoteTarget=new Vector3(),remoteForward=new Vector3(),remoteDelta=new Vec
 function sampleRemote(remote:RemoteCar,now:number):PoseSample|undefined{
   const samples=remote.samples;if(!samples.length)return;
   if(samples.length===1||!Number.isFinite(remote.offset))return samples[0];
-  // Draw where the car is now, not where it was: keep only a small buffer for network jitter and
-  // extrapolate past the newest pose. The old 150-700 ms buffer left cars 10-30 m behind at speed,
-  // so one driver could be on your bumper while you saw empty road.
-  const delay=Math.max(40,Math.min(160,remote.spread*.6+20)),target=now-remote.offset-delay;
+  // Pose times and `now` are both on the shared server clock, so the car is drawn where it is at this moment,
+  // minus a small jitter buffer, projecting past the newest pose to cover the network delay. Drawing at
+  // "newest pose" instead put every remote car one delivery delay behind, so each driver saw themselves ahead.
+  const delay=Math.max(25,Math.min(100,remote.spread*.4+20)),target=now-delay;
   const step=remote.lastFrame===undefined?0:now-remote.lastFrame;remote.lastFrame=now;
   if(remote.clock===undefined||Math.abs(target-remote.clock)>500)remote.clock=target;
   else remote.clock+=step*(1+Math.max(-.1,Math.min(.1,(target-remote.clock)/500)));
@@ -655,8 +737,8 @@ function sampleRemote(remote:RemoteCar,now:number):PoseSample|undefined{
   let i=samples.findIndex(sample=>sample.t>t);
   if(i===0)return samples[0];
   if(i<0){
-    // Past the newest pose: carry on along the last motion (position and turn rate) for up to 450 ms, then hold.
-    const a=samples.at(-2)!,b=samples.at(-1)!,span=Math.max(1,b.t-a.t),k=Math.min(450,t-b.t)/span;
+    // Past the newest pose: carry on along the last motion (position and turn rate) for up to 700 ms, then hold.
+    const a=samples.at(-2)!,b=samples.at(-1)!,span=Math.max(1,b.t-a.t),k=Math.min(700,t-b.t)/span;
     const q=sampleQuaternionA.set(a.q.x,a.q.y,a.q.z,a.q.w).slerp(sampleQuaternionB.set(b.q.x,b.q.y,b.q.z,b.q.w),1+Math.min(k,1.5));
     return {t,p:{x:b.p.x+(b.p.x-a.p.x)*k,y:b.p.y+(b.p.y-a.p.y)*k,z:b.p.z+(b.p.z-a.p.z)*k},q:{x:q.x,y:q.y,z:q.z,w:q.w}};
   }

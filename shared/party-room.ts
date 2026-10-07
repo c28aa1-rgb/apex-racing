@@ -15,7 +15,7 @@ export const settingsSchema = z.object({
 export const carSchema = z.object({ carId: z.enum(CAR_IDS) }).strict();
 export const createSchema = carSchema.extend({ settings: settingsSchema.partial().optional() });
 const vector = z.object({ x: z.number().finite().min(-100000).max(100000), y: z.number().finite().min(-100000).max(100000), z: z.number().finite().min(-100000).max(100000) }).strict();
-const poseSchema = z.object({ sequence: z.number().int().nonnegative(), t: z.number().finite().nonnegative().optional(), p: vector, q: vector.extend({ w: z.number().finite().min(-1).max(1) }).refine(q => Math.abs(Math.hypot(q.x, q.y, q.z, q.w) - 1) < .02), lap: z.number().int().min(1).max(99), checkpoint: z.number().int().min(0).max(1000), finished: z.boolean() }).strict();
+const poseSchema = z.object({ sequence: z.number().int().nonnegative(), t: z.number().finite().nonnegative().optional(), p: vector, q: vector.extend({ w: z.number().finite().min(-1).max(1) }).refine(q => Math.abs(Math.hypot(q.x, q.y, q.z, q.w) - 1) < .02), lap: z.number().int().min(1).max(99), checkpoint: z.number().int().min(0).max(1000), finished: z.boolean(), best: z.number().int().positive().max(3_600_000).optional() }).strict();
 export const updateSchema = z.object({ raceId: z.string().uuid(), ready: z.boolean(), pose: poseSchema.optional() }).strict();
 type Placement = { position: Vec3; heading: number };
 type CircuitConfig = { starts?: Record<string, Placement>; finishes?: Record<string, Placement>; checkpoints?: Record<string, Placement[]> };
@@ -28,7 +28,7 @@ const fail = (statusCode: number, message: string): never => { throw Object.assi
 export class Parties {
   private rooms = new Map<string, LiveLobby>();
   private membership = new Map<string, string>();
-  constructor(private now = Date.now) {}
+  constructor(private now = Date.now, private random = Math.random) {}
   exportState() { return [...this.rooms.values()].map(room => ({ ...this.snapshot(room), seen: [...room.seen] })); }
   restoreState(state: ReturnType<Parties['exportState']>) {
     this.rooms.clear(); this.membership.clear();
@@ -132,11 +132,14 @@ export class Parties {
     const track = trackById(room.settings.trackId)!, layout = PARTY_GRIDS[track.id as keyof typeof PARTY_GRIDS];
     const saved = config.starts?.[track.id];
     if (saved && (Math.hypot(saved.position.x - layout.anchor.position.x, saved.position.y - layout.anchor.position.y, saved.position.z - layout.anchor.position.z) > .1 || Math.abs(saved.heading - layout.anchor.heading) > .01)) return fail(409, 'This start position changed. Revalidate the eight grid slots before racing.');
+    const order = room.members.map((_, i) => i);
+    for (let i = order.length - 1; i > 0; i--) { const j = Math.floor(this.random() * (i + 1)); [order[i], order[j]] = [order[j], order[i]]; }
     room.race = { id: crypto.randomUUID(), createdAt: this.now(), startAt: null, ended: false,
       grid: layout.slots.map(p => placementGate(track, p)),
       checkpoints: config.checkpoints?.[track.id]?.length ? config.checkpoints[track.id].map(p => placementGate(track, p)) : structuredClone(track.checkpoints),
       finish: config.finishes?.[track.id] ? placementGate(track, config.finishes[track.id]) : structuredClone(track.finish),
-      racers: room.members.map((member, slot) => ({ ...member, slot, ready: false })),
+      // Grid order is drawn at random each race, so the host (who joined first) does not always start on pole.
+      racers: room.members.map((member, i) => ({ ...member, slot: order[i], ready: false })),
     };
     this.touch(room, player); room.revision++;
     return this.snapshot(room);

@@ -1,8 +1,11 @@
 import type { CarId } from './cars';
 import type { Gate, Vec3, Quat } from './tracks';
 
-/** t is the sender's clock in ms when the pose was taken; receivers use it to space interpolation samples. */
-export type PartyPose = { sequence: number; p: Vec3; q: Quat; lap: number; checkpoint: number; finished: boolean; t?: number };
+/**
+ * t is when the pose was taken, on the server's clock as the sender estimates it (both drivers share it, so each
+ * can place the other car at the same moment); best is the sender's fastest completed lap in ms.
+ */
+export type PartyPose = { sequence: number; p: Vec3; q: Quat; lap: number; checkpoint: number; finished: boolean; t?: number; best?: number };
 export type PartyRacer = PartyMember & { slot: number; ready: boolean; pose?: PartyPose; finishedAt?: number; disconnected?: boolean };
 export type PartyRace = {
   id: string; createdAt: number; startAt: number | null; ended: boolean;
