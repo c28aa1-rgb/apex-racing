@@ -9,6 +9,7 @@ import { fittedGates, GATE_STEP, type FittedGate } from '../shared/gates';
 import { buildRoadMesh, interpolateRoad, type RoadPoint } from '../shared/road';
 import { carById, DEFAULT_CAR, type CarId } from '../shared/cars';
 import { CarRig, prepareCarModel } from './car-rig';
+import { CarDamage } from './car-damage';
 import { FinishConfetti, SkidMarks, StartLight } from './race-effects';
 import { Sky } from 'three/addons/objects/Sky.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
@@ -48,6 +49,8 @@ export class RaceWorld {
   renderer: THREE.WebGLRenderer;
   scene = new THREE.Scene();
   skidMarks = new SkidMarks();
+  /** Cosmetic dents, smoke, sparks and debris on the player's car. */
+  carDamage = new CarDamage();
   startLight!: StartLight;
   finishConfetti = new FinishConfetti();
   weather = new Weather();
@@ -184,7 +187,7 @@ export class RaceWorld {
   private editorRaycaster = new THREE.Raycaster();
   constructor(canvas: HTMLCanvasElement, private cinematicActors=false) {
     this.canvas = canvas;
-    this.scene.add(this.skidMarks.mesh,this.finishConfetti.mesh,this.weather.group);
+    this.scene.add(this.skidMarks.mesh,this.finishConfetti.mesh,this.weather.group,this.carDamage.group);
     this.loader.setMeshoptDecoder(MeshoptDecoder);
     // Cockpit near clipping is 2.5 cm, while venues extend for kilometres.
     // A reversed depth buffer keeps distant road layers apart without writing
@@ -291,6 +294,8 @@ export class RaceWorld {
     this.renderRatio=Math.min(devicePixelRatio,next.renderScale);this.slowFrames=0;this.fastFrames=0;
     this.applyPixelRatio();
     this.renderer.shadowMap.enabled=next.shadows>0;
+    // Light presets (no shadows) get half the smoke, sparks and debris.
+    this.carDamage.detail=next.shadows>0?1:.5;
     this.shadow.castShadow=next.shadows>0;
     if(next.shadows>0&&this.shadow.shadow.mapSize.x!==next.shadows){
       this.shadow.shadow.map?.dispose();this.shadow.shadow.map=null;this.shadow.shadow.mapSize.set(next.shadows,next.shadows);
@@ -957,7 +962,7 @@ export class RaceWorld {
       this.tuneTextures(model);
       const legacy=model.userData.legacyCockpitEye;this.legacyCockpitEye=legacy?new THREE.Vector3(legacy.x,legacy.y,legacy.z):undefined;
       model.traverse(object=>{if(object instanceof THREE.Mesh){const materials=Array.isArray(object.material)?object.material:[object.material];object.castShadow=materials.some(m=>!m.transparent);object.receiveShadow=true;}});
-      this.car.clear();this.car.add(model);this.carRig=new CarRig(model,carById(carId));this.wheelGroups=this.carRig.wheels;
+      this.car.clear();this.car.add(model);this.carRig=new CarRig(model,carById(carId));this.wheelGroups=this.carRig.wheels;this.carDamage.attach(model);
       // Seat each model wheel where its physical tyre rests (hard point - 0.58 m rest length - radius): a few
       // models place a wheel a few centimetres off, which would otherwise float or sink that tyre.
       const physicalRadius=carById(carId).dimensions.wheelRadiusM;

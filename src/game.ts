@@ -223,7 +223,7 @@ export class Game {
       return;
     }
     this.world.applyPendingGraphics();
-    this.awaitingPedal=!countdown;this.bogUntil=0;this.reward=undefined;this.goAt=-Infinity;this.finishRevealAt=0;this.world.endFinish();this.world.skidMarks.clear();this.pendingShifts=0;this.seenBlockedShifts=0;this.runManual=this.settings.advancedDriving;
+    this.awaitingPedal=!countdown;this.bogUntil=0;this.reward=undefined;this.goAt=-Infinity;this.finishRevealAt=0;this.world.endFinish();this.world.skidMarks.clear();this.world.carDamage.reset();this.pendingShifts=0;this.seenBlockedShifts=0;this.runManual=this.settings.advancedDriving;
     this.keys.clear();this.garageView=false;this.cockpitPreview=false;this.inputs=[];this.steeringInputs=[];this.driftInputs=[];this.accumulator=0;this.lastCheckpoint=0;this.lastRespawns=0;this.previousFrame=undefined;this.queuedRespawn=false;this.queuedFlip=false;this.replayInput=undefined;
     if(this.state.track.kind!=='cones')this.runOrigin=undefined;
     this.sim.dispose();this.sim=new Simulation(this.state.track,this.state.car.id,this.runOrigin);this.sim.steeringStrength=this.steeringStrength;this.sim.driftStrength=this.driftStrength;
@@ -388,7 +388,7 @@ export class Game {
     await this.world.prewarm([this.world.venueGroup,this.world.trackGroup,this.world.car,this.world.startLight,...[...this.remoteCars.values()].map(remote=>remote.group)]);
     await new Promise<void>(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve())));
     if(this.partyRace?.id!==race.id)return;
-    this.partyRace.ready=true;this.partyLoadStep='';this.world.skidMarks.clear();this.world.chase(this.sim,0,true);
+    this.partyRace.ready=true;this.partyLoadStep='';this.world.skidMarks.clear();this.world.carDamage.reset();this.world.chase(this.sim,0,true);
     this.emit({trackReady:true,modelReady:true,time:me.finishedAt&&race.startAt?me.finishedAt-race.startAt:0});
   }
   syncParty(race:PartyRace,serverNow:number) {
@@ -578,6 +578,8 @@ export class Game {
     }
     this.sound.update(this.sim,['racing','replay','countdown','celebrating','finished'].includes(this.state.mode)||(this.state.mode==='party-finished'&&!!this.partyRace?.ready),this.state.muted,this.settings,!['celebrating','finished','party-finished'].includes(this.state.mode));
     this.world.skidMarks.update(this.sim,this.settings.skidMarks&&['racing','replay','paused','celebrating','finished'].includes(this.state.mode));
+    this.world.carDamage.reducedMotion=this.world.reducedMotion;
+    this.world.carDamage.update(this.sim,this.world.car,this.state.mode==='paused'?0:elapsed,this.settings.carDamage&&['racing','replay','paused','celebrating','finished','party-finished'].includes(this.state.mode));
     this.world.startLight.update(this.world.camera,this.state.mode==='countdown'?this.state.countdown:0,this.state.mode==='racing'?(now-this.goAt)/1000:Infinity,now/1000,this.world.reducedMotion,this.state.mode==='countdown'?(now-(this.countdownUntil-6500))/1000:Infinity);
     if(now-this.lastUI>65&&!['celebrating','finished'].includes(this.state.mode)){this.lastUI=now;const live:Partial<GameState>={time:this.partyRace?(this.state.mode==='party-finished'?this.state.time:this.partyRace.started?Math.max(0,Math.round(now-this.countdownUntil)):0):this.sim.timeMs,speed:Math.round(this.sim.speed*this.state.track.metersPerUnit*2.23694),checkpoint:this.sim.checkpoint,boost:this.sim.boosting,drifting:this.sim.drifting,...(this.noticeUntil&&now>this.noticeUntil&&this.state.mode==='racing'?{notice:''}:{})};
       // Menus and pauses re-render the whole interface; only do it when a shown value moved. Live driving modes always refresh for the RPM gauge.

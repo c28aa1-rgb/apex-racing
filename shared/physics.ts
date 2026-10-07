@@ -118,6 +118,8 @@ export class Simulation {
   wheelSurface: number[] = [-1, -1, -1, -1]; wallSpeed = 0; carHit = false; wallContact = false; suspensionJolt = 0;
   /** Rising-edge wall/car hits: hitCount increments once per impact (frames can span several ticks); lastHitSpeed is the speed change in m/s (about 6 for a bump, 20+ for a crash), lastHitWithCar says whether it was another driver's car. */
   hitCount = 0; lastHitSpeed = 0; lastHitWithCar = false;
+  /** World-space unit direction from the car toward what it touched: contactNormal for the strongest contact this tick, lastHitNormal for the last counted hit. Visual damage only. */
+  contactNormal = { x: 0, y: 0, z: 0 }; lastHitNormal = { x: 0, y: 0, z: 0 };
   private lastSuspension: number[] = [0, 0, 0, 0]; private quietTicks = 20;
   finishTicks = 0;
   driftStrength = 1;
@@ -782,24 +784,25 @@ export class Simulation {
   }
   /** Reads chassis contacts and suspension travel after a step, for sound only. */
   private readAudioSignals() {
-    let impulse = 0, withCar = false, touching = false;
+    let impulse = 0, withCar = false, touching = false, nx = 0, ny = 0, nz = 0;
     const chassis = this.car.collider(0);
     this.world.contactPairsWith(chassis, other => {
       const kinematic = other.parent()?.isKinematic() ?? false;
-      this.world.contactPair(chassis, other, manifold => {
+      this.world.contactPair(chassis, other, (manifold, flipped) => {
         const upright = Math.abs(manifold.normal().y);
         // Floor and road contacts are ignored; only sideways and frontal contacts count as hits.
         if (upright > .6) return;
         let sum = 0;
         for (let i = 0; i < manifold.numContacts(); i++) sum += manifold.contactImpulse(i);
         if (manifold.numContacts() > 0) touching = true;
-        if (sum > impulse) { impulse = sum; withCar = kinematic; }
+        if (sum > impulse) { impulse = sum; withCar = kinematic; const n = manifold.normal(), sign = flipped ? -1 : 1; nx = n.x * sign; ny = n.y * sign; nz = n.z * sign; }
       });
     });
     const speed = impulse / this.carSpec.physics.massKg * this.track.metersPerUnit;
     this.wallSpeed = speed; this.carHit = withCar; this.wallContact = touching;
+    if (impulse > 0) { this.contactNormal.x = nx; this.contactNormal.y = ny; this.contactNormal.z = nz; }
     // A bounce re-touches within a few ticks; only count a new hit after about a third of a second of calm contact.
-    if (speed > 2 && this.quietTicks >= 20) { this.hitCount++; this.lastHitSpeed = speed; this.lastHitWithCar = withCar; }
+    if (speed > 2 && this.quietTicks >= 20) { this.hitCount++; this.lastHitSpeed = speed; this.lastHitWithCar = withCar; Object.assign(this.lastHitNormal, this.contactNormal); }
     this.quietTicks = speed < .5 ? this.quietTicks + 1 : 0;
     let jolt = 0;
     for (let i = 0; i < 4; i++) {
