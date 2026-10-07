@@ -136,7 +136,7 @@ export class RaceWorld {
   set firstPerson(value: boolean) { if (value) this.cameraMode = 'cockpit'; else if (this.cameraMode === 'cockpit') this.cameraMode = 'chase'; }
   private lookInputAt = -Infinity;
   /** Chase rig state: camera and aim offsets from the car, spring velocities, and smoothed motion cues. */
-  private rig = { offset: new THREE.Vector3(), offsetVelocity: new THREE.Vector3(), aim: new THREE.Vector3(), aimVelocity: new THREE.Vector3(),
+  private rig = { yaw: 0, yawVelocity: 0, offset: new THREE.Vector3(), offsetVelocity: new THREE.Vector3(), aim: new THREE.Vector3(), aimVelocity: new THREE.Vector3(),
     velocity: new THREE.Vector3(), accel: new THREE.Vector3(), roll: 0, fov: 58, shake: 0, hits: 0, time: 0, ready: false,
     /** Stabilisation: the point the camera follows (height filtered), its smoothed heading, and a smoothed car orientation for interior views. */
     anchor: new THREE.Vector3(), heading: new THREE.Vector3(0, 0, 1), carQ: new THREE.Quaternion(), stable: false };
@@ -363,9 +363,12 @@ export class RaceWorld {
   private racePointerMove = (event: PointerEvent) => {
     const locked=document.pointerLockElement===this.canvas;
     if((!this.lookDrag&&!locked)||!this.mouseLookEnabled||this.lookLocked||this.editorActive)return;
-    const dx=locked?event.movementX:event.clientX-this.lookDrag!.x,dy=locked?event.movementY:event.clientY-this.lookDrag!.y;this.lookDrag={x:event.clientX,y:event.clientY};
-    this.lookYaw=THREE.MathUtils.euclideanModulo(this.lookYaw+dx*.0055*this.sensitivity+Math.PI,Math.PI*2)-Math.PI;
-    this.lookPitch=THREE.MathUtils.clamp(this.lookPitch-dy*.0042*this.sensitivity,-.65,.45);this.lookInputAt=performance.now();event.preventDefault();
+    // Half the old speed, and one event can move at most 60 px, so a flick or a pointer-lock spike never whips the view round.
+    const clamp=(v:number)=>Math.max(-60,Math.min(60,v));
+    const dx=clamp(locked?event.movementX:event.clientX-this.lookDrag!.x),dy=clamp(locked?event.movementY:event.clientY-this.lookDrag!.y);this.lookDrag={x:event.clientX,y:event.clientY};
+    // Mouse right looks right. Positive yaw turns the camera to the car's left, hence the subtraction.
+    this.lookYaw=THREE.MathUtils.euclideanModulo(this.lookYaw-dx*.0028*this.sensitivity+Math.PI,Math.PI*2)-Math.PI;
+    this.lookPitch=THREE.MathUtils.clamp(this.lookPitch-dy*.0022*this.sensitivity,-.65,.45);this.lookInputAt=performance.now();event.preventDefault();
   };
   private racePointerUp = () => {if(!this.lookDrag)return;this.lookDrag=undefined;this.canvas.style.cursor=this.mouseLookEnabled?'grab':'';};
   private buildEditorMarker() {
@@ -1156,11 +1159,22 @@ export class RaceWorld {
     const preset=this.cameraMode==='far'?{distance:15,height:6.4,look:9,stiffness:3.6,aim:7}:this.cameraMode==='drone'?{distance:15,height:21,look:10,stiffness:1.9,aim:3.2}:{distance:9.2,height:3.2,look:6.5,stiffness:5.2,aim:9};
     const zoom=options.distance,pull=still?0:Math.min(speedMps*.032,2.4);
     const distance=(preset.distance+pull)*zoom,height=Math.max(1.2,(preset.height-Math.min(speedMps*.01,.6))*zoom);
-    const yaw=this.lookYaw,pitch=this.lookPitch;
+    const pitch=this.lookPitch;
     // Accelerating lets the car pull away a little; braking lets the camera close in. Bounded, so it never loses the car.
     const surge=still?0:THREE.MathUtils.clamp(-rig.accel.dot(heading)*.09,-1.6,1.4);
-    const desired=new THREE.Vector3().addScaledVector(heading,-Math.cos(yaw)*(distance+surge)).addScaledVector(right,-Math.sin(yaw)*distance).addScaledVector(up,height-Math.sin(pitch)*distance*.6);
-    const aim=new THREE.Vector3().addScaledVector(heading,preset.look+Math.min(speedMps*.08,5)).addScaledVector(up,1.15);
+    // The look angle is smoothed on its own, and applied as a rotation about the car after the position spring,
+    // so looking around swings the camera along a circle. Springing the position directly cut a straight chord through the car.
+    const wrap=(a:number)=>Math.atan2(Math.sin(a),Math.cos(a));
+    if(snap||!rig.ready||dt>.1){rig.yaw=this.lookYaw;rig.yawVelocity=0;}
+    else{
+      const goal=rig.yaw+wrap(this.lookYaw-rig.yaw),omega=9,steps=Math.ceil(dt/(1/120)),h=dt/steps;
+      for(let i=0;i<steps;i++){rig.yawVelocity=(rig.yawVelocity+(goal-rig.yaw)*omega*omega*h)*Math.max(0,1-2*omega*h);rig.yaw+=rig.yawVelocity*h;}
+      rig.yaw=wrap(rig.yaw);
+    }
+    const desired=new THREE.Vector3().addScaledVector(heading,-(distance+surge)).addScaledVector(up,height-Math.sin(pitch)*distance*.6);
+    // Aim well ahead when behind the car, drawing in to the car itself as the camera comes round to its side.
+    const ahead=(preset.look+Math.min(speedMps*.08,5))*Math.max(0,Math.cos(rig.yaw));
+    const aim=new THREE.Vector3().addScaledVector(heading,ahead).addScaledVector(up,1.15);
     if(snap||!rig.ready||dt>.1){rig.offset.copy(desired);rig.aim.copy(aim);rig.offsetVelocity.set(0,0,0);rig.aimVelocity.set(0,0,0);rig.ready=true;}
     else{
       // Critically damped springs: the offset swings wide through corners and settles without overshoot.
@@ -1171,7 +1185,9 @@ export class RaceWorld {
       spring(rig.offset,rig.offsetVelocity,desired,preset.stiffness+Math.min(speedMps*.04,2.5));
       spring(rig.aim,rig.aimVelocity,aim,preset.aim);
     }
-    this.camera.position.copy(rig.anchor).add(rig.offset);
+    // Rotate the sprung offset about the vertical axis by the smoothed look angle (positive turns toward the car's left).
+    const sin=Math.sin(rig.yaw),cos=Math.cos(rig.yaw),o=rig.offset;
+    this.camera.position.set(rig.anchor.x+o.x*cos+o.z*sin,rig.anchor.y+o.y,rig.anchor.z+o.z*cos-o.x*sin);
     // Keep the camera above the ground it is looking across.
     this.camera.position.y=Math.max(this.camera.position.y,this.car.position.y+.9);
     this.cameraTarget.copy(rig.anchor).add(rig.aim);

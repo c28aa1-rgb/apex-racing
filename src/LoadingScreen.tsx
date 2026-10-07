@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion, useMotionValue, useReducedMotion } from 'framer-motion';
 import { assetUrl } from '../shared/assets';
+import { loadSettings } from './settings';
+import { read } from './storage';
 
 /** Trailer clips shown while the game boots. Captions name what is on screen. */
 const CLIPS = [
@@ -36,6 +38,37 @@ function along(steps: [number, number][], t: number) {
 const ease = [.2, .8, .2, 1] as const;
 const src = (id: string, ext: 'mp4' | 'jpg') => assetUrl(`video/loading/${id}.${ext}`);
 
+const MUSIC_EXT = (() => { try { return document.createElement('audio').canPlayType('audio/ogg; codecs="vorbis"') ? 'ogg' : 'm4a'; } catch { return 'ogg'; } })();
+
+/**
+ * Menu soundtrack for the boot screen. Browsers only allow sound after a click or key press, so it
+ * tries to start straight away and otherwise starts on the first one. Respects the saved music volume
+ * and mute. Fades out when `leaving` turns true; the menu's own music fades in as the screen wipes away.
+ */
+function useLoadingMusic(leaving: boolean) {
+  const audio = useRef<HTMLAudioElement | undefined>(undefined);
+  useEffect(() => {
+    const settings = loadSettings(), level = settings.volume * settings.musicVolume * .6;
+    if (read('muted', false) || level <= 0) return;
+    const el = audio.current = new Audio(); if (import.meta.env.DEV) (window as unknown as { __loadingAudio?: HTMLAudioElement }).__loadingAudio = el; el.volume = Math.min(1, level * 1.6); let live = true, tracks: string[] = [];
+    const next = () => { if (tracks.length) el.src = assetUrl(`audio/music/${tracks[Math.floor(Math.random() * tracks.length)]}.${MUSIC_EXT}`); };
+    const play = () => { void el.play().then(() => { for (const e of ['pointerdown', 'keydown'] as const) removeEventListener(e, play, true); }).catch(() => {}); };
+    el.addEventListener('ended', () => { next(); play(); });
+    el.addEventListener('error', () => { if (live) { next(); play(); } });
+    fetch(assetUrl('audio/music/playlist.json')).then(r => r.ok ? r.json() : []).then((list: { file?: string }[]) => {
+      if (!live) return; tracks = list.map(t => t.file).filter((f): f is string => typeof f === 'string'); next(); play();
+    }).catch(() => {});
+    for (const e of ['pointerdown', 'keydown'] as const) addEventListener(e, play, true);
+    return () => { live = false; for (const e of ['pointerdown', 'keydown'] as const) removeEventListener(e, play, true); el.pause(); el.removeAttribute('src'); };
+  }, []);
+  useEffect(() => {
+    const el = audio.current; if (!leaving || !el) return;
+    const from = el.volume, start = performance.now(); let frame = 0;
+    const fade = () => { const k = Math.min(1, (performance.now() - start) / 700); el.volume = from * (1 - k); if (k < 1) frame = requestAnimationFrame(fade); };
+    frame = requestAnimationFrame(fade); return () => cancelAnimationFrame(frame);
+  }, [leaving]);
+}
+
 /** Random order every visit, never opening on the clip that opened the previous visit. */
 function shuffled() {
   const order = CLIPS.map((_, i) => i);
@@ -60,6 +93,7 @@ export function LoadingScreen({ ready, onContinue }: { ready: Promise<unknown>; 
   const fill = useMotionValue(0);
   const [percent, setPercent] = useState(0);
   const [leaving, setLeaving] = useState(false);
+  useLoadingMusic(leaving);
   const clip = CLIPS[order[slot % order.length]], next = CLIPS[order[(slot + 1) % order.length]];
   const done = booted && percent >= 100;
 
