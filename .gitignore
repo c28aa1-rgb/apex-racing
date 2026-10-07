@@ -10,8 +10,7 @@ test-results/
 .wrangler/
 .env.local
 
-# Commercial soundtrack tracks for personal use; never commit or deploy these.
-public/audio/music/
+# Source audio stays local. The menu soundtrack in public/audio/music/ is committed on purpose.
 audio-src/
 
 # Local diagnostics and source-model backups; runtime models stay versioned.

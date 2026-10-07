@@ -1,4 +1,4 @@
-// A Pages artifact contains runtime assets, not local source models or personal music.
+// A Pages artifact contains runtime assets, not local source models. The menu soundtrack ships with it on purpose.
 import { rmSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -9,7 +9,6 @@ execFileSync(process.execPath, ['node_modules/vite/bin/vite.js', 'build', '--mod
   stdio: 'inherit',
   env: { ...process.env, VITE_MULTIPLAYER_BACKEND: 'cloudflare', VITE_MULTIPLAYER_URL: process.env.VITE_MULTIPLAYER_URL ?? 'https://apex-multiplayer.c28aa1-rgb.workers.dev' },
 });
-rmSync('dist/audio/music', { recursive: true, force: true });
 for (const folder of ['cars', 'tracks']) {
   for (const file of readdirSync(`dist/models/${folder}`)) {
     if (file.endsWith('.glb') && (folder === 'cars' || !file.endsWith('.clean.glb'))) rmSync(`dist/models/${folder}/${file}`);

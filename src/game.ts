@@ -12,6 +12,7 @@ import { CAR_ACCENT, awardFinish, buyCar, loadCareer, saveCareer, unlocked, type
 import { keyLabel, type Action } from './controls';
 import { Quaternion, Vector3 } from 'three';
 import { FinishDriver } from './finish-driver';
+import { CarRig } from './car-rig';
 import type { PartyLobby, PartyPose, PartyRace, PartyWeather } from '../shared/party';
 import { Group, CanvasTexture, Sprite, SpriteMaterial } from 'three';
 
@@ -373,12 +374,12 @@ export class Game {
     for(const racer of race.racers.filter(r=>r.id!==selfId)) {
       const model=await this.world.partyModel(racer.carId);
       if(this.partyRace?.id!==race.id)return;
-      const group=new Group();group.add(model);
+      const group=new Group();group.add(model);const rig=new CarRig(model,carById(racer.carId));
       const label=document.createElement('canvas');label.width=512;label.height=64;
       const context=label.getContext('2d')!;context.fillStyle='#132127';context.fillRect(0,0,512,64);context.font='bold 32px sans-serif';context.textAlign='center';context.fillStyle='#ffffff';context.fillText(racer.nickname,256,44,480);
       const sprite=new Sprite(new SpriteMaterial({map:new CanvasTexture(label),depthTest:false}));sprite.scale.set(4,.5,1);sprite.position.y=2.4;group.add(sprite);
       const gate=race.grid[racer.slot];group.position.copy(gate.position);group.position.y+=.8;group.quaternion.copy(gate.rotation);
-      this.world.scene.add(group);this.remoteCars.set(racer.id,{group,carId:racer.carId,sequence:-1,samples:[],offset:Infinity,interval:120,spread:120});
+      this.world.scene.add(group);this.remoteCars.set(racer.id,{group,rig,wheels:{speed:0,steer:0,brake:0},carId:racer.carId,sequence:-1,samples:[],offset:Infinity,interval:120,spread:120});
     }
     // Ready means this screen can show the grid: compile every shader and upload every mesh first,
     // then let two frames draw. The server holds the lights until every driver reports ready.
@@ -422,12 +423,32 @@ export class Game {
     else{const at=this.spectating?ids.indexOf(this.spectating):-1;this.spectating=ids[((at<0?(step>0?-1:0):at)+step+ids.length)%ids.length];}
     this.spectateSnap=true;this.world.resetMouseLook();this.emit();
   }
+  /**
+   * Spins, steers and lights another driver's car from its drawn motion: wheel spin from forward travel,
+   * steering from turn rate (bicycle model, as in the physics), brake lamps from hard deceleration.
+   */
+  private animateRemoteWheels(remote:RemoteCar,dt:number) {
+    const {group,rig,wheels}=remote,spec=carById(remote.carId),mpu=this.state.track.metersPerUnit;
+    const forward=remoteForward.set(0,0,1).applyQuaternion(group.quaternion);
+    let travel=0,steer=0;
+    if(wheels.last&&wheels.heading){
+      const moved=remoteDelta.subVectors(group.position,wheels.last);
+      travel=moved.dot(forward);if(Math.abs(travel)*mpu>8)travel=0; // a respawn teleport, not driving
+      const before=wheels.speed;wheels.speed+=(Math.abs(travel)*mpu/dt-wheels.speed)*(1-Math.exp(-dt*8));
+      const turn=remoteTurnDelta.copy(wheels.heading).invert().multiply(group.quaternion),yawRate=2*Math.atan2(turn.y,turn.w)/dt;
+      if(wheels.speed>1)steer=Math.max(-spec.physics.steerAngle,Math.min(spec.physics.steerAngle,Math.atan(yawRate*spec.dimensions.wheelbaseM/wheels.speed)*Math.sign(travel||1)));
+      const decel=(before-wheels.speed)/dt;wheels.brake+=((decel>6&&travel>0?1:0)-wheels.brake)*(1-Math.exp(-dt*10));
+    }
+    wheels.steer+=(steer-wheels.steer)*(1-Math.exp(-dt*9));
+    (wheels.last??=new Vector3()).copy(group.position);(wheels.heading??=new Quaternion()).copy(group.quaternion);
+    rig.animate(wheels.steer,travel,wheels.brake);
+  }
   endParty() {
     this.sound.update(this.sim,false,this.state.muted,this.settings);this.partyPlace=undefined;this.partyFinishedAt=0;this.world.endFinish();
     this.spectating=undefined;
     for(const [id,remote] of this.remoteCars)this.sim.setObstacle(id,remote.carId,undefined);this.partyFinishDriver=undefined;
     this.partyRace=undefined;this.partyWeather=undefined;this.keys.clear();
-    for(const {group} of this.remoteCars.values()){this.world.scene.remove(group);group.traverse(object=>{if(object instanceof Sprite){object.material.map?.dispose();object.material.dispose();}});}
+    for(const {group,rig} of this.remoteCars.values()){rig.dispose();this.world.scene.remove(group);group.traverse(object=>{if(object instanceof Sprite){object.material.map?.dispose();object.material.dispose();}});}
     this.remoteCars.clear();this.world.setWeather(this.settings.weather);
     const original=this.partyOriginalTrack;this.partyOriginalTrack=undefined;this.menu();
     if(original)void this.select(original);
@@ -488,7 +509,8 @@ export class Game {
     requestAnimationFrame(this.frame);this.worstFrame=Math.max(this.worstFrame,now-this.previous);const elapsed=Math.min((now-this.previous)/1000,.05);this.previous=now;
     this.sound.frame(this.state.mode==='menu',this.state.muted,this.settings);
     // Static home previews do not need a WebGL render loop. Garage and the editor still render in 3D.
-    if(this.state.mode==='menu'&&!this.garageView&&!this.editorView&&!this.cockpitPreview&&!this.authoring){this.fpsTime=now;this.frameCount=0;return;}
+    // The engine is still told it is idle, or leaving a race from the pause menu leaves it droning.
+    if(this.state.mode==='menu'&&!this.garageView&&!this.editorView&&!this.cockpitPreview&&!this.authoring){this.fpsTime=now;this.frameCount=0;this.sound.update(this.sim,false,this.state.muted,this.settings);return;}
     if(this.partyView){this.fpsTime=now;this.frameCount=0;this.sound.update(this.sim,false,this.state.muted,this.settings);return;}
     if(this.world.lookLocked&&now>=this.lookUnlockAt)this.world.lookLocked=false;
     if(now-this.fpsTime>1000){this.state={...this.state,fps:Math.round(this.frameCount*1000/(now-this.fpsTime)),worstFrame:Math.round(this.worstFrame)};this.worstFrame=0;this.world.adaptResolution(this.state.fps);this.frameCount=0;this.fpsTime=now;this.watchFrameRate(now);}
@@ -570,6 +592,7 @@ export class Game {
         const jump=Math.hypot(pose.p.x-group.position.x,pose.p.y-group.position.y,pose.p.z-group.position.z),blend=jump>8?1:1-Math.exp(-elapsed*20);
         group.position.lerp(remoteTarget.set(pose.p.x,pose.p.y,pose.p.z),blend);group.quaternion.slerp(remoteTurn.set(pose.q.x,pose.q.y,pose.q.z,pose.q.w),blend);
       }
+      if(group.visible&&elapsed>0)this.animateRemoteWheels(remote,elapsed);
       // Finished drivers keep rolling for a moment on their screens, then fade out here and stop being solid.
       if(remote.finishedAt!==undefined&&group.visible){
         const opacity=1-Math.min(1,Math.max(0,((now-remote.finishedAt)/1000-2.5)/1.5));
@@ -592,6 +615,8 @@ export class Game {
 const fromQuaternion=new Quaternion(),toQuaternion=new Quaternion();
 type PoseSample={t:number;p:Vec3;q:{x:number;y:number;z:number;w:number}};
 type RemoteCar={group:Group;carId:CarId;target?:Frame;sequence:number;samples:PoseSample[];
+  /** Wheel, steering and brake-lamp rig; poses carry no inputs, so these are inferred from the drawn motion. */
+  rig:CarRig;wheels:{last?:Vector3;heading?:Quaternion;speed:number;steer:number;brake:number};
   /** Smallest (receipt time - sender time) seen: maps the sender's clock onto ours with the least network delay. */
   offset:number;
   /** Smoothed spacing between the sender's poses, in ms. */
@@ -612,7 +637,7 @@ function addSample(remote:RemoteCar,pose:{p:Vec3;q:{x:number;y:number;z:number;w
   remote.samples.push({t,p:pose.p,q:pose.q});if(remote.samples.length>12)remote.samples.shift();
 }
 const sampleQuaternionA=new Quaternion(),sampleQuaternionB=new Quaternion(),remoteTurn=new Quaternion();
-const remoteTarget=new Vector3();
+const remoteTarget=new Vector3(),remoteForward=new Vector3(),remoteDelta=new Vector3(),remoteTurnDelta=new Quaternion();
 /** Catmull-Rom position and slerped rotation at (now - delay) on the sender's clock; brief extrapolation if packets are late. */
 function sampleRemote(remote:RemoteCar,now:number):PoseSample|undefined{
   const samples=remote.samples;if(!samples.length)return;
