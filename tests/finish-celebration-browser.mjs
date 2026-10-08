@@ -1,4 +1,5 @@
 import { chromium } from '@playwright/test';
+import { gameUrl, gameReady } from './browser-page.mjs';
 import assert from 'node:assert/strict';
 import { mkdir } from 'node:fs/promises';
 
@@ -8,8 +9,8 @@ const page=await browser.newPage({viewport:{width:1440,height:900}});
 const errors=[];
 page.on('pageerror',error=>errors.push(error.message));
 try{
-  await page.goto(process.env.GAME_URL??'http://127.0.0.1:5173/');
-  await page.waitForFunction(()=>window.__apex?.state.modelReady&&window.__apex?.state.trackReady);
+  await page.goto(gameUrl('/'));
+  await gameReady(page);
   const started=await page.evaluate(()=>{
     const game=window.__apex,cues=[];
     game.setSettings({pointerLock:false,reducedMotion:false});game.start(false);

@@ -1,4 +1,5 @@
 import {chromium} from '@playwright/test';
+import {gameUrl,gameReady} from './browser-page.mjs';
 import {createCanvas,loadImage} from '@napi-rs/canvas';
 import {mkdir} from 'node:fs/promises';
 import assert from 'node:assert/strict';
@@ -8,7 +9,7 @@ const page=await browser.newPage({viewport:{width:1440,height:900}}),errors=[];
 page.on('pageerror',e=>errors.push(e.message));
 page.on('console',m=>{if(m.type()==='error')errors.push(m.text());});
 try{
-  await page.goto('http://127.0.0.1:5173/');await page.waitForFunction(()=>window.__apex?.state.modelReady);
+  await page.goto(gameUrl('/'));await gameReady(page,{track:false});
   await page.evaluate(()=>{const g=window.__apex;g.frame=()=>{};g.setSettings({pointerLock:false});document.getElementById('app').style.display='none';});
   const ids=await page.evaluate(async()=>(await import('/shared/cars.ts')).CAR_IDS);
   for(const id of ids){

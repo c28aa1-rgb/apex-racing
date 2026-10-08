@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import { chromium } from '@playwright/test';
+import { gameUrl, gameReady } from './browser-page.mjs';
 
 const carId=process.argv[2]??'nascar-camry';
 const browser=await chromium.launch({channel:'chrome',headless:true});
 try{
   const page=await browser.newPage({viewport:{width:1280,height:800}});
-  await page.goto('http://127.0.0.1:5173/');
-  await page.waitForFunction(()=>window.__apex?.state.modelReady&&window.__apex.state.trackReady);
+  await page.goto(gameUrl('/'));
+  await gameReady(page);
   const result=await page.evaluate(async carId=>{
     const game=window.__apex;
     const {TRACKS,orientation}=await import('/shared/tracks.ts');
@@ -15,7 +16,7 @@ try{
     const forward={x:.05,y:0,z:-.99875};
     track.spawn={...track.start,position:{x:810.5,y:.75,z:-450},forward,rotation:orientation(forward)};
     game.frame=()=>{};
-    await game.select(track);
+    await game.select(track, true);
     await game.selectCar(carId);
     game.start(false);
     const sim=game.sim,world=game.world;

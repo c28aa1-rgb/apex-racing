@@ -23,33 +23,39 @@ Open http://127.0.0.1:5173. Dependencies are already installed in this delivered
 | S / Down | Progressive braking, then reverse at a stop |
 | A D / Left Right | Smooth, speed-sensitive steering |
 | Left Shift | Hold for extra drift; strength increases with speed and steering |
+| E / Q | Shift up / down (with Advanced driving's manual gearbox on) |
 | R | Restart immediately |
 | C | Recover at the last checkpoint; time continues |
 | Escape | Pause / resume |
 | Enter | Start a race |
 | G / M | Toggle ghost / sound |
-| V | Toggle chase / driver-height first-person camera |
+| V (tap) | Next camera: Chase, Far chase, Bumper, Cockpit, Drone |
+| V (hold) | Camera wheel: point the mouse at a view, release V to switch |
+| B (hold) | Look behind |
+| Mouse / wheel | Look around / zoom the chase cameras |
 | F | Flip upright below 16 mph |
 
-In the garage, drag across the car to orbit horizontally and change viewing elevation. Rotation buttons and Reset view are also available. First-person mode uses the modeled cockpit and detected driver-seat position; `/dev` provides per-car camera adjustments. Interior detail and visibility depend on the supplied model.
+The camera choice is remembered, and Settings lists every view. In the garage, drag across the car to orbit horizontally and change viewing elevation. Rotation buttons and Reset view are also available. First-person mode uses the modeled cockpit and detected driver-seat position; `/dev` provides per-car camera adjustments. Interior detail and visibility depend on the supplied model.
 
 Pass the timing checkpoints in order and complete the lap. Each checkpoint is painted across the asphalt as a teal band and the finish as a checkered line. Their triggers are measured from the venue's collision mesh and span the whole drivable width between barriers, including grass and run-off, so no line past a marking can miss it (`shared/gates.ts`). Finish times and best input replays are saved on this device, and the best one races alongside you as the personal ghost (G toggles it). Custom layouts recorded in `/dev` keep their own personal best and ghost, keyed to that exact start, checkpoint and finish layout. Choose a nickname to submit a run. Leaderboard ghost buttons let you race another driver's verified run. Losing browser storage loses the anonymous identity; there is no account recovery or cross-device sign-in.
+
+### Car damage
+
+Crashes are cosmetic only: wall and car hits dent the bodywork on the side that was struck, scuff the paint to bare metal, scratch the flank you scrape along a wall, throw sparks, and shake loose pieces of bodywork. A badly beaten car smokes from the bonnet, getting darker as damage builds. Damage resets on restart. It never touches the physics, so handling, ghosts, replays and leaderboard times are unaffected. Turn it off under Settings → Car damage; light graphics presets show half the smoke and debris. Implementation: `src/car-damage.ts`.
 
 ## Parties
 
 Two backends are available: the existing Node HTTP API (default), and Cloudflare Workers + one Durable Object per room with native WebSockets. See [multiplayer setup, testing, and deployment](docs/multiplayer.md) for exact commands and configuration.
 
-The **Party** tab opens a 3D parking paddock. Create a lobby or join with its six-character code, then choose your car. The host controls circuit, weather, laps (1-99), and capacity (2-8). Other drivers see these settings and everyone's car and name. The host starts the race; all drivers load before a shared countdown. Each driver gets a distinct starting slot, sees the other cars and names, and races the selected number of laps. The host can cancel or return everyone to the lobby after results.
+The **Party** tab opens a 3D parking paddock. Create a lobby or join with its six-character code, then choose your car. The host controls circuit, weather, laps (1-99), and capacity (2-8). Other drivers see these settings and everyone's car and name. The host starts the race; all drivers load before a shared countdown. Grid slots are drawn at random each race, so the host does not always start on pole. Press the throttle as the lights go out: holding it through the countdown is a jump start, which bogs the engine for 2.5 seconds (the HUD warns while it is held and shows the penalty). The top-left standings show live positions (P1, P2, …) from lap, checkpoint and distance to the next gate, and the results list every driver's best lap, with the fastest highlighted. The host can cancel or return everyone to the lobby after results.
 
-Lobby state is shared by clients connected to the same API process, refreshing every two seconds while the party is open. Driving updates run at up to 10 Hz, with interpolated remote cars. This is casual, client-authoritative, non-contact racing: cars pass through one another, finish times use server receipt time, and party races never award career REP or enter verified leaderboards. A loading session times out after three minutes; running races have a one-hour limit. Disconnected racers become DNF after 20 seconds without presence. Lobby members expire after two minutes. Leaving transfers hosting to the next driver. Refreshing and reopening Party restores a running driver's last position and progress. In Node mode, all lobbies disappear when the API restarts, and multiple Node instances require shared party storage. Cloudflare mode isolates rooms in Durable Objects and preserves metadata through hibernation.
+Lobby state is shared by clients connected to the same API process, refreshing every two seconds while the party is open. Each driver sends a position with every race reply (about every 50 ms plus the round trip). Clients estimate the server clock from their quickest round trips, stamp positions and the start lights with it, and draw other cars where they are now, projecting forward over the network delay; without this, each screen showed the other car a delay behind and both drivers saw themselves ahead. Cars are solid to each other. This is casual, client-authoritative racing: finish times use server receipt time, and party races never award career REP or enter verified leaderboards. A loading session times out after three minutes; running races have a one-hour limit. Disconnected racers become DNF after 20 seconds without presence. Lobby members expire after two minutes. Leaving transfers hosting to the next driver. Refreshing and reopening Party restores a running driver's last position and progress. In Node mode, all lobbies disappear when the API restarts, and multiple Node instances require shared party storage. Cloudflare mode isolates rooms in Durable Objects and preserves metadata through hibernation.
 
 Run focused checks with `node --import tsx --test tests/party.test.ts tests/party-race.test.ts`. Grid data lives in `shared/party-grids.ts`. With the API running, `node --import tsx design/build-party-grids.ts` rebuilds all eight-slot layouts and checks 2.5 m by 6.1 m footprints against the collision geometry. Inspect markings and barriers at `/tests/grid-inspection.html`. Moving a saved first start invalidates the party grid until it is rebuilt and visually checked. Daytona uses a shallow stagger because its saved start is on a narrow lane.
 
 The development-only `/tests/party-driving.html` page adds a three-second throttle button for repeatable checks through the real keyboard, physics, and network path. To test independent local driver identities, use `127.0.0.1:5173` and `localhost:5173`. Remote devices need a reachable deployment of the same app/API; a localhost link does not work on another device.
 
 **Same Wi-Fi test:** on the host Mac run `DATA_DIR=work/party-preview-db npm run dev:lan`, find its address with `ipconfig getifaddr en0`, and open `http://<that address>:5173` on every device. Vite listens on all interfaces and proxies `/api` to the local API, so only port 5173 must be reachable. Each browser keeps its own driver identity.
-
-Local dependency note (October 3): installing Wrangler and Workers types created a normal local `node_modules` installation and updated the lockfile. The prior dependency cache and `node_modules.cloud-backup-20260930` remain available.
 
 Local database note (September 28): the existing `work/leaderboard-db` cannot start because its WAL and control file identify different database systems. Its files and existing backup directories were preserved. The current preview API uses the separate `work/party-preview-db` directory. To use that preview database with the normal development command, run `DATA_DIR=work/party-preview-db npm run dev` after stopping the current servers. This is not a recovery of the old leaderboard.
 
@@ -114,9 +120,11 @@ Authenticated requests use `Authorization: Bearer <token>`. A run contains `trac
 
 ## Hosting
 
-This delivery runs locally; it has not been published to the internet. Deploy the Node service and PostgreSQL together behind HTTPS. Set `DATABASE_URL`, `HOST=0.0.0.0`, and your platform's `PORT`; run `npm ci`, `npm run build`, then `npm start`. The server initializes its two tables and ranking index at startup. Configure database backups in the hosting provider. A split static client deployment must proxy `/api` to this service.
+The live game is a static build on GitHub Pages (`npm run build:pages`, deployed by `.github/workflows/pages.yml` on every push to `main`). Party races and the casual leaderboard run on the Cloudflare Worker (`npm run deploy:cloudflare`). When a change touches the party message format in `shared/party-room.ts`, deploy the Worker before pushing the client: the Worker rejects fields it does not know.
 
-The embedded local database is intended for a single-process local server. Use hosted PostgreSQL for multiple server instances. Public deployment, accounts and live multiplayer are not enabled. The local `/dev` editor should not be exposed publicly without access control.
+To host the replay-verified Node backend instead, deploy the Node service and PostgreSQL together behind HTTPS. Set `DATABASE_URL`, `HOST=0.0.0.0`, and your platform's `PORT`; run `npm ci`, `npm run build`, then `npm start`. The server initializes its two tables and ranking index at startup. Configure database backups in the hosting provider. A split static client deployment must proxy `/api` to this service.
+
+The embedded local database is intended for a single-process local server. Use hosted PostgreSQL for multiple server instances. There are no accounts; drivers are anonymous tokens stored in the browser. The local `/dev` editor should not be exposed publicly without access control.
 
 ## Design assets
 

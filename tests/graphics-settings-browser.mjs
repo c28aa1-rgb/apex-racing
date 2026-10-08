@@ -1,13 +1,14 @@
 // Graphics presets and custom options: `node tests/graphics-settings-browser.mjs` (needs `npm run dev`).
 import assert from 'node:assert/strict';
 import { chromium } from '@playwright/test';
+import { gameUrl, gameReady } from './browser-page.mjs';
 const browser = await chromium.launch({ channel: 'chrome', headless: true, args: ['--use-angle=metal', '--enable-gpu'] });
 try {
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
   const errors = []; page.on('pageerror', e => errors.push(e.message)); page.on('console', m => { if (m.type() === 'error') errors.push(m.text()); });
-  await page.goto('http://127.0.0.1:5173/');
+  await page.goto(gameUrl('/'));
   await page.evaluate(() => localStorage.clear()); await page.reload();
-  await page.waitForFunction(() => window.__apex?.state.modelReady);
+  await gameReady(page,{track:false});
   const expected = { lowest: [.6, false, 0, 1400], performance: [.85, false, 0, 1800], balanced: [1, true, 0, 2600], high: [1.25, true, 0, 3600], cinematic: [1.25, true, 0, 5000] };
   const dpr = await page.evaluate(() => devicePixelRatio);
   for (const [id, [ratio, shadows, passes, fogFar]] of Object.entries(expected)) {
@@ -31,7 +32,7 @@ try {
   await page.evaluate(() => window.__apex.setGraphics({ drawDistance: 1000 }));
   assert.equal(await page.evaluate(() => { const w = window.__apex.world; w.wideView = false; w.render(); return w.scene.fog.far; }), 1000);
   assert.equal(await page.locator('.settings-panel').evaluate(el => el.scrollWidth <= el.clientWidth), true);
-  await page.reload(); await page.waitForFunction(() => window.__apex?.state.modelReady);
+  await page.reload(); await gameReady(page,{track:false});
   const kept = await page.evaluate(() => ({ q: window.__apex.settings.graphicsQuality, g: window.__apex.settings.graphics, cap: window.__apex.world.fpsCap }));
   assert.equal(kept.q, 'custom'); assert.equal(kept.g.shadows, 2048); assert.equal(kept.g.bloom, true); assert.equal(kept.g.drawDistance, 1000); assert.equal(kept.cap, 30);
   // Setting options back to an exact preset renames it.

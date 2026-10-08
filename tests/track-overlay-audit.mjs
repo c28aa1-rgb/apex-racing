@@ -1,12 +1,13 @@
 import { chromium } from '@playwright/test';
+import { gameUrl, gameReady } from './browser-page.mjs';
 import { mkdir } from 'node:fs/promises';
 
 const directory='work/track-cleanup/overlays';await mkdir(directory,{recursive:true});
 const browser=await chromium.launch({channel:'chrome',headless:true});
 try{
   const page=await browser.newPage({viewport:{width:1280,height:800}});
-  await page.goto('http://127.0.0.1:5173/');
-  await page.waitForFunction(()=>window.__apex?.state.modelReady&&window.__apex.state.trackReady);
+  await page.goto(gameUrl('/'));
+  await gameReady(page);
   await page.evaluate(()=>{window.__apex.frame=()=>{};document.getElementById('app').style.display='none';});
   for(const [id,index,names]of [
     ['hungaroring',10,['drs_floor_a_01.001_10','drs_floor_a_01.001_11','drs_floor_a_01.001_12']],

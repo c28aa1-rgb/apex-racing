@@ -1,9 +1,10 @@
 import { chromium } from '@playwright/test';
+import { gameUrl, gameReady } from './browser-page.mjs';
 const browser=await chromium.launch({channel:'chrome',headless:true});
 try{
   const page=await browser.newPage({viewport:{width:1440,height:900}});
-  await page.goto('http://127.0.0.1:5173/');
-  await page.waitForFunction(()=>window.__apex?.state.modelReady&&window.__apex.state.trackReady);
+  await page.goto(gameUrl('/'));
+  await gameReady(page);
   console.log(JSON.stringify(await page.evaluate(async()=>{
     const {TRACKS}=await import('/shared/tracks.ts'),{Simulation,initPhysics,rotate}=await import('/shared/physics.ts');
     const g=window.__apex,w=g.world;g.frame=()=>{};const track=TRACKS.find(t=>t.id==='bugatti');await initPhysics(track);

@@ -1,9 +1,10 @@
 import { chromium } from '@playwright/test';
+import { gameUrl, gameReady } from './browser-page.mjs';
 const browser=await chromium.launch({channel:'chrome',headless:true});
 const page=await browser.newPage({viewport:{width:1440,height:900}});
 try{
-  await page.goto('http://127.0.0.1:5173/');
-  await page.waitForFunction(()=>window.__apex?.state.trackReady&&window.__apex.state.modelReady);
+  await page.goto(gameUrl('/'));
+  await gameReady(page);
   for(const id of ['porsche-911-gt3','mazda-787b','bugatti-bolide']){
     await page.evaluate(id=>window.__apex.selectCar(id),id);
     await page.waitForFunction(()=>window.__apex.state.modelReady);

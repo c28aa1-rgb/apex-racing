@@ -1,4 +1,5 @@
 import { chromium } from '@playwright/test';
+import { gameUrl, gameReady } from './browser-page.mjs';
 import { mkdir, writeFile } from 'node:fs/promises';
 const out='work/cockpit-upgrade';await mkdir(out,{recursive:true});
 const browser=await chromium.launch({channel:'chrome',headless:true});
@@ -10,7 +11,7 @@ const picks={
   'skyline-r34':[[652,635],[779,635]],'celica-gt4':[[748,586]],'nascar-camry':[[718,435]],
 };
 try{
-  await page.goto('http://127.0.0.1:5173/');await page.waitForFunction(()=>window.__apex?.state.modelReady);
+  await page.goto(gameUrl('/'));await gameReady(page,{track:false});
   await page.evaluate(()=>{const g=window.__apex;g.frame=()=>{};g.setSettings({pointerLock:false});document.getElementById('app').style.display='none';});
   const ids=process.argv.slice(2);const results=[];
   for(const id of ids.length?ids:await page.evaluate(async()=> (await import('/shared/cars.ts')).CAR_IDS)){

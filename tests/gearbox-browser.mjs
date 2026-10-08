@@ -2,13 +2,14 @@
 // Rapid E taps all land, rapid Q taps all land, a downshift that would over-rev is refused with a warning, and the tachometer renders.
 import assert from 'node:assert/strict';
 import { chromium } from '@playwright/test';
+import { gameUrl, gameReady } from './browser-page.mjs';
 const shots = process.env.SHOTS ?? 'work/gearbox';
 const browser = await chromium.launch({ channel: 'chrome', headless: true, args: ['--use-angle=metal', '--enable-gpu'] });
 try {
   const page = await browser.newPage({ viewport: { width: 1470, height: 920 }, deviceScaleFactor: 2 });
   const errors = []; page.on('pageerror', e => errors.push(e.message));
-  await page.goto('http://127.0.0.1:5173/');
-  await page.waitForFunction(() => window.__apex?.state.modelReady && window.__apex.state.trackReady, null, { timeout: 90000 });
+  await page.goto(gameUrl('/'));
+  await gameReady(page);
   await page.evaluate(() => { const g = window.__apex; g.setSettings({ advancedDriving: true, pointerLock: false }); g.start(false); });
   await page.waitForFunction(() => window.__apex.state.mode === 'racing');
   await page.locator('body').click({ position: { x: 700, y: 400 } }).catch(() => {});
@@ -22,8 +23,9 @@ try {
   // At walking pace, two quick taps down land in 2nd.
   for (let i = 0; i < 2; i++) { await page.keyboard.press('KeyQ'); await page.waitForTimeout(30); }
   await page.waitForTimeout(800); assert.equal(await gear(), 2, 'queued downshifts');
-  // Build speed in 2nd and 3rd, then try dropping to 1st: refused, warning shown.
-  await page.keyboard.down('KeyW'); await page.waitForTimeout(2500); await page.keyboard.press('KeyE'); await page.waitForTimeout(2500); await page.keyboard.up('KeyW');
+  // Pull away in 1st (2nd lugs from a standstill), build speed into 2nd, then try dropping two gears to 1st: refused, warning shown.
+  await page.keyboard.press('KeyQ'); await page.waitForTimeout(500);
+  await page.keyboard.down('KeyW'); await page.waitForTimeout(2000); await page.keyboard.press('KeyE'); await page.waitForTimeout(2500); await page.keyboard.up('KeyW');
   const before = await page.evaluate(() => ({ gear: window.__apex.sim.gear, speed: window.__apex.state.speed }));
   await page.screenshot({ path: `${shots}/tach-driving.png` });
   await page.keyboard.press('KeyQ'); await page.waitForTimeout(30); await page.keyboard.press('KeyQ'); await page.waitForTimeout(450);

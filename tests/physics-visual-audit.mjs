@@ -1,4 +1,5 @@
 import { chromium } from '@playwright/test';
+import { gameUrl, gameReady } from './browser-page.mjs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import assert from 'node:assert/strict';
 
@@ -7,8 +8,8 @@ const browser=await chromium.launch({channel:'chrome',headless:true});
 const page=await browser.newPage({viewport:{width:1440,height:900}}),errors=[],results=[];
 page.on('pageerror',e=>errors.push(e.message));
 try{
-  await page.goto('http://127.0.0.1:5173/');
-  await page.waitForFunction(()=>window.__apex?.state.modelReady&&window.__apex.state.trackReady);
+  await page.goto(gameUrl('/'));
+  await gameReady(page);
   // Use the production renderer and supplied models, driven in fixed ticks so
   // each saved image can be compared to the exact same physics state in Node.
   await page.evaluate(()=>{const game=window.__apex;game.frame=()=>{};document.getElementById('app').style.display='none';});

@@ -1,13 +1,14 @@
 // Real-driving frame profile in a visible Chrome window: `node tests/drive-profile-browser.mjs [track] [car] [chase|cockpit] [weather] [quality]`
 // (needs `npm run dev`). Holds throttle with real physics, sound, skid marks and HUD, and weaves left/right.
 import { chromium } from '@playwright/test';
+import { gameUrl, gameReady } from './browser-page.mjs';
 const [track = 'spa', car = 'ferrari-488-gt3', view = 'chase', weather = 'clear', quality = 'balanced', seconds = '30'] = process.argv.slice(2);
 const browser = await chromium.launch({ channel: 'chrome', headless: !!process.env.HEADLESS, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist', '--autoplay-policy=no-user-gesture-required'] });
 try {
   const page = await browser.newPage({ viewport: { width: 1470, height: 920 }, deviceScaleFactor: 2 });
   page.on('pageerror', e => console.log('pageerror', e.message));
-  await page.goto('http://127.0.0.1:5173/');
-  await page.waitForFunction(() => window.__apex?.state.trackReady, null, { timeout: 90000 });
+  await page.goto(gameUrl('/'));
+  await gameReady(page);
   await page.evaluate(async ({ track, car, weather, quality }) => {
     const g = window.__apex;
     // Import the exact module instance Vite served the app, so track objects match.
@@ -15,7 +16,7 @@ try {
     const u = new URL(urls[0]); const { TRACKS } = await import(u.pathname + u.search);
     if (!TRACKS.find(t => t.id === track)) throw new Error('unknown track ' + track + ': ' + TRACKS.map(t => t.id).join(','));
     g.career.xp = 1e7; g.setSettings({ weather, graphicsQuality: quality, pointerLock: false });
-    await g.selectCar(car); await g.select(TRACKS.find(t => t.id === track)); await g.world.venueReady;
+    await g.selectCar(car); await g.select(TRACKS.find(t => t.id === track), true); await g.world.venueReady;
     await new Promise(r => { const t = setInterval(() => { if (g.state.modelReady && g.state.trackReady) { clearInterval(t); r(); } }, 100); });
   }, { track, car, weather, quality });
   await page.evaluate(view => { const g = window.__apex; g.start(false); if (view === 'cockpit' && !g.world.firstPerson) g.toggleCamera(); }, view);

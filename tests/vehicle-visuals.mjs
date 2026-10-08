@@ -1,12 +1,13 @@
 import { chromium } from '@playwright/test';
+import { gameUrl, gameReady } from './browser-page.mjs';
 import assert from 'node:assert/strict';
 
 const browser=await chromium.launch({channel:'chrome',headless:true});
 const page=await browser.newPage({viewport:{width:1600,height:1000}}),errors=[];
 page.on('pageerror',error=>errors.push(error.message));
 try{
-  await page.goto('http://127.0.0.1:5173/dev');
-  await page.waitForFunction(()=>window.__apex?.state.trackReady&&window.__apex?.state.modelReady);
+  await page.goto(gameUrl('/dev'));
+  await gameReady(page);
   await page.getByRole('button',{name:'Cockpit camera',exact:true}).click();
   const select=page.getByRole('combobox');
   await select.evaluate(el=>el.addEventListener('pointerdown',event=>{el.dataset.pointerPrevented=String(event.defaultPrevented);}));
@@ -44,8 +45,8 @@ try{
     console.log(id,JSON.stringify(rig));
     await page.screenshot({path:`work/${id}-rig-cockpit.png`});
   }
-  await page.goto('http://127.0.0.1:5173/');
-  await page.waitForFunction(()=>window.__apex?.state.trackReady&&window.__apex?.state.modelReady);
+  await page.goto(gameUrl('/'));
+  await gameReady(page);
   await page.evaluate(()=>{window.__apex.selectCar('porsche-911-gt3');});
   await page.waitForFunction(()=>window.__apex.state.modelReady);
   await page.evaluate(()=>window.__apex.start(false));

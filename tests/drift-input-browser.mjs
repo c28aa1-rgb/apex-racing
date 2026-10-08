@@ -1,12 +1,13 @@
 import { chromium } from '@playwright/test';
+import { gameUrl, gameReady } from './browser-page.mjs';
 import assert from 'node:assert/strict';
 import { mkdir,writeFile } from 'node:fs/promises';
 const browser=await chromium.launch({channel:'chrome',headless:true}),errors=[];
 try{
   const page=await browser.newPage({viewport:{width:1440,height:900}});
   page.on('pageerror',e=>errors.push(e.message));
-  await page.goto(process.env.APEX_URL??'http://127.0.0.1:5173/');
-  await page.waitForFunction(()=>window.__apex?.state.modelReady&&window.__apex.state.trackReady);
+  await page.goto(gameUrl('/'));
+  await gameReady(page);
   await page.evaluate(async()=>{
     const {Simulation}=await import('/shared/physics.ts'),{handlingTrack}=await import('/tests/handling-harness.ts');
     const g=window.__apex;g.testFrame=g.frame;g.frame=()=>{};g.sim.dispose();g.sim=new Simulation(handlingTrack(),'porsche-963');g.sim.steeringStrength=1.1;

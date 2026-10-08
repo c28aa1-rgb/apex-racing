@@ -1,25 +1,27 @@
 import {chromium} from '@playwright/test';
+import {gameUrl,gameReady} from './browser-page.mjs';
 import {createCanvas,loadImage} from '@napi-rs/canvas';
-import {mkdir} from 'node:fs/promises';
+import {mkdir,writeFile} from 'node:fs/promises';
 import assert from 'node:assert/strict';
 await mkdir('work/weather',{recursive:true});
 const browser=await chromium.launch({channel:'chrome',headless:true}),page=await browser.newPage({viewport:{width:1440,height:900}}),errors=[];
 page.on('pageerror',e=>errors.push(e.message));page.on('console',m=>{if(m.type()==='error')errors.push(m.text());});
 try{
-  await page.goto('http://127.0.0.1:5173/');await page.waitForFunction(()=>window.__apex?.state.modelReady);
+  await page.goto(gameUrl('/'));await gameReady(page,{track:false});
   await page.getByRole('button',{name:'Settings',exact:true}).click();await page.getByRole('button',{name:'Graphics',exact:true}).click();
   await page.getByLabel('Weather',{exact:true}).selectOption('rain');
   assert.equal(await page.evaluate(()=>window.__apex.settings.weather),'rain');
-  await page.reload();await page.waitForFunction(()=>window.__apex?.state.modelReady);
+  // The menu shows a static preview; load the circuit so the overview camera has a venue to render.
+  await page.reload();await gameReady(page);
   assert.equal(await page.evaluate(()=>window.__apex.settings.weather),'rain');
   await page.evaluate(()=>{document.getElementById('app').style.display='none';});
   for(const mobile of [false,true]){
     await page.setViewportSize(mobile?{width:390,height:844}:{width:1440,height:900});
     for(const preset of ['clear','rain','snow','fog']){
-      const state=await page.evaluate(preset=>{const g=window.__apex,w=g.world;g.setSettings({weather:preset});w.overview(0,true);w.render();return {far:w.scene.fog.far,distance:w.camera.position.distanceTo(w.center),radius:w.trackRadius};},preset);
+      const state=await page.evaluate(preset=>{const g=window.__apex,w=g.world;g.setSettings({weather:preset});w.overview(0,true);w.render();return {far:w.scene.fog.far,distance:w.camera.position.distanceTo(w.center),radius:w.trackRadius,image:w.renderer.domElement.toDataURL('image/png')};},preset);
       assert.ok(state.far>state.distance+state.radius,'overview fog must leave the whole circuit visible');
-      await page.waitForTimeout(120);
-      const path=`work/weather/overview-${preset}-${mobile?'mobile':'desktop'}.png`;await page.screenshot({path});
+      // The menu has no render loop, so a page screenshot can catch a cleared canvas: read the frame just drawn instead.
+      const path=`work/weather/overview-${preset}-${mobile?'mobile':'desktop'}.png`;await writeFile(path,Buffer.from(state.image.split(',')[1],'base64'));
       const image=await loadImage(path),canvas=createCanvas(image.width,image.height),c=canvas.getContext('2d');c.drawImage(image,0,0);const data=c.getImageData(0,0,image.width,image.height).data,colors=new Set();
       for(let i=0;i<data.length;i+=64)colors.add(`${data[i]>>4}:${data[i+1]>>4}:${data[i+2]>>4}`);
       assert.ok(colors.size>70,`${preset}: overview must render track geometry, not just fog`);

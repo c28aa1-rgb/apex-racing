@@ -1,11 +1,12 @@
 import { chromium } from '@playwright/test';
+import { gameUrl, gameReady } from './browser-page.mjs';
 import { writeFile } from 'node:fs/promises';
 const browser=await chromium.launch({channel:'chrome',headless:true}),results=[];
 try{
   for(const variant of ['legacy','clean']){
     const page=await browser.newPage({viewport:{width:1280,height:800}});
-    await page.goto('http://127.0.0.1:5173/');
-    await page.waitForFunction(()=>window.__apex?.state.modelReady&&window.__apex.state.trackReady);
+    await page.goto(gameUrl('/'));
+    await gameReady(page);
     const ids=await page.evaluate(async variant=>{
       const {TRACKS}=await import('/shared/tracks.ts'),g=window.__apex,w=g.world;g.frame=()=>{};
       document.getElementById('app').style.display='none';

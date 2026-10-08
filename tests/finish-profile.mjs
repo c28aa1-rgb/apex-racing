@@ -1,8 +1,9 @@
 import {chromium} from '@playwright/test';
+import {gameUrl,gameReady} from './browser-page.mjs';
 const browser=await chromium.launch({channel:'chrome',headless:true});
 try{
   const page=await browser.newPage({viewport:{width:1440,height:900}});
-  await page.goto('http://127.0.0.1:5173/');await page.waitForFunction(()=>window.__apex?.state.modelReady);
+  await page.goto(gameUrl('/'));await gameReady(page,{track:false});
   await page.evaluate(()=>{const g=window.__apex;g.setSettings({pointerLock:false});g.start(false);});
   await page.waitForTimeout(1500);
   console.log(await page.evaluate(async()=>{

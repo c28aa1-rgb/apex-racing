@@ -1,4 +1,5 @@
 import { chromium } from '@playwright/test';
+import { gameUrl, gameReady } from './browser-page.mjs';
 import { createCanvas, loadImage } from '@napi-rs/canvas';
 import { mkdir, writeFile } from 'node:fs/promises';
 import assert from 'node:assert/strict';
@@ -11,8 +12,8 @@ const errors=[],results=[];
 page.on('pageerror',error=>errors.push(error.message));
 page.on('console',message=>{if(message.type()==='error'&&/THREE|WebGL|shader/i.test(message.text()))errors.push(message.text());});
 try{
-  await page.goto(process.env.GAME_URL??'http://127.0.0.1:5173/');
-  await page.waitForFunction(()=>window.__apex?.state.trackReady&&window.__apex.state.modelReady);
+  await page.goto(gameUrl('/'));
+  await gameReady(page);
   await page.evaluate(()=>{window.__apex.frame=()=>{};document.getElementById('app').style.display='none';});
   const tracks=await page.evaluate(async()=>{const {TRACKS}=await import('/shared/tracks.ts');return TRACKS.map(t=>t.id);});
   for(const id of tracks){
@@ -58,7 +59,7 @@ try{
   const dimensions=await page.evaluate(()=>{const w=window.__apex.world;return {width:w.renderer.domElement.width,height:w.renderer.domElement.height,aspect:w.camera.aspect};});
   assert.equal(dimensions.width,390);assert.equal(dimensions.height,844);
   assert.equal(dimensions.aspect,390/844);
-  await page.reload();await page.waitForFunction(()=>window.__apex?.state.modelReady);
+  await page.reload();await gameReady(page,{track:false});
   assert.equal(await page.evaluate(()=>window.__apex.settings.graphicsQuality),'balanced');
   await page.getByRole('button',{name:'Settings',exact:true}).click();
   await page.getByRole('button',{name:'Graphics',exact:true}).click();

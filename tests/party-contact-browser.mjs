@@ -2,7 +2,8 @@
 // Checks car-to-car contact, rolling on after the finish, the finished car fading for the other driver, and the HUD layout.
 import assert from 'node:assert/strict';
 import { chromium } from '@playwright/test';
-const base = process.env.BASE ?? 'http://127.0.0.1:5173', shots = process.env.SHOTS ?? 'work/party-contact';
+import { BASE, gameReady } from './browser-page.mjs';
+const base = BASE, shots = process.env.SHOTS ?? 'work/party-contact';
 const browser = await chromium.launch({ channel: 'chrome', headless: true, args: ['--use-angle=metal', '--enable-gpu'] });
 const errors = [];
 const driver = async (name) => {
@@ -10,7 +11,7 @@ const driver = async (name) => {
   page.on('pageerror', e => errors.push(`${name}: ${e.stack}`));
   await page.goto(base);
   await page.evaluate(async name => { const r = await fetch('/api/players', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ nickname: name }) }); localStorage.setItem('apex:player', JSON.stringify(await r.json())); localStorage.setItem('apex:settings', JSON.stringify({ pointerLock: false })); }, name);
-  await page.reload(); await page.waitForFunction(() => window.__apex?.state.modelReady, null, { timeout: 90000 });
+  await page.reload(); await gameReady(page, { track: false });
   return page;
 };
 const party = (page, path, method, body) => page.evaluate(async ({ path, method, body }) => { const p = JSON.parse(localStorage.getItem('apex:player')); const r = await fetch('/api/parties' + path, { method, headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), Authorization: `Bearer ${p.token}` }, body: body ? JSON.stringify(body) : undefined }); const j = await r.json(); if (!r.ok) throw new Error(JSON.stringify(j)); return j; }, { path, method, body });

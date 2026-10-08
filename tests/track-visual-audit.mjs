@@ -1,4 +1,5 @@
 import { chromium } from '@playwright/test';
+import { gameUrl, gameReady } from './browser-page.mjs';
 import { createCanvas, loadImage } from '@napi-rs/canvas';
 import { mkdir, writeFile } from 'node:fs/promises';
 import assert from 'node:assert/strict';
@@ -10,8 +11,8 @@ const browser=await chromium.launch({channel:'chrome',headless:true});
 const page=await browser.newPage({viewport:{width:1280,height:800}}),errors=[],results=[];
 page.on('pageerror',e=>errors.push(e.message));
 try{
-  await page.goto('http://127.0.0.1:5173/');
-  await page.waitForFunction(()=>window.__apex?.state.modelReady&&window.__apex.state.trackReady);
+  await page.goto(gameUrl('/'));
+  await gameReady(page);
   await page.evaluate(()=>{window.__apex.frame=()=>{};document.getElementById('app').style.display='none';});
   if(process.argv.includes('--source'))await page.evaluate(()=>{
     const loader=window.__apex.world.loader,load=loader.loadAsync.bind(loader);

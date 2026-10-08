@@ -1,13 +1,15 @@
 // With npm run dev running: node tests/static-preview-browser.mjs
 import assert from 'node:assert/strict';
 import { chromium } from '@playwright/test';
-const browser = await chromium.launch({ headless: true });
+import { gameUrl, gameReady } from './browser-page.mjs';
+const browser = await chromium.launch({ channel: 'chrome', headless: true });
 try {
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
   const courses = [], errors = [];
   page.on('request', request => { if (/\/models\/tracks\/.*\.(glb|bin)(\?|$)/.test(request.url())) courses.push(request.url()); });
   page.on('pageerror', error => errors.push(error.message));
-  await page.goto('http://127.0.0.1:5173/');
+  await page.goto(gameUrl('/'));
+  await gameReady(page, { track: false });
   await page.getByRole('button', { name: 'Race this track Enter', exact: true }).waitFor();
   await page.getByRole('button', { name: /02 Spa-Francorchamps Expert/ }).click();
   await page.locator('.track-preview[alt="Spa-Francorchamps — Sketchfab preview"]').waitFor();

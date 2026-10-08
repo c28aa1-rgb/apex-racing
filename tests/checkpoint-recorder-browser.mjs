@@ -1,4 +1,5 @@
 import {chromium} from '@playwright/test';
+import {gameUrl,gameReady} from './browser-page.mjs';
 import assert from 'node:assert/strict';
 const browser=await chromium.launch({channel:'chrome',headless:true}),page=await browser.newPage({viewport:{width:1600,height:1000}}),errors=[];
 // Keep the owner's real circuit configuration untouched.
@@ -6,7 +7,7 @@ let config={starts:{},finishes:{},roads:{},maps:{},cockpits:{},checkpoints:{}};
 page.on('pageerror',e=>errors.push(e.message));
 await page.route('**/api/dev-circuit-config',async route=>{if(route.request().method()==='PUT')config=route.request().postDataJSON();await route.fulfill({json:config});});
 try{
-  await page.goto('http://127.0.0.1:5173/dev');await page.waitForFunction(()=>window.__apex?.state.trackReady&&window.__apex?.state.modelReady);
+  await page.goto(gameUrl('/dev'));await gameReady(page);
   await page.getByRole('button',{name:'Drive checkpoints',exact:true}).click();
   await page.getByRole('button',{name:'Start driving',exact:true}).click();
   await page.keyboard.press('r');assert.equal(await page.evaluate(()=>window.__apex.authoring),true,'restart preserves checkpoint authoring');
@@ -21,7 +22,7 @@ try{
   await page.getByText('Saved 2 checkpoints, finish and minimap permanently.',{exact:true}).waitFor();
   const id=await page.evaluate(()=>window.__apex.state.track.id);
   assert.equal(config.checkpoints[id].length,2);assert.ok(config.finishes[id]);assert.ok(config.starts[id]);assert.ok(config.maps[id]?.length>=2,'checkpoint drive creates minimap path');
-  await page.reload();await page.waitForFunction(()=>window.__apex?.state.trackReady&&window.__apex?.state.modelReady);
+  await page.reload();await gameReady(page);
   assert.equal(await page.evaluate(()=>window.__apex.state.track.checkpoints.length),2,'saved gates load at boot');
   assert.ok(await page.evaluate(()=>window.__apex.state.track.mapPath?.length>=2),'saved minimap path loads at boot');
   await page.getByRole('button',{name:'Drive checkpoints',exact:true}).click();
