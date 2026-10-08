@@ -25,15 +25,15 @@ Open http://127.0.0.1:5173. Dependencies are already installed in this delivered
 | Left Shift | Hold for extra drift; strength increases with speed and steering |
 | E / Q | Shift up / down (with Advanced driving's manual gearbox on) |
 | R | Restart immediately |
-| C | Recover at the last checkpoint; time continues |
+| F | Recover at the last checkpoint; time continues |
 | Escape | Pause / resume |
 | Enter | Start a race |
 | G / M | Toggle ghost / sound |
-| V (tap) | Next camera: Chase, Far chase, Bumper, Cockpit, Drone |
-| V (hold) | Camera wheel: point the mouse at a view, release V to switch |
+| C (tap) | Next camera: Chase, Far chase, Bumper, Cockpit, Drone |
+| C (hold) | Camera wheel: point the mouse at a view, release C to switch |
 | B (hold) | Look behind |
 | Mouse / wheel | Look around / zoom the chase cameras |
-| F | Flip upright below 16 mph |
+| X | Flip upright below 16 mph |
 
 The camera choice is remembered, and Settings lists every view. In the garage, drag across the car to orbit horizontally and change viewing elevation. Rotation buttons and Reset view are also available. First-person mode uses the modeled cockpit and detected driver-seat position; `/dev` provides per-car camera adjustments. Interior detail and visibility depend on the supplied model.
 

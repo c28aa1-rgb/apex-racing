@@ -1,4 +1,4 @@
-export const DEFAULT_BINDINGS={throttle:['KeyW','ArrowUp'],brake:['KeyS','ArrowDown'],left:['KeyA','ArrowLeft'],right:['KeyD','ArrowRight'],drift:['ShiftLeft'],shiftUp:['KeyE'],shiftDown:['KeyQ'],restart:['KeyR'],recover:['KeyC'],flip:['KeyF'],camera:['KeyV'],lookBack:['KeyB'],ghost:['KeyG'],mute:['KeyM'],pause:['Escape']};
+export const DEFAULT_BINDINGS={throttle:['KeyW','ArrowUp'],brake:['KeyS','ArrowDown'],left:['KeyA','ArrowLeft'],right:['KeyD','ArrowRight'],drift:['ShiftLeft'],shiftUp:['KeyE'],shiftDown:['KeyQ'],restart:['KeyR'],recover:['KeyF'],flip:['KeyX'],camera:['KeyC'],lookBack:['KeyB'],ghost:['KeyG'],mute:['KeyM'],pause:['Escape']};
 export type Action=keyof typeof DEFAULT_BINDINGS;
 export type Bindings=Record<Action,string[]>;
 export const ACTION_LABELS:Record<Action,string>={throttle:'Accelerate',brake:'Brake / reverse',left:'Steer left',right:'Steer right',drift:'Drift',shiftUp:'Shift up',shiftDown:'Shift down',restart:'Restart run',recover:'Recover at checkpoint',flip:'Flip upright',camera:'Switch camera',lookBack:'Look behind (hold)',ghost:'Toggle ghost',mute:'Mute sound',pause:'Pause / resume'};

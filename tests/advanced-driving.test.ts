@@ -69,6 +69,7 @@ test('party cars are solid: driving into another car stops you instead of passin
 });
 
 test('key rebinding preserves alternates, allows shared keys with a warning, and validates stored bindings',()=>{
+  assert.equal(DEFAULT_BINDINGS.camera[0],'KeyC');assert.equal(DEFAULT_BINDINGS.recover[0],'KeyF');assert.equal(DEFAULT_BINDINGS.flip[0],'KeyX');
   const changed=bindingChange(DEFAULT_BINDINGS,'throttle',0,'KeyI');assert.equal(changed.bindings?.throttle[0],'KeyI');assert.equal(changed.bindings?.throttle[1],'ArrowUp');assert.equal(DEFAULT_BINDINGS.throttle[0],'KeyW');
   assert.deepEqual(loadBindings(changed.bindings),changed.bindings);const shared=bindingChange(DEFAULT_BINDINGS,'throttle',0,'KeyS');assert.equal(shared.error,undefined);assert.deepEqual(shared.shared,['brake']);assert.deepEqual(bindingConflicts(shared.bindings!).get('KeyS'),['throttle','brake']);const {lookBack:_,...older}=DEFAULT_BINDINGS;assert.deepEqual(loadBindings(older),DEFAULT_BINDINGS);assert.ok(bindingChange(DEFAULT_BINDINGS,'throttle',0,'Escape').error);assert.deepEqual(loadBindings({throttle:['BadKey']}),DEFAULT_BINDINGS);
 });
