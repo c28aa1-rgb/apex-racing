@@ -21,6 +21,11 @@ export function bindingConflicts(bindings:Bindings):Map<string,Action[]>{
   for(const [code,list] of owners)if(list.length<2)owners.delete(code);
   return owners;
 }
+/**
+ * Defaults that have since changed. A saved binding that still equals its old default was never chosen by the
+ * player (every settings save stores the whole key map), so it follows the new default instead.
+ */
+const FORMER_DEFAULTS:Partial<Record<Action,string[][]>>={camera:[['KeyV']],recover:[['KeyC']],flip:[['KeyF']]};
 export function loadBindings(value:unknown):Bindings{
   const result=structuredClone(DEFAULT_BINDINGS);
   if(!value||typeof value!=='object')return result;
@@ -30,6 +35,7 @@ export function loadBindings(value:unknown):Bindings{
     // Actions added in a later version keep their default key instead of discarding the player's other bindings.
     if(codes===undefined)continue;
     if(!Array.isArray(codes)||codes.length!==result[action].length||codes.some(c=>typeof c!=='string'||(!validKey(c)&&!(action==='pause'&&c==='Escape'))))return structuredClone(DEFAULT_BINDINGS);
+    if(FORMER_DEFAULTS[action]?.some(old=>old.length===codes.length&&old.every((code,i)=>code===codes[i])))continue;
     result[action]=[...codes] as never;
   }
   return result;
