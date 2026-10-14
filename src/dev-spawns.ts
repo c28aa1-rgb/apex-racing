@@ -72,5 +72,7 @@ export function applySavedRoadWidthOverrides(tracks: Track[]) {
   const overrides = loadRoadWidthOverrides(); tracks.forEach(track => applyRoadWidthOverrides(track, overrides[track.id])); return overrides;
 }
 
-export function loadCockpitOffsets(): CockpitOffsets { return load<CockpitOffsets>(COCKPIT_OFFSET_STORAGE_KEY); }
+/** Cockpit camera adjustments set in /dev, shipped with the game. A local /dev edit for the same car still overrides them. */
+const BUILT_IN_COCKPIT_OFFSETS: CockpitOffsets = { 'nascar-camry': { x: 0, y: .18, z: 0, reference: 'driver-seat' } };
+export function loadCockpitOffsets(): CockpitOffsets { return { ...BUILT_IN_COCKPIT_OFFSETS, ...load<CockpitOffsets>(COCKPIT_OFFSET_STORAGE_KEY) }; }
 export function saveCockpitOffsets(offsets: CockpitOffsets) { localStorage.setItem(COCKPIT_OFFSET_STORAGE_KEY, JSON.stringify(offsets)); }
