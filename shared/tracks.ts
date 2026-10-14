@@ -1,5 +1,6 @@
 import { CONE_COURSE, CONE_GATES, TRAINING_LOT, type LotLayout } from './lot';
 import { BARCELONA_ROUTE, BUGATTI_ROUTE, DAYTONA_ROUTE, HUNGARORING_ROUTE, INDIANAPOLIS_LAYOUT, INDIANAPOLIS_ROUTE, MARINA_ROUTE, SPA_ROUTE } from './track-routes';
+import { TRACK_LAYOUTS } from './track-layouts';
 
 export type Vec3 = { x: number; y: number; z: number };
 export type Quat = Vec3 & { w: number };
@@ -76,6 +77,17 @@ export const TRACKS: Track[] = [
   { ...course('daytona','Daytona International Speedway','Daytona Beach, USA','High speed','The supplied 2007 superspeedway layout: flat-out straights, steep banking and the signature tri-oval run to the line.','#4fc3ff','daytona.glb',DAYTONA_ROUTE,[5,11,17,23],[],[73000, 83000, 98000],4023,22), version: 9 },
   course('marina-bay','Marina Bay','Singapore','Street','A full night-city street circuit traced through the supplied venue roads, walls and bridge sections.','#de79ff','marina-bay.glb',MARINA_ROUTE,[10,20,30,40,50],[],[181000, 208000, 244000],5063,14)
 ];
+// The start, finish, checkpoints and minimap trace set in /dev, baked in so the released game (GitHub Pages +
+// Cloudflare, no dev API) uses them. Saved layouts differ from the built-in defaults, so each track's version is
+// bumped: times set on the old layout get their own leaderboard instead of mixing with the new one.
+for (const track of TRACKS) {
+  const layout = TRACK_LAYOUTS[track.id as keyof typeof TRACK_LAYOUTS];
+  track.start = placementGate(track, layout.start);
+  track.finish = placementGate(track, layout.finish);
+  track.checkpoints = layout.checkpoints.map(point => placementGate(track, point));
+  track.mapPath = layout.map.map(point => ({ ...point }));
+  track.version++;
+}
 const placed = (x: number, z: number, heading: number, width: number, segment = 0): Gate => {
   const forward = v(round(Math.sin(heading)), 0, round(Math.cos(heading)));
   return { position: v(x, 0, z), forward, rotation: orientation(forward), width, segment };
