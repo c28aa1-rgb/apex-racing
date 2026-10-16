@@ -102,6 +102,12 @@ export function rearSlipDemand(speedMps:number,steeringLoad:number,throttle:numb
   // Keep tire coefficients positive even at the maximum drift slider setting.
   return manual?Math.min(1,cornerDemand+extra):cornerDemand*.2;
 }
+/**
+ * Arcade turning authority shared by every car: more wheel lock (STEER_BOOST), a higher grip limit
+ * for that lock (STEER_GRIP, m/s^2) and more cornering grip (CORNER_GRIP, m/s^2). High-speed
+ * cornering stays capped at 28 m/s^2, so the gain is mostly at low and medium speed.
+ */
+const STEER_BOOST = 1.1, STEER_GRIP = 14, CORNER_GRIP = 15;
 export class Simulation {
   maxTicks = MAX_TICKS;
   world: RAPIER.World;
@@ -478,11 +484,11 @@ export class Simulation {
     // blend avoids the abrupt steering change previously felt near a speed cap.
     // High speed retains enough lock for a long bend, but takes longer to build.
     const arcadeGrip=6*Math.max(0,Math.min(1,(speedMps-25)/35));
-    const { lock: speedSteering, speedBlend: easedSpeed } = steeringLock(tuning.steerAngle, speedMps,this.carSpec.dimensions.wheelbaseM,11+tuning.downforce*5+arcadeGrip);
+    const { lock: speedSteering, speedBlend: easedSpeed } = steeringLock(tuning.steerAngle, speedMps,this.carSpec.dimensions.wheelbaseM,STEER_GRIP+tuning.downforce*5+arcadeGrip);
     const offRoadSteer = this.offRoad ? .85 : 1;
     this.steerHold=steeringInput&&Math.sign(this.steering)===steeringInput?Math.min(1.2,this.steerHold+DT):0;
     const holdBoost=1+(!(input&Input.Drift)?1:0)*.45*(1-Math.exp(-this.steerHold*3));
-    const target = cruise?Math.max(-tuning.steerAngle,Math.min(tuning.steerAngle,cruise.steering)):steeringInput * speedSteering * offRoadSteer * this.steeringStrength * holdBoost;
+    const target = cruise?Math.max(-tuning.steerAngle,Math.min(tuning.steerAngle,cruise.steering)):steeringInput * speedSteering * offRoadSteer * this.steeringStrength * holdBoost * STEER_BOOST;
     const counterSteering = steeringInput && Math.sign(steeringInput) !== Math.sign(this.steering);
     // Arcade feel: the wheels answer the keys quickly at any speed, snap
     // across on a direction change and self-centre fast on release.
@@ -600,7 +606,7 @@ export class Simulation {
       // walls and impacts are resolved afterward and retain their full response.
       const q=this.car.rotation(),up=rotate(q,{x:0,y:1,z:0});
       const turnAssist=1+Math.max(0,this.steeringStrength-1.35)*2*holdBoost;
-      const gripAcceleration=Math.min(28,(12+tuning.downforce*4+arcadeGrip)*turnAssist)*(this.offRoad?.48:1)/this.track.metersPerUnit;
+      const gripAcceleration=Math.min(28,(CORNER_GRIP+tuning.downforce*4+arcadeGrip)*turnAssist)*(this.offRoad?.48:1)/this.track.metersPerUnit;
       // Acceleration, braking and cornering share one traction budget.
       const v=this.car.linvel(),dx=v.x-velocityBefore.x,dz=v.z-velocityBefore.z;
       // Hard braking gets extra grip on top of the cornering budget (more with downforce and speed),

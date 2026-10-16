@@ -14,6 +14,7 @@ import { ACTION_LABELS, type Action } from './controls';
 import { CareerPanel, RpmGauge, arcPath, arcPoint } from './RacePanels';
 import { NAME_NUDGE_REP, UNLOCK_XP, affordable, lifetimeRep, unlocked } from './progression';
 import { NameNudge } from './NameNudge';
+import { markPosted, syncBests } from './best-sync';
 import { CarUnlock } from './CarUnlock';
 import { PartyPanel } from './PartyPanel';
 import { LotMap } from './LotMap';
@@ -261,7 +262,7 @@ export function App({game}:{game:Game}) {
     if(!result.newBest){setConeStatus(result.previousBest?`Your best stays ${formatTime(result.previousBest)}`:'');return;}
     if(!player){setConeStatus('Set a nickname in the menu to post your times');return;}
     let live=true;setConeStatus('Posting your time…');
-    api<{improved:boolean;verified?:boolean}>('/runs',result.run).then(response=>{if(live)setConeStatus(response.improved?(response.verified===false?'Posted · unverified time':'Posted to the leaderboard'):(response.verified===false?'Unverified · your posted best is faster':'Verified · your posted best is faster'));})
+    api<{improved:boolean;verified?:boolean}>('/runs',result.run).then(response=>{markPosted(result.run);if(live)setConeStatus(response.improved?(response.verified===false?'Posted · unverified time':'Posted to the leaderboard'):(response.verified===false?'Unverified · your posted best is faster':'Verified · your posted best is faster'));})
       .catch(error=>{if(live)setConeStatus(error instanceof Error?error.message:'Leaderboard offline · best saved on this device');});
     return()=>{live=false;};
   },[state.coneResult?.at]);
@@ -279,9 +280,12 @@ export function App({game}:{game:Game}) {
     if(hasLocalStartPlacement(state.track)){setSubmission('This is a custom practice layout. Restore project defaults in /dev before submitting online.');return;}
     if(!player){open('profile');setMessage('Choose a nickname, then submit your run.');return;}
     setBusy(true);setSubmission('Checking your run…');
-    try{const result=await api<{improved:boolean;entries:Entry[];verified?:boolean}>('/runs',state.run);setSubmission(result.verified===false?(result.improved?'Posted. Your unverified best is on the leaderboard.':'Your previous unverified best is faster.'):(result.improved?'Verified. Your best is on the leaderboard.':'Verified. Your previous best is faster.'));setEntries(result.entries);}
+    try{const result=await api<{improved:boolean;entries:Entry[];verified?:boolean}>('/runs',state.run);markPosted(state.run);setSubmission(result.verified===false?(result.improved?'Posted. Your unverified best is on the leaderboard.':'Your previous unverified best is faster.'):(result.improved?'Verified. Your best is on the leaderboard.':'Verified. Your previous best is faster.'));setEntries(result.entries);}
     catch(error){setSubmission(error instanceof Error?error.message:'Could not submit. Your best is saved locally.');}finally{setBusy(false);}
   };
+  // Bests saved on this device reach the leaderboard: on load, as soon as a nickname is set, and after
+  // failed posts (retried on the next sync). Covers times set before choosing a nickname.
+  useEffect(()=>{if(player)void syncBests();},[player?.id,player?.nickname]);
   // A new circuit personal best posts itself when a nickname is set, the same way Cone Attack results do.
   // Previously circuit times only reached the leaderboard if the player pressed Submit.
   useEffect(()=>{
