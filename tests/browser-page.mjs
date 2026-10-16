@@ -11,7 +11,7 @@ export const gameUrl = (path = '/') => new URL(path, BASE).href;
 /** Presses Space until the boot loading screen has gone (it only accepts input once loading is complete). */
 export async function dismissLoading(page, timeout = 60000) {
   const until = Date.now() + timeout;
-  while (await page.locator('.loading-screen').count()) {
+  while (await page.locator('#loader').count()) {
     if (Date.now() > until) throw new Error('The loading screen did not close.');
     await page.keyboard.press('Space'); await page.waitForTimeout(400);
   }

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 
 import { TRACKS } from '../shared/tracks';
 import { CARS, type CarId } from '../shared/cars';
 import { Game } from './game';
-import { applyFinishPlacement, applyRoadWidthOverrides, applyStartPlacement, loadCockpitOffsets, loadFinishPlacements, loadRoadWidthOverrides, loadStartPlacements, saveCockpitOffsets, saveFinishPlacements, saveRoadWidthOverrides, saveStartPlacements, type CockpitOffsets, type FinishPlacements, type RoadWidthOverrides, type StartPlacements } from './dev-spawns';
+import { applyFinishPlacement, applyRoadWidthOverrides, applyStartPlacement, loadCockpitOffsets, loadFinishPlacements, loadRoadWidthOverrides, loadStartPlacements, mergeCircuitSettings, saveCockpitOffsets, saveFinishPlacements, saveRoadWidthOverrides, saveStartPlacements, type CockpitOffsets, type FinishPlacements, type RoadWidthOverrides, type StartPlacements } from './dev-spawns';
 import type { CockpitOffset, EditorMode, StartPlacement } from './world';
 import { CheckpointRecorder } from './CheckpointRecorder';
 import { loadCheckpoints, saveCheckpoints, applyCheckpoints } from './dev-spawns';
@@ -22,7 +22,7 @@ export function DevApp({ game }: { game: Game }) {
   const [finishes, setFinishes] = useState<FinishPlacements>(() => loadFinishPlacements());
   const [roads, setRoads] = useState<RoadWidthOverrides>(() => loadRoadWidthOverrides());
   const [cockpits, setCockpits] = useState<CockpitOffsets>(() => loadCockpitOffsets());
-  const [maps, setMaps] = useState<MapPaths>(()=>loadRecordedRoutes());
+  const [maps, setMaps] = useState<MapPaths>(()=>mergeCircuitSettings(Object.fromEntries(TRACKS.map(track=>[track.id,track.mapPath!])),loadRecordedRoutes()));
   useEffect(()=>{const reload=()=>setMaps(loadRecordedRoutes());window.addEventListener('apex:routes-updated',reload);return()=>window.removeEventListener('apex:routes-updated',reload);},[]);
   const [carId, setCarId] = useState<CarId>(gameState.car.id);
   const [cockpitOffset, setCockpitOffset] = useState(zeroOffset);
@@ -39,9 +39,11 @@ export function DevApp({ game }: { game: Game }) {
     catch { setNotice('Saved locally. The race-control server is currently unavailable.'); }
   }, []);
   useEffect(() => { void fetch('/api/dev-circuit-config').then(r => r.ok ? r.json() : undefined).then((value: Config | undefined) => {
-    if(value){value.maps={...loadRecordedRoutes(),...value.maps};saveRecordedRoutes(value.maps);}
-    if (!value) return; setStarts(value.starts ?? {}); setFinishes(value.finishes ?? {}); setRoads(value.roads ?? {}); setMaps(value.maps ?? {}); setCockpits(value.cockpits ?? {}); const layouts=(value as Config & {checkpoints?:ReturnType<typeof loadCheckpoints>}).checkpoints;if(layouts){saveCheckpoints(layouts);TRACKS.forEach(t=>applyCheckpoints(t,layouts[t.id]));}
-    TRACKS.forEach(item => { applyStartPlacement(item, value.starts?.[item.id]); applyFinishPlacement(item, value.finishes?.[item.id]); applyRoadWidthOverrides(item, value.roads?.[item.id]); item.mapPath = value.maps?.[item.id]; });
+    if (!value) return;
+    const layouts=(value as Config & {checkpoints?:ReturnType<typeof loadCheckpoints>}).checkpoints;
+    const merged={starts:mergeCircuitSettings(loadStartPlacements(),value.starts),finishes:mergeCircuitSettings(loadFinishPlacements(),value.finishes),roads:mergeCircuitSettings(loadRoadWidthOverrides(),value.roads),maps:mergeCircuitSettings(mergeCircuitSettings(Object.fromEntries(TRACKS.map(track=>[track.id,track.mapPath!])),loadRecordedRoutes()),value.maps),cockpits:mergeCircuitSettings(loadCockpitOffsets(),value.cockpits),checkpoints:mergeCircuitSettings(loadCheckpoints(),layouts)};
+    setStarts(merged.starts); setFinishes(merged.finishes); setRoads(merged.roads); setMaps(merged.maps); setCockpits(merged.cockpits); saveRecordedRoutes(merged.maps);saveCheckpoints(merged.checkpoints);TRACKS.forEach(t=>applyCheckpoints(t,merged.checkpoints[t.id]));
+    TRACKS.forEach(item => { applyStartPlacement(item, merged.starts[item.id]); applyFinishPlacement(item, merged.finishes[item.id]); applyRoadWidthOverrides(item, merged.roads[item.id]); item.mapPath = merged.maps[item.id]; });
   }).catch(() => undefined); }, []);
   const updatePlacement = useCallback((value: StartPlacement) => { setPlacement(value); setNotice(`Click ahead of the ${tool === 'finish' ? 'finish line' : 'car'} to set direction, then save.`); }, [tool]);
   const updateRoad = useCallback((segment: number, width: number) => setRoadDraft(current => { const next = { ...current, [segment]: Math.round(width * 10) / 10 }; applyRoadWidthOverrides(track, next); setNotice(`Section ${segment + 1} staged. Click another pair of visible asphalt edges.`); return next; }), [track]);

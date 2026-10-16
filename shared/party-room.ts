@@ -15,7 +15,7 @@ export const settingsSchema = z.object({
 export const carSchema = z.object({ carId: z.enum(CAR_IDS) }).strict();
 export const createSchema = carSchema.extend({ settings: settingsSchema.partial().optional() });
 const vector = z.object({ x: z.number().finite().min(-100000).max(100000), y: z.number().finite().min(-100000).max(100000), z: z.number().finite().min(-100000).max(100000) }).strict();
-const poseSchema = z.object({ sequence: z.number().int().nonnegative(), t: z.number().finite().nonnegative().optional(), p: vector, q: vector.extend({ w: z.number().finite().min(-1).max(1) }).refine(q => Math.abs(Math.hypot(q.x, q.y, q.z, q.w) - 1) < .02), lap: z.number().int().min(1).max(99), checkpoint: z.number().int().min(0).max(1000), finished: z.boolean(), best: z.number().int().positive().max(3_600_000).optional() }).strict();
+const poseSchema = z.object({ sequence: z.number().int().nonnegative(), t: z.number().finite().nonnegative().optional(), p: vector, q: vector.extend({ w: z.number().finite().min(-1).max(1) }).refine(q => Math.abs(Math.hypot(q.x, q.y, q.z, q.w) - 1) < .02), v: vector.refine(v => Math.hypot(v.x, v.y, v.z) <= 1000, 'Invalid velocity.').optional(), lap: z.number().int().min(1).max(99), checkpoint: z.number().int().min(0).max(1000), finished: z.boolean(), best: z.number().int().positive().max(3_600_000).optional() }).strict();
 export const updateSchema = z.object({ raceId: z.string().uuid(), ready: z.boolean(), pose: poseSchema.optional() }).strict();
 type Placement = { position: Vec3; heading: number };
 type CircuitConfig = { starts?: Record<string, Placement>; finishes?: Record<string, Placement>; checkpoints?: Record<string, Placement[]> };
@@ -172,4 +172,3 @@ export class Parties {
     return this.snapshot(room);
   }
 }
-

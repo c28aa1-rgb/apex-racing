@@ -21,6 +21,7 @@ import { Game } from './game';
 import { api, write, type Player } from './storage';
 import { PartyStage } from './PartyStage';
 import { useParty, requestParty } from './use-party';
+import { PartyUpdates, POSE_INTERVAL_MS } from './party-network';
 import './party.css';
 
 const weatherIcons = { clear: Sun, rain: CloudRain, snow: Snowflake, fog: CloudFog };
@@ -56,25 +57,28 @@ export function PartyPanel({ game, active, player, onPlayer, reduced }: {
   }, [active, game, lobby?.race?.id]);
   useEffect(() => {
     if (!lobby?.race || !player) { setRaceState(undefined); return; }
-    let disposed = false, timer: ReturnType<typeof setTimeout>, ready = false;
+    let disposed = false, ready = false, newestServerNow = -Infinity;
     setRaceState(lobby.race); setRaceError('');
     void game.prepareParty(lobby, player.id).then(() => { ready = true; }).catch(cause => { if (!disposed) setRaceError(cause instanceof Error ? cause.message : 'Race assets failed to load.'); });
-    const poll = async () => {
-      const sent = performance.now();
-      try {
-        const result = await requestParty<{race: PartyRace; serverNow: number}>('/race', player.token, 'POST', { raceId: lobby.race!.id, ready, ...(ready ? { pose: game.partyPose() } : {}) });
-        const received = performance.now();
-        if (!disposed) { game.noteServerClock(result.serverNow, sent, received); game.syncParty(result.race, result.serverNow + (received - sent) / 2); setRaceState(result.race); if (ready) setRaceError(''); }
-      } catch (cause) { if (!disposed) setRaceError(cause instanceof Error ? cause.message : 'Race connection interrupted.'); }
-      finally { if (!disposed) timer = setTimeout(poll, ready ? 50 : 500); }
+    const accept = (race: PartyRace, serverNow: number) => {
+      if (disposed || race.id !== lobby.race!.id || serverNow < newestServerNow) return;
+      newestServerNow = serverNow;
+      game.syncParty(race, serverNow); setRaceState(race);
     };
+    const updates = new PartyUpdates({
+      ready: () => ready,
+      send: () => requestParty<{race: PartyRace; serverNow: number}>('/race', player.token, 'POST', { raceId: lobby.race!.id, ready, ...(ready ? { pose: game.partyPose() } : {}) }),
+      receive: (result, sent, received) => { game.noteServerClock(result.serverNow, sent, received); accept(result.race, result.serverNow); if (ready) setRaceError(''); },
+      error: cause => setRaceError(cause instanceof Error ? cause.message : 'Race connection interrupted.'),
+    });
+    game.partyNetwork = () => updates.diagnostics();
     const receive = (event: Event) => {
       const packet = (event as CustomEvent).detail as { race: PartyRace; serverNow: number };
-      if (!disposed && packet.race.id === lobby.race!.id) { game.syncParty(packet.race, packet.serverNow); setRaceState(packet.race); }
+      accept(packet.race, packet.serverNow);
     };
     if (MULTIPLAYER_BACKEND === 'cloudflare') partyEvents.addEventListener('race', receive);
-    void poll();
-    return () => { disposed = true; clearTimeout(timer); partyEvents.removeEventListener('race', receive); game.endParty(); };
+    updates.tick(); const timer = setInterval(() => updates.tick(), Math.ceil(POSE_INTERVAL_MS));
+    return () => { disposed = true; updates.stop(); clearInterval(timer); game.partyNetwork = undefined; partyEvents.removeEventListener('race', receive); game.endParty(); };
   }, [lobby?.race?.id, player?.token, game]);
   useEffect(() => { if (!copied) return; const timer = setTimeout(() => setCopied(false), 2000); return () => clearTimeout(timer); }, [copied]);
   // Keep the presence wrapper mounted so the paddock can animate out when you leave it.

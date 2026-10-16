@@ -24,6 +24,21 @@ test('party transport only sends JSON content-type when a body is present', asyn
   } finally { globalThis.fetch = original; }
 });
 
+test('Node allows a full minute of 30 Hz poses without the old 1500-request limit', async () => {
+  const store = { player: async () => host, circuitConfig: async () => ({}) } as unknown as Store;
+  const app = await createApp(store, async () => { throw new Error('Not a replay test'); });
+  const headers = { authorization: `Bearer ${'a'.repeat(64)}` };
+  try {
+    await app.inject({ method: 'POST', url: '/api/parties', headers, payload: { carId: 'celica-gt4' } });
+    const started = await app.inject({ method: 'POST', url: '/api/parties/start', headers });
+    const payload = { raceId: started.json().lobby.race.id, ready: false };
+    for (let i = 0; i < 1801; i++) {
+      const response = await app.inject({ method: 'POST', url: '/api/parties/race', headers, payload });
+      assert.equal(response.statusCode, 200, `${i}: ${response.body}`);
+    }
+  } finally { await app.close(); }
+});
+
 test('parties enforce capacity, membership, ownership and host succession', () => {
   const parties = new Parties();
   const room = parties.create(host, 'porsche-911-gt3', { maxPlayers: 2 });

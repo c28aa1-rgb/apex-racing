@@ -15,6 +15,8 @@ import { FinishDriver } from './finish-driver';
 import { CarRig } from './car-rig';
 import type { PartyLobby, PartyPose, PartyRace, PartyRacer, PartyWeather } from '../shared/party';
 import { Group, CanvasTexture, Sprite, SpriteMaterial } from 'three';
+import { RemoteMotion } from './remote-motion';
+import type { PartyUpdates } from './party-network';
 
 export type Mode='menu'|'countdown'|'racing'|'paused'|'celebrating'|'finished'|'replay'|'party-loading'|'party-finished';
 const LIVE_KEYS=new Set<keyof GameState>(['time','speed','boost','drifting','driftCombo']);
@@ -82,7 +84,11 @@ export class Game {
    */
   noteServerClock(serverNow:number,sentAt:number,receivedAt:number){
     const rtt=receivedAt-sentAt;this.serverOffsetRtt+=.5;
-    if(rtt>=0&&rtt<=this.serverOffsetRtt){this.serverOffsetRtt=rtt;this.serverOffset=serverNow+rtt/2-receivedAt;}
+    if(rtt>=0&&rtt<=this.serverOffsetRtt){
+      this.serverOffsetRtt=rtt;const offset=serverNow+rtt/2-receivedAt;
+      // Asymmetric replies must not jump the pose or playback timeline mid-race.
+      this.serverOffset=this.serverOffset===undefined?offset:this.serverOffset+Math.max(-.5,Math.min(.5,offset-this.serverOffset));
+    }
   }
   /** The shared server clock, as best this machine can tell. Both drivers time poses and the start lights against it. */
   serverTime(now=performance.now()){return now+(this.serverOffset??0);}
@@ -92,6 +98,12 @@ export class Game {
   private partyOriginalTrack?:Track;
   /** Other party drivers. finishedAt starts their fade-out; fadeMaterials are private copies so fading one car leaves the others opaque. */
   private remoteCars=new Map<string,RemoteCar>();
+  partyNetwork?:()=>ReturnType<PartyUpdates<unknown>['diagnostics']>;
+  multiplayerDiagnostics(){
+    const now=this.serverTime();
+    return {connection:this.partyNetwork?.(),fps:this.state.fps,worstFrameMs:this.state.worstFrame,
+      remotes:[...this.remoteCars].map(([id,remote])=>({id,...remote.motion.diagnostics(now)}))};
+  }
   private editorView=false;
   private cockpitPreview=false;
   private routeRecording=false;
@@ -432,7 +444,7 @@ export class Game {
       const context=label.getContext('2d')!;context.fillStyle='#132127';context.fillRect(0,0,512,64);context.font='bold 32px sans-serif';context.textAlign='center';context.fillStyle='#ffffff';context.fillText(racer.nickname,256,44,480);
       const sprite=new Sprite(new SpriteMaterial({map:new CanvasTexture(label),depthTest:false}));sprite.scale.set(4,.5,1);sprite.position.y=2.4;group.add(sprite);
       const gate=race.grid[racer.slot];group.position.copy(gate.position);group.position.y+=.8;group.quaternion.copy(gate.rotation);
-      this.world.scene.add(group);this.remoteCars.set(racer.id,{group,rig,wheels:{speed:0,steer:0,brake:0},carId:racer.carId,sequence:-1,samples:[],offset:Infinity,interval:120,spread:120});
+      this.world.scene.add(group);this.remoteCars.set(racer.id,{group,rig,wheels:{speed:0,steer:0,brake:0},carId:racer.carId,sequence:-1,motion:new RemoteMotion(track.metersPerUnit)});
     }
     // Ready means this screen can show the grid: compile every shader and upload every mesh first,
     // then let two frames draw. The server holds the lights until every driver reports ready.
@@ -447,7 +459,7 @@ export class Game {
   syncParty(race:PartyRace,serverNow:number) {
     const local=this.partyRace;if(!local||local.id!==race.id)return;
     for(const racer of race.racers){const remote=this.remoteCars.get(racer.id);if(remote){
-      if(racer.pose&&racer.pose.sequence>remote.sequence){remote.sequence=racer.pose.sequence;remote.target=racer.pose;addSample(remote,racer.pose,this.serverTime());}
+      if(racer.pose&&racer.pose.sequence>remote.sequence){remote.sequence=racer.pose.sequence;if(remote.motion.add(racer.pose,this.serverTime()))remote.target=racer.pose;}
       if(racer.finishedAt||racer.pose?.finished)remote.finishedAt??=performance.now();
       if(racer.disconnected)remote.group.visible=false;else if(!remote.finishedAt)remote.group.visible=true;
     }}
@@ -465,8 +477,8 @@ export class Game {
   partyPose():PartyPose|undefined {
     const race=this.partyRace;if(!race?.ready||!race.started)return;
     // t: the moment of the physics tick the pose came from, on the shared server clock.
-    return {...this.sim.frame(),sequence:++this.partySequence,lap:race.lap,checkpoint:this.sim.checkpoint,finished:race.finished,
-      ...(this.serverOffset!==undefined?{t:+this.serverTime(performance.now()-this.accumulator*1000).toFixed(1)}:{}),...(this.partyBestLap?{best:this.partyBestLap}:{})};
+    return {...this.sim.frame(),v:this.sim.car.linvel(),sequence:++this.partySequence,lap:race.lap,checkpoint:this.sim.checkpoint,finished:race.finished,
+      ...(this.serverOffset!==undefined?{t:+this.serverTime(this.previous-this.accumulator*1000).toFixed(1)}:{}),...(this.partyBestLap?{best:this.partyBestLap}:{})};
   }
   /**
    * Race order, first to last: finishers by finishing time, then drivers still racing by lap, gates passed and
@@ -669,12 +681,10 @@ export class Game {
     const solid=this.partyRace?.ready&&['countdown','racing','party-finished'].includes(this.state.mode);
     for(const [id,remote] of this.remoteCars){
       const {group,target}=remote;
-      // Drawn slightly in the past on a smooth curve through the sender's timed poses, instead of chasing each 10 Hz update.
-      const pose=target&&sampleRemote(remote,this.serverTime(now));
-      // Prediction is corrected as new poses arrive; ease into the corrected spot instead of jumping. Big jumps (respawns) snap.
+      const pose=target&&remote.motion.sample(this.serverTime(now));
+      // The buffered curve already smooths motion; a second chase filter adds avoidable delay.
       if(pose){
-        const jump=Math.hypot(pose.p.x-group.position.x,pose.p.y-group.position.y,pose.p.z-group.position.z),blend=jump>8?1:1-Math.exp(-elapsed*20);
-        group.position.lerp(remoteTarget.set(pose.p.x,pose.p.y,pose.p.z),blend);group.quaternion.slerp(remoteTurn.set(pose.q.x,pose.q.y,pose.q.z,pose.q.w),blend);
+        group.position.copy(pose.p);group.quaternion.copy(pose.q);
       }
       if(group.visible&&elapsed>0)this.animateRemoteWheels(remote,elapsed);
       // Finished drivers keep rolling for a moment on their screens, then fade out here and stop being solid.
@@ -697,60 +707,11 @@ export class Game {
   };
 }
 const fromQuaternion=new Quaternion(),toQuaternion=new Quaternion();
-type PoseSample={t:number;p:Vec3;q:{x:number;y:number;z:number;w:number}};
-type RemoteCar={group:Group;carId:CarId;target?:Frame;sequence:number;samples:PoseSample[];
+type RemoteCar={group:Group;carId:CarId;target?:Frame;sequence:number;motion:RemoteMotion;
   /** Wheel, steering and brake-lamp rig; poses carry no inputs, so these are inferred from the drawn motion. */
   rig:CarRig;wheels:{last?:Vector3;heading?:Quaternion;speed:number;steer:number;brake:number};
-  /** Smallest delivery delay seen (receipt − pose time, both on the server clock), in ms. */
-  offset:number;
-  /** Smoothed spacing between the sender's poses, in ms. */
-  interval:number;
-  /** Recent peak of extra delivery delay beyond the fastest packet, in ms; both sides poll, so poses arrive in uneven bursts. */
-  spread:number;
-  /** Sender-clock time currently drawn; advances with our frames and drifts gently toward the target so packets never make it jump. */
-  clock?:number;lastFrame?:number;
   finishedAt?:number;fadeMaterials?:{opacity:number;transparent:boolean;depthWrite:boolean}[]};
-function addSample(remote:RemoteCar,pose:{p:Vec3;q:{x:number;y:number;z:number;w:number};t?:number},receivedAt:number){
-  const t=pose.t??receivedAt,last=remote.samples.at(-1);
-  // A jump of more than 15 m (respawn, recovery) restarts the curve instead of drawing a streak across the track.
-  if(last&&(t<=last.t||Math.hypot(pose.p.x-last.p.x,pose.p.y-last.p.y,pose.p.z-last.p.z)>15)){remote.samples.length=0;remote.clock=undefined;}
-  if(last&&remote.samples.length)remote.interval+=(Math.min(500,t-last.t)-remote.interval)*.2;
-  // Let the fastest delay creep upward slowly so a one-off fast packet cannot pin it forever.
-  remote.offset=Math.min(remote.offset+.5,receivedAt-t);
-  remote.spread=Math.max(remote.spread*.97,receivedAt-t-remote.offset);
-  remote.samples.push({t,p:pose.p,q:pose.q});if(remote.samples.length>12)remote.samples.shift();
-}
-const sampleQuaternionA=new Quaternion(),sampleQuaternionB=new Quaternion(),remoteTurn=new Quaternion();
-const remoteTarget=new Vector3(),remoteForward=new Vector3(),remoteDelta=new Vector3(),remoteTurnDelta=new Quaternion();
-/** Catmull-Rom position and slerped rotation at (now - delay) on the sender's clock; brief extrapolation if packets are late. */
-function sampleRemote(remote:RemoteCar,now:number):PoseSample|undefined{
-  const samples=remote.samples;if(!samples.length)return;
-  if(samples.length===1||!Number.isFinite(remote.offset))return samples[0];
-  // Pose times and `now` are both on the shared server clock, so the car is drawn where it is at this moment,
-  // minus a small jitter buffer, projecting past the newest pose to cover the network delay. Drawing at
-  // "newest pose" instead put every remote car one delivery delay behind, so each driver saw themselves ahead.
-  const delay=Math.max(25,Math.min(100,remote.spread*.4+20)),target=now-delay;
-  const step=remote.lastFrame===undefined?0:now-remote.lastFrame;remote.lastFrame=now;
-  if(remote.clock===undefined||Math.abs(target-remote.clock)>500)remote.clock=target;
-  else remote.clock+=step*(1+Math.max(-.1,Math.min(.1,(target-remote.clock)/500)));
-  const t=remote.clock;
-  let i=samples.findIndex(sample=>sample.t>t);
-  if(i===0)return samples[0];
-  if(i<0){
-    // Past the newest pose: carry on along the last motion (position and turn rate) for up to 700 ms, then hold.
-    const a=samples.at(-2)!,b=samples.at(-1)!,span=Math.max(1,b.t-a.t),k=Math.min(700,t-b.t)/span;
-    const q=sampleQuaternionA.set(a.q.x,a.q.y,a.q.z,a.q.w).slerp(sampleQuaternionB.set(b.q.x,b.q.y,b.q.z,b.q.w),1+Math.min(k,1.5));
-    return {t,p:{x:b.p.x+(b.p.x-a.p.x)*k,y:b.p.y+(b.p.y-a.p.y)*k,z:b.p.z+(b.p.z-a.p.z)*k},q:{x:q.x,y:q.y,z:q.z,w:q.w}};
-  }
-  const p0=samples[Math.max(0,i-2)],p1=samples[i-1],p2=samples[i],p3=samples[Math.min(samples.length-1,i+1)];
-  // Cubic Hermite with time-based tangents: speed stays continuous across poses even when they arrive unevenly spaced.
-  const span=Math.max(1,p2.t-p1.t),u=(t-p1.t)/span,u2=u*u,u3=u2*u;
-  const h00=2*u3-3*u2+1,h10=u3-2*u2+u,h01=-2*u3+3*u2,h11=u3-u2;
-  const tangent=(a:PoseSample,b:PoseSample,k:'x'|'y'|'z')=>(b.p[k]-a.p[k])/Math.max(1,b.t-a.t)*span;
-  const axis=(k:'x'|'y'|'z')=>h00*p1.p[k]+h10*tangent(p0===p1?p1:p0,p2,k)+h01*p2.p[k]+h11*tangent(p1,p3===p2?p2:p3,k);
-  const q=sampleQuaternionA.set(p1.q.x,p1.q.y,p1.q.z,p1.q.w).slerp(sampleQuaternionB.set(p2.q.x,p2.q.y,p2.q.z,p2.q.w),u);
-  return {t,p:{x:axis('x'),y:axis('y'),z:axis('z')},q:{x:q.x,y:q.y,z:q.z,w:q.w}};
-}
+const remoteForward=new Vector3(),remoteDelta=new Vector3(),remoteTurnDelta=new Quaternion();
 /** Gives one remote car its own material copies (models share materials through the cache) and returns them for fading. */
 function cloneMaterialsForFade(root:Group){
   const out:{opacity:number;transparent:boolean;depthWrite:boolean}[]=[];

@@ -3,9 +3,11 @@ import { z } from 'zod';
 import { Parties, createSchema, joinSchema, carSchema, settingsSchema, updateSchema, PARTY_PRESENCE_MS } from '../shared/party-room';
 import type { PartyMember, PartyPose } from '../shared/party';
 import { savePlayer, times } from './times';
+import { PARTY_BROADCAST_MS, PARTY_MESSAGES_PER_SECOND } from '../shared/party-network';
+import { roomLocationHint } from './room-placement';
 
 type Identity = Pick<PartyMember, 'id' | 'nickname'>;
-interface Env { RACE_ROOMS: DurableObjectNamespace<RaceRoom>; TIMES: D1Database; SESSION_SECRET: string; ALLOWED_ORIGINS: string; CONNECTION_LIMIT: RateLimit }
+interface Env { RACE_ROOMS: DurableObjectNamespace<RaceRoom>; TIMES: D1Database; SESSION_SECRET: string; ALLOWED_ORIGINS: string; CONNECTION_LIMIT: RateLimit; RACE_ROOM_LOCATION_HINT?: string }
 type Session = Identity & { exp: number };
 type Attachment = { player: Identity; seen: number; window: number; count: number; raceId?: string; pose?: PartyPose };
 function restoreAttachment(state: ReturnType<Parties['exportState']>, saved: Attachment) {
@@ -69,7 +71,7 @@ export default {
       const url = new URL(request.url);
       if (request.method !== 'OPTIONS' && url.pathname !== '/api/health' && !(await env.CONNECTION_LIMIT.limit({ key: request.headers.get('CF-Connecting-IP') ?? 'local' })).success) fail(429, 'Too many connection attempts. Try again shortly.');
       if (request.method === 'OPTIONS') response = new Response(null, { status: 204 });
-      else if (url.pathname === '/api/health') response = json({ ok: true, backend: 'cloudflare' });
+      else if (url.pathname === '/api/health') response = json({ ok: true, backend: 'cloudflare', roomPlacement: roomLocationHint(env.RACE_ROOM_LOCATION_HINT) ?? 'auto' });
       else if (url.pathname === '/api/players' && request.method === 'POST') response = json(await issue(env, { id: crypto.randomUUID(), ...nickname.parse(await body(request)) }), 201);
       else if (url.pathname === '/api/players/me' && request.method === 'PUT') response = json(await issue(env, { ...await authenticate(request, env), ...nickname.parse(await body(request)) }));
       else if (request.method === 'GET' && /^\/api\/(leaderboards|replays)\//.test(url.pathname)) response = await times(request, env.TIMES);
@@ -88,7 +90,8 @@ export default {
         if (!codePattern.test(code)) fail(400, 'Invalid lobby code.');
         const headers = new Headers({ 'X-Player': JSON.stringify(player) });
         if (action === 'socket') { headers.set('Upgrade', 'websocket'); headers.set('Sec-WebSocket-Protocol', request.headers.get('Sec-WebSocket-Protocol')!); }
-        response = await env.RACE_ROOMS.get(env.RACE_ROOMS.idFromName(code)).fetch(new Request(`https://room/${action}?code=${code}`, { method: action === 'socket' ? 'GET' : 'POST', headers, body: action === 'socket' ? undefined : JSON.stringify(payload) }));
+        const locationHint = action === 'create' ? roomLocationHint(env.RACE_ROOM_LOCATION_HINT) : undefined;
+        response = await env.RACE_ROOMS.get(env.RACE_ROOMS.idFromName(code), locationHint ? { locationHint } : undefined).fetch(new Request(`https://room/${action}?code=${code}`, { method: action === 'socket' ? 'GET' : 'POST', headers, body: action === 'socket' ? undefined : JSON.stringify(payload) }));
       }
     } catch (cause) { const result = error(cause); response = json({ error: result.error }, result.status); }
     const headers = new Headers(response.headers);
@@ -102,6 +105,7 @@ export default {
 
 export class RaceRoom extends DurableObject<Env> {
   private parties = new Parties();
+  private raceBroadcast?: ReturnType<typeof setTimeout>;
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     ctx.blockConcurrencyWhile(async () => {
@@ -115,15 +119,19 @@ export class RaceRoom extends DurableObject<Env> {
     if (state.length) { await this.ctx.storage.put('room', state); if (await this.ctx.storage.getAlarm() === null) await this.ctx.storage.setAlarm(Date.now() + PARTY_PRESENCE_MS); }
     else { await this.ctx.storage.deleteAll(); await this.ctx.storage.deleteAlarm(); }
   }
-  private broadcast(raceOnly = false, exclude?: WebSocket) {
+  private broadcast(raceOnly = false) {
+    if (this.raceBroadcast !== undefined) { clearTimeout(this.raceBroadcast); this.raceBroadcast = undefined; }
     const room = this.parties.exportState()[0];
     if (!room) return;
     const { seen, ...lobby } = room;
+    const message = JSON.stringify(raceOnly && lobby.race ? { type: 'race', race: this.compact(lobby.race), serverNow: Date.now() } : { type: 'lobby', lobby, serverNow: Date.now() });
     // ponytail: batch up to eight poses; field-level deltas if measured bandwidth requires it.
     for (const ws of this.ctx.getWebSockets()) {
-      if (ws === exclude) continue;
-      try { ws.send(JSON.stringify(raceOnly && lobby.race ? { type: 'race', race: this.compact(lobby.race), serverNow: Date.now() } : { type: 'lobby', lobby, serverNow: Date.now() })); } catch { /* Close handler handles membership. */ }
+      try { ws.send(message); } catch { /* Close handler handles membership. */ }
     }
+  }
+  private queueRaceBroadcast() {
+    if (this.raceBroadcast === undefined) this.raceBroadcast = setTimeout(() => { this.raceBroadcast = undefined; this.broadcast(true); }, PARTY_BROADCAST_MS);
   }
   private compact(race: NonNullable<ReturnType<Parties['current']>>['race']) {
     if (!race) return undefined;
@@ -162,7 +170,7 @@ export class RaceRoom extends DurableObject<Env> {
       if (typeof message !== 'string' || new TextEncoder().encode(message).length > 2048) { ws.close(1009, 'Message too large'); return; }
       const saved = ws.deserializeAttachment() as Attachment;
       if (Date.now() - saved.window >= 1000) { saved.window = Date.now(); saved.count = 0; }
-      if (++saved.count > 30) { ws.close(1008, 'Too many messages'); return; }
+      if (++saved.count > PARTY_MESSAGES_PER_SECOND) { ws.close(1008, 'Too many messages'); return; }
       ws.serializeAttachment(saved);
       const data = command.parse(JSON.parse(message)); id = data.id;
       const player = saved.player;
@@ -183,7 +191,8 @@ export class RaceRoom extends DurableObject<Env> {
       saved.seen = Date.now(); ws.serializeAttachment(saved);
       if (changed) await this.persist();
       ws.send(JSON.stringify({ id, data: data.path === '/race' ? { ...(result as ReturnType<Parties['update']>), race: this.compact((result as ReturnType<Parties['update']>).race) } : result }));
-      if (data.path !== '/current') this.broadcast(data.path === '/race' && !changed, data.path === '/race' && !changed ? ws : undefined);
+      if (data.path === '/race' && !changed) this.queueRaceBroadcast();
+      else if (data.path !== '/current') this.broadcast();
       if (data.method === 'DELETE') ws.close(1000, 'Left lobby');
     } catch (cause) { ws.send(JSON.stringify({ id, ...error(cause) })); }
   }

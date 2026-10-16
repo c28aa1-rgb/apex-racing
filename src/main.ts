@@ -4,9 +4,9 @@ import { createRoot } from 'react-dom/client';
 import { TRACKS } from '../shared/tracks';
 import { LoadingScreen } from './LoadingScreen';
 import type { Game } from './game';
-import { applyFinishPlacement, applyRoadWidthOverrides, applySavedFinishPlacements, applySavedRoadWidthOverrides, applySavedStartPlacements, applyStartPlacement, saveCockpitOffsets, type CockpitOffsets } from './dev-spawns';
+import { applyCheckpoints, applyFinishPlacement, applyRoadWidthOverrides, applySavedFinishPlacements, applySavedRoadWidthOverrides, applySavedStartPlacements, applyStartPlacement, loadCheckpoints, loadFinishPlacements, loadRoadWidthOverrides, loadStartPlacements, mergeCircuitSettings, saveCockpitOffsets, type CockpitOffsets, type CheckpointLayouts } from './dev-spawns';
 import './style.css';
-import { applyCheckpoints, loadCheckpoints, type CheckpointLayouts } from './dev-spawns';
+import { loadRecordedRoutes } from './dev-routes';
 
 async function boot() {
   if (import.meta.env.DEV && location.pathname === '/dev/trailer') {
@@ -21,13 +21,14 @@ async function boot() {
   applySavedFinishPlacements(TRACKS);
   applySavedRoadWidthOverrides(TRACKS);
   const checkpoints=loadCheckpoints();TRACKS.forEach(t=>applyCheckpoints(t,checkpoints[t.id]));
+  const starts=loadStartPlacements(),finishes=loadFinishPlacements(),roads=loadRoadWidthOverrides(),maps=mergeCircuitSettings(Object.fromEntries(TRACKS.map(track=>[track.id,track.mapPath!])),loadRecordedRoutes());
   try {
     const response = await fetch(`${API_URL}/api/dev-circuit-config`);
     if (response.ok) {
       const config = await response.json() as { starts?: Record<string, import('./world').StartPlacement>; finishes?: Record<string, import('./world').StartPlacement>; roads?: Record<string, Record<number, number>>; maps?: Record<string, import('../shared/tracks').Vec3[]>; cockpits?: CockpitOffsets };
-      TRACKS.forEach(track => { applyStartPlacement(track, config.starts?.[track.id]); applyFinishPlacement(track, config.finishes?.[track.id]); applyRoadWidthOverrides(track, config.roads?.[track.id]); track.mapPath = config.maps?.[track.id]; });
-      const layouts=(config as typeof config & {checkpoints?:CheckpointLayouts}).checkpoints;
-      if(layouts)TRACKS.forEach(t=>applyCheckpoints(t,layouts[t.id]));
+      const saved=config as typeof config & {checkpoints?:CheckpointLayouts};
+      const mergedStarts=mergeCircuitSettings(starts,config.starts),mergedFinishes=mergeCircuitSettings(finishes,config.finishes),mergedRoads=mergeCircuitSettings(roads,config.roads),mergedMaps=mergeCircuitSettings(maps,config.maps),mergedCheckpoints=mergeCircuitSettings(checkpoints,saved.checkpoints);
+      TRACKS.forEach(track => { applyStartPlacement(track, mergedStarts[track.id]); applyFinishPlacement(track, mergedFinishes[track.id]); applyRoadWidthOverrides(track, mergedRoads[track.id]); track.mapPath = mergedMaps[track.id]; applyCheckpoints(track,mergedCheckpoints[track.id]); });
       if (config.cockpits) saveCockpitOffsets(config.cockpits);
     }
   } catch { /* Browser drafts remain available while the local server is offline. */ }

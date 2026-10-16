@@ -254,7 +254,6 @@ export function App({game}:{game:Game}) {
   const boardRequest=useRef(0);
   const refresh=async(id=boardTrack)=>{const token=++boardRequest.current;setEntries([]);setBoardStatus('Loading leaderboard…');try{const result=await api<{entries:Entry[]}>(`/leaderboards/${id}`);if(token!==boardRequest.current)return;setEntries(result.entries);setBoardStatus(result.entries.length?'':'No times yet. Set the first one.');}catch{if(token!==boardRequest.current)return;setEntries([]);setBoardStatus('Leaderboard offline. You can still race and save your best locally.');}};
   useEffect(()=>{if(dialog==='leaderboard')void refresh();},[dialog,boardTrack]);
-  useEffect(()=>{setSubmission('');},[state.run]);
   // Cone Attack results arrive while the car keeps rolling: personal bests post themselves when a nickname is set.
   const [coneStatus,setConeStatus]=useState('');
   useEffect(()=>{
@@ -283,6 +282,14 @@ export function App({game}:{game:Game}) {
     try{const result=await api<{improved:boolean;entries:Entry[];verified?:boolean}>('/runs',state.run);setSubmission(result.verified===false?(result.improved?'Posted. Your unverified best is on the leaderboard.':'Your previous unverified best is faster.'):(result.improved?'Verified. Your best is on the leaderboard.':'Verified. Your previous best is faster.'));setEntries(result.entries);}
     catch(error){setSubmission(error instanceof Error?error.message:'Could not submit. Your best is saved locally.');}finally{setBusy(false);}
   };
+  // A new circuit personal best posts itself when a nickname is set, the same way Cone Attack results do.
+  // Previously circuit times only reached the leaderboard if the player pressed Submit.
+  useEffect(()=>{
+    setSubmission('');
+    if(!state.run||!state.newBest||state.mode==='replay'||track.kind==='lot'||track.kind==='cones'||hasLocalStartPlacement(track))return;
+    if(!player){setSubmission('Set a nickname to post your times to the leaderboard.');return;}
+    void submit();
+  },[state.run]);
   const raceGhost=async(entry:Entry)=>{
     setBusy(true);setMessage('Loading ghost…');try{
       const run=runSchema.parse(await api<Run>(`/replays/${entry.id}`));

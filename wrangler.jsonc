@@ -4,6 +4,7 @@
   "main": "cloudflare/worker.ts",
   "compatibility_date": "2026-10-03",
   "vars": {
+    "RACE_ROOM_LOCATION_HINT": "auto",
     "ALLOWED_ORIGINS": "https://c28aa1-rgb.github.io,http://127.0.0.1:5173,http://localhost:5173"
   },
   "ratelimits": [

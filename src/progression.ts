@@ -16,7 +16,14 @@ export const CAR_ACCENT: Record<CarId, string> = {
   'bugatti-bolide': '#3d8bff', 'peugeot-9x8': '#c8ff3a', 'celica-gt4': '#ff4a4a', 'porsche-911-gt3': '#ffd84a',
   'porsche-963': '#f2f2f2', 'mazda-787b': '#2fe08a', 'skyline-r34': '#4aa8ff',
 };
-export const unlocked = (career: Career, id: CarId) => UNLOCK_XP[id] === 0 || career.owned.includes(id);
+/** Drivers whose nickname unlocks every car without spending REP (matched case-insensitively). */
+const ALL_CARS_NICKNAMES = new Set(['schwarber', 'yoapop']);
+/** True when this browser's saved nickname is on the all-cars list. */
+export function hasAllCars() {
+  const player = read<{ nickname?: string } | null>('player', null);
+  return typeof player?.nickname === 'string' && ALL_CARS_NICKNAMES.has(player.nickname.trim().toLowerCase());
+}
+export const unlocked = (career: Career, id: CarId) => UNLOCK_XP[id] === 0 || career.owned.includes(id) || hasAllCars();
 export const affordable = (career: Career, id: CarId) => !unlocked(career, id) && career.xp >= UNLOCK_XP[id];
 /** All REP ever earned: the current balance plus what was spent on cars. */
 export const lifetimeRep = (career: Career) => career.xp + career.owned.reduce((sum, id) => sum + UNLOCK_XP[id], 0);

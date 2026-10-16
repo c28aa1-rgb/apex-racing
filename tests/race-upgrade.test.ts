@@ -1,11 +1,12 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {awardFinish,buyCar,unlocked,UNLOCK_XP} from '../src/progression';
+import {awardFinish,buyCar,hasAllCars,unlocked,UNLOCK_XP} from '../src/progression';
 import {TRACKS} from '../shared/tracks';
+import {TRACK_LAYOUTS} from '../shared/track-layouts';
 import {CAR_IDS} from '../shared/cars';
 import {PHYSICS_VERSION} from '../shared/physics';
 import {runSchema,type Run} from '../shared/replay';
-import {applyCheckpoints,applyFinishPlacement,applyStartPlacement,hasLocalStartPlacement,placementGate} from '../src/dev-spawns';
+import {applyCheckpoints,applyFinishPlacement,applyStartPlacement,hasLocalStartPlacement,mergeCircuitSettings,placementGate} from '../src/dev-spawns';
 import {Store} from '../server/store';
 import {createApp} from '../server/app';
 import {ENGINE_VOICES} from '../src/race-audio';
@@ -36,6 +37,23 @@ test('drive-authored gates preserve position and heading; defaults restore',()=>
   assert.deepEqual(track.checkpoints,original);assert.deepEqual(track.finish,finish);assert.equal(hasLocalStartPlacement(track),false);
 });
 
+test('empty server circuit config does not erase locally saved annotations',()=>{
+  const local={bugatti:{x:12},spa:{x:34}},server={spa:{x:56}};
+  assert.deepEqual(mergeCircuitSettings(local,{}),local);
+  assert.deepEqual(mergeCircuitSettings(local,server),{bugatti:{x:12},spa:{x:56}});
+});
+
+test('checked-in circuit layouts retain recovered grids, gates and road traces',()=>{
+  for(const track of TRACKS){
+    const layout=TRACK_LAYOUTS[track.id as keyof typeof TRACK_LAYOUTS];
+    assert.deepEqual(track.start.position,layout.start.position,track.id);
+    assert.deepEqual(track.finish.position,layout.finish.position,track.id);
+    assert.deepEqual(track.checkpoints.map(g=>g.position),layout.checkpoints.map(p=>p.position),track.id);
+    assert.ok(track.mapPath&&track.mapPath.length>=100,track.id);
+    assert.ok(track.mapPath!.every(p=>Number.isFinite(p.x)&&Number.isFinite(p.y)&&Number.isFinite(p.z)),track.id);
+  }
+});
+
 test('replays retain drift samples and checkpoint layouts survive the API',async()=>{
   const store=new Store();await store.init();const app=await createApp(store,async()=>{throw new Error('Not used in storage test');});
   try{
@@ -48,4 +66,17 @@ test('replays retain drift samples and checkpoint layouts survive the API',async
     assert.deepEqual((await app.inject('/api/dev-circuit-config')).json(),config);
     const bad=await app.inject({method:'PUT',url:'/api/dev-circuit-config',payload:{...config,checkpoints:{[track.id]:[]}}});assert.equal(bad.statusCode,400);
   }finally{await app.close();await store.close();}
+});
+
+test('nicknames on the all-cars list unlock every car without spending REP',()=>{
+  const store=new Map<string,string>(),previous=(globalThis as {localStorage?:unknown}).localStorage;
+  (globalThis as {localStorage?:unknown}).localStorage={getItem:(k:string)=>store.get(k)??null,setItem:(k:string,v:string)=>void store.set(k,v),removeItem:(k:string)=>void store.delete(k)};
+  try{
+    const career={xp:0,finishes:0,medals:{},owned:[]},owned=()=>CAR_IDS.filter(id=>unlocked(career,id)).length;
+    const as=(nickname:string)=>{for(const key of ['apex:player','apex:player:cloudflare'])store.set(key,JSON.stringify({id:'p',token:'t',nickname}));};
+    assert.equal(hasAllCars(),false);assert.equal(owned(),3,'no nickname: starters only');
+    as('Schwarber');assert.equal(owned(),CAR_IDS.length);
+    as(' yoapop ');assert.equal(owned(),CAR_IDS.length);
+    as('someone');assert.equal(owned(),3);
+  }finally{(globalThis as {localStorage?:unknown}).localStorage=previous;}
 });

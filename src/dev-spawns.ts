@@ -11,6 +11,7 @@ export type StartPlacements = Record<string, StartPlacement>;
 export type FinishPlacements = Record<string, StartPlacement>;
 export type RoadWidthOverrides = Record<string, Record<number, number>>;
 export type CockpitOffsets = Partial<Record<CarId, CockpitOffset>>;
+export const mergeCircuitSettings = <T,>(local: Record<string, T>, saved: Record<string, T> = {}) => ({ ...local, ...saved });
 const defaultWidths = new Map<string, number[]>();
 const defaultFinishes = new Map<string, Track['finish']>();
 const defaultCheckpoints=new Map<string,Track['checkpoints']>();

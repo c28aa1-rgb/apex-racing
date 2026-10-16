@@ -73,9 +73,14 @@ export async function requestCloudflareParty<T = PartyResponse>(path: string, to
     return result;
   }
   if (!room && path === '/current') return { lobby: null } as T;
+  const startedAt = performance.now();
   try { await connect(token); } catch (cause) {
     if (path === '/current' && cause instanceof PartyError && cause.status === 404) return { lobby: null } as T;
     throw cause;
+  }
+  // Reconnects and congested sockets must not drain a backlog of outdated driving poses.
+  if (path === '/race' && (body as { pose?: unknown })?.pose && (performance.now() - startedAt > 100 || socket!.bufferedAmount > 16384)) {
+    throw new PartyError('Race connection is catching up.', 503);
   }
   const id = ++serial;
   const result = await new Promise<T>((resolve, reject) => {

@@ -11,13 +11,14 @@ import type { PartyLobby } from '../shared/party';
 import { Parties } from '../shared/party-room';
 import { TRACKS } from '../shared/tracks';
 import { PHYSICS_VERSION } from '../shared/physics-version';
+import { PARTY_MESSAGES_PER_SECOND } from '../shared/party-network';
 
 // Run a real Wrangler server: exercise HTTP, native WebSockets and separate DO instances.
-test('Cloudflare rooms synchronize, isolate, validate, reconnect and cleanly leave', { timeout: 90000 }, async () => {
+test('Cloudflare rooms synchronize, isolate, validate, reconnect and cleanly leave', { timeout: 90000 }, async t => {
   const port = await new Promise<number>(resolve => { const server = createServer(); server.listen(0, '127.0.0.1', () => { const address = server.address() as { port: number }; server.close(() => resolve(address.port)); }); });
   const directory = await mkdtemp(join(tmpdir(), 'apex-cloudflare-'));
   await promisify(execFile)(process.execPath, ['node_modules/wrangler/bin/wrangler.js', 'd1', 'execute', 'apex-times', '--local', '--persist-to', directory, '--file', 'cloudflare/migrations/0001_times.sql'], { env: { ...process.env, WRANGLER_SEND_METRICS: 'false' } });
-  const child = spawn(process.execPath, ['node_modules/wrangler/bin/wrangler.js', 'dev', '--local', '--ip', '127.0.0.1', '--port', String(port), '--persist-to', directory, '--var', 'SESSION_SECRET:test-secret-at-least-thirty-two-characters'], { cwd: process.cwd(), env: { ...process.env, WRANGLER_SEND_METRICS: 'false', BROWSER: 'none' }, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(process.execPath, ['node_modules/wrangler/bin/wrangler.js', 'dev', '--local', '--ip', '127.0.0.1', '--port', String(port), '--persist-to', directory, '--var', 'SESSION_SECRET:test-secret-at-least-thirty-two-characters', '--var', 'RACE_ROOM_LOCATION_HINT:enam'], { cwd: process.cwd(), env: { ...process.env, WRANGLER_SEND_METRICS: 'false', BROWSER: 'none' }, stdio: ['ignore', 'pipe', 'pipe'] });
   let output = ''; child.stdout.on('data', data => { output += data; }); child.stderr.on('data', data => { output += data; });
   const base = `http://127.0.0.1:${port}`, sockets: WebSocket[] = [];
   async function request(path: string, token?: string, data?: unknown, origin?: string) {
@@ -39,6 +40,7 @@ test('Cloudflare rooms synchronize, isolate, validate, reconnect and cleanly lea
     let ready = false;
     for (let attempt = 0; attempt < 40; attempt++) { try { ready = (await request('/api/health')).ok; } catch {} if (ready) break; if (child.exitCode !== null) break; await sleep(500); }
     assert.ok(ready, output.slice(-4000));
+    assert.equal(((await (await request('/api/health')).json()) as any).roomPlacement, 'enam');
     assert.equal((await request('/api/health', undefined, undefined, 'https://untrusted.example')).status, 403);
     const preflight = await fetch(base + '/api/players', { method: 'OPTIONS', headers: { Origin: 'http://127.0.0.1:5173', 'Access-Control-Request-Method': 'POST', 'Access-Control-Request-Headers': 'Content-Type,Authorization' } });
     assert.equal(preflight.status, 204); assert.equal(preflight.headers.get('Access-Control-Allow-Origin'), 'http://127.0.0.1:5173');
@@ -88,7 +90,7 @@ test('Cloudflare rooms synchronize, isolate, validate, reconnect and cleanly lea
     await a.send('/race', { raceId: started.id, ready: true });
     const countdown = (await b.send('/race', { raceId: started.id, ready: true })).data;
     await sleep(Math.max(0, countdown.race.startAt - Date.now() + 10));
-    const pose = { sequence: 1, p: started.grid[0].position, q: started.grid[0].rotation, lap: 1, checkpoint: 0, finished: false, t: 1000 };
+    const pose = { sequence: 1, p: started.grid[0].position, q: started.grid[0].rotation, v: { x: 30, y: 0, z: 0 }, lap: 1, checkpoint: 0, finished: false, t: 1000 };
     await a.send('/race', { raceId: started.id, ready: true, pose });
     await b.wait(packet => packet.type === 'race' && packet.race.racers.some((r: any) => r.id === host.id && r.pose?.sequence === 1));
     await b.send('/race', { raceId: started.id, ready: true, pose: { ...pose, sequence: 2 } });
@@ -99,12 +101,55 @@ test('Cloudflare rooms synchronize, isolate, validate, reconnect and cleanly lea
     b.ws.close(); await sleep(150);
     const reconnected = await client(lobby.code, guest.token);
     assert.equal((await reconnected.send('/race', { raceId: started.id, ready: true, pose: { ...pose, sequence: 3 } })).data.race.racers.find((r: any) => r.id === guest.id).pose.sequence, 3);
+    await Promise.all(Array.from({ length: 6 }, (_, i) => a.send('/race', { raceId: started.id, ready: true, pose: { ...pose, sequence: i + 2 } })));
+    const batched = await reconnected.wait(packet => packet.type === 'race' && packet.race.racers.some((r: any) => r.id === host.id && r.pose?.sequence === 7));
+    assert.deepEqual(batched.race.racers.find((r: any) => r.id === host.id).pose.v, pose.v);
+    assert.ok(reconnected.packets.filter(packet => packet.type === 'race' && packet.race.racers.some((r: any) => r.id === host.id && r.pose?.sequence >= 2)).length < 6, 'burst poses should be coalesced');
     await reconnected.send('/me', undefined, 'DELETE');
     assert.equal((await a.send('/current', undefined, 'GET')).data.lobby.members.length, 1);
     await a.send('/reopen');
     await a.send('/me', undefined, 'DELETE');
     assert.equal((await request('/api/parties/join', third.token, { code: lobby.code, carId: 'celica-gt4' })).status, 404);
     assert.equal((await c.send('/current', undefined, 'GET')).data.lobby.code, separate.code);
+    const fillers = await Promise.all(Array.from({ length: 4 }, async (_, i) => (await request('/api/players', undefined, { nickname: `Load ${i}` })).json() as Promise<{ id: string; token: string }>));
+    await c.send('/settings', { maxPlayers: 8 }, 'PATCH');
+    const drivers = [c];
+    for (const player of [host, guest, third, ...fillers]) {
+      assert.equal((await request('/api/parties/join', player.token, { code: separate.code, carId: 'celica-gt4' })).status, 200);
+      drivers.push(await client(separate.code, player.token));
+    }
+    const loadRace = (await c.send('/start')).data.lobby.race;
+    const readied = await Promise.all(drivers.map(driver => driver.send('/race', { raceId: loadRace.id, ready: true })));
+    await sleep(Math.max(0, Math.max(...readied.map(reply => reply.data.race.startAt ?? 0)) - Date.now() + 10));
+    let sequence = 0;
+    for (const hz of [20, 30]) {
+      const replies: Promise<any>[] = [], rtts: number[] = [], loadStart = performance.now(), packetStarts = drivers.map(driver => driver.packets.length);
+      for (let tick = 1; tick <= hz * 2; tick++) {
+        sequence++;
+        for (const driver of drivers) {
+          const sent = performance.now();
+          replies.push(driver.send('/race', { raceId: loadRace.id, ready: true, pose: { ...pose, sequence } }).then(reply => { rtts.push(performance.now() - sent); return reply; }));
+        }
+        await sleep(Math.max(0, loadStart + tick * 1000 / hz - performance.now()));
+      }
+      for (const reply of await Promise.all(replies)) assert.equal(reply.error, undefined, JSON.stringify(reply));
+      const broadcasts: number[] = [];
+      for (const [i, driver] of drivers.entries()) {
+        await driver.wait(packet => packet.type === 'race' && packet.race.id === loadRace.id && packet.race.racers.every((r: any) => r.pose?.sequence === sequence));
+        assert.equal(driver.ws.readyState, WebSocket.OPEN);
+        broadcasts.push(driver.packets.slice(packetStarts[i]).filter(packet => packet.type === 'race' && packet.race.id === loadRace.id).length);
+        assert.ok(broadcasts.at(-1)! < 100, 'full rooms batch driving snapshots instead of broadcasting every incoming pose');
+      }
+      rtts.sort((a, b) => a - b);
+      const p95 = rtts[Math.ceil((rtts.length - 1) * .95)];
+      assert.ok(p95 < 500, `eight-driver local reply p95 ${p95.toFixed(1)} ms`);
+      t.diagnostic(`Eight drivers at ${hz} Hz: ${replies.length} acknowledged poses in ${(performance.now() - loadStart).toFixed(0)} ms; reply p95 ${p95.toFixed(1)} ms; maximum broadcasts ${Math.max(...broadcasts)}.`);
+      await sleep(1000);
+    }
+    const flooding = await client(separate.code, other.token);
+    const closed = new Promise<CloseEvent>(resolve => flooding.ws.addEventListener('close', resolve, { once: true }));
+    for (let id = 0; id <= PARTY_MESSAGES_PER_SECOND; id++) flooding.ws.send(JSON.stringify({ id, path: '/current', method: 'GET' }));
+    assert.equal((await closed).code, 1008, 'raising the driving cadence must retain flood protection');
   } finally {
     for (const ws of sockets) ws.close();
     const exited = new Promise<void>(resolve => child.once('exit', () => resolve()));

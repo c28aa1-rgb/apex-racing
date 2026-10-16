@@ -471,7 +471,8 @@ export class Simulation {
     const brakeTarget = cruise?Math.max(0,Math.min(1,(forwardSpeed-cruise.speed-1)*.25)):(wantsBack && wantsForward) || (wantsBack && forwardSpeed >= .25) || (wantsForward && forwardSpeed <= -.25) ? 1 : 0;
     this.throttle = this.approach(this.throttle, throttleTarget, (throttleTarget ? 1.55 : 3.5) * DT);
     this.reverse = this.approach(this.reverse, reverseTarget, (reverseTarget ? 1.35 : 3.8) * DT);
-    this.brake = this.approach(this.brake, brakeTarget, (brakeTarget ? 1.85 : 4.6) * DT);
+    // Brakes bite fast (about 0.2 s to full pressure) for an arcade feel; a tap is still a light touch.
+    this.brake = this.approach(this.brake, brakeTarget, (brakeTarget ? 5.5 : 6) * DT);
     const steeringInput = cruise?Math.sign(cruise.steering):(input & Input.Left ? 1 : 0) - (input & Input.Right ? 1 : 0);
     // Separate low-speed parking lock from high-speed precision. A smoothstep
     // blend avoids the abrupt steering change previously felt near a speed cap.
@@ -510,7 +511,8 @@ export class Simulation {
     // Engine force must still balance resistance at the configured top speed.
     // The old curve reached zero there, causing cars to plateau far below it.
     const highSpeedForce=(tuning.drag*topSpeed*topSpeed+tuning.massKg*.015*topSpeed)/drivenWheels;
-    const brakeDeceleration = 27.78 * 27.78 / (2 * tuning.brakeDistance) / this.track.metersPerUnit;
+    // Arcade brakes: half again stronger than the car's real-world stopping distance.
+    const brakeDeceleration = 1.5 * 27.78 * 27.78 / (2 * tuning.brakeDistance) / this.track.metersPerUnit;
     const brakeImpulse = tuning.massKg * brakeDeceleration * DT / 4;
     // Manual gearbox: lifting off drags the car through the driven wheels, harder at high revs, so a downshift slows it.
     // Total drag reaches about 25% of full braking at the red line; clutch-in during a shift releases it.
@@ -601,7 +603,12 @@ export class Simulation {
       const gripAcceleration=Math.min(28,(12+tuning.downforce*4+arcadeGrip)*turnAssist)*(this.offRoad?.48:1)/this.track.metersPerUnit;
       // Acceleration, braking and cornering share one traction budget.
       const v=this.car.linvel(),dx=v.x-velocityBefore.x,dz=v.z-velocityBefore.z;
-      const tractionScale=Math.min(1,gripAcceleration*DT/Math.max(.0001,Math.hypot(dx,dz)));
+      // Hard braking gets extra grip on top of the cornering budget (more with downforce and speed),
+      // capped at about 2.65 g so, with aero drag on top, the total stays under 3 g.
+      const brakeGrip=this.brake*(9+tuning.downforce*5)*(.6+.4*Math.min(1,speedMps/60));
+      // Above top speed the limiter already bleeds 6 m/s^2, so braking leaves room for it.
+      const tractionBudget=Math.min((speed>topSpeed?20:26)/this.track.metersPerUnit,gripAcceleration+brakeGrip*(this.offRoad?.48:1)/this.track.metersPerUnit);
+      const tractionScale=Math.min(1,tractionBudget*DT/Math.max(.0001,Math.hypot(dx,dz)));
       let vx=velocityBefore.x+dx*tractionScale,vz=velocityBefore.z+dz*tractionScale;
       // A coasting slide must dissipate energy. The steering assist cannot act
       // like a hidden engine by repeatedly adding lateral speed.

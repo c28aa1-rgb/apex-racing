@@ -90,7 +90,8 @@ test('all cars approach their configured top speed and have plausible accelerati
     const result=performanceRun(car.id);
     assert.ok(result.sixty!==null&&result.sixty>car.physics.zeroToHundred*.75&&result.sixty<car.physics.zeroToHundred*1.2,car.id);
     assert.ok(result.topMph>result.nominalMph*.98&&result.topMph<result.nominalMph+1,`${car.id}: ${result.topMph} mph against ${result.nominalMph}`);
-    const expectedFeet=car.physics.brakeDistance*.932*3.28084;
+    // Arcade brakes are 1.5x the car's real-world deceleration (shared/physics.ts).
+    const expectedFeet=car.physics.brakeDistance*.932*3.28084/1.5;
     assert.ok(result.brakeFeet>expectedFeet*.85&&result.brakeFeet<expectedFeet+50,`${car.id}: stopping distance outside tuning plus pedal-ramp allowance`);
     t.diagnostic(`${car.shortName}: 0–60 ${result.sixty?.toFixed(2)} s, top ${result.topMph.toFixed(1)} mph, 60–0 ${result.brakeFeet.toFixed(0)} ft (includes progressive brake application)`);
   }
