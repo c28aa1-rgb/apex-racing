@@ -7,7 +7,7 @@ import { direction, orientation, spawnGate, type Track, type Gate } from '../sha
 import { collisionGeometry, type Simulation, type Frame } from '../shared/physics';
 import { fittedGates, GATE_STEP, type FittedGate } from '../shared/gates';
 import { buildRoadMesh, interpolateRoad, type RoadPoint } from '../shared/road';
-import { carById, DEFAULT_CAR, type CarId } from '../shared/cars';
+import { carById, DEFAULT_CAR, type CarDefinition, type CarId } from '../shared/cars';
 import { CarRig, prepareCarModel } from './car-rig';
 import { CarDamage } from './car-damage';
 import { FinishConfetti, SkidMarks, StartLight } from './race-effects';
@@ -21,6 +21,7 @@ import type { WeatherPreset } from './settings';
 import { GRAPHICS_PRESETS, type GraphicsOptions } from './graphics';
 import { Weather, WEATHER } from './weather';
 import { LotScene } from './lot-scene';
+import { RacingLineGuide } from './racing-line';
 
 const palettes = { road: 0x4d6470, edge: 0xf1eee3, orange: 0xff784c, navy: 0x173b4c, teal: 0x45c8bd, sand: 0xe1dfb5, rock: 0x8fa9a0, leaf: 0x518d7c, barrier: 0xaab5b5, roadSide: 0x303c42, tire: 0x1d272c };
 const material = (color: THREE.ColorRepresentation) => new THREE.MeshStandardMaterial({ color, roughness: 0.9, flatShading: true });
@@ -51,6 +52,8 @@ export class RaceWorld {
   skidMarks = new SkidMarks();
   /** Cosmetic dents, smoke, sparks and debris on the player's car. */
   carDamage = new CarDamage();
+  /** The optional driving line painted on circuits (Settings → Racing line). */
+  racingLine = new RacingLineGuide();
   startLight!: StartLight;
   finishConfetti = new FinishConfetti();
   weather = new Weather();
@@ -189,7 +192,7 @@ export class RaceWorld {
   private editorRaycaster = new THREE.Raycaster();
   constructor(canvas: HTMLCanvasElement, private cinematicActors=false) {
     this.canvas = canvas;
-    this.scene.add(this.skidMarks.mesh,this.finishConfetti.mesh,this.weather.group,this.carDamage.group);
+    this.scene.add(this.skidMarks.mesh,this.racingLine.mesh,this.finishConfetti.mesh,this.weather.group,this.carDamage.group);
     this.loader.setMeshoptDecoder(MeshoptDecoder);
     // Cockpit near clipping is 2.5 cm, while venues extend for kilometres.
     // A reversed depth buffer keeps distant road layers apart without writing
@@ -199,7 +202,7 @@ export class RaceWorld {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, logarithmicDepthBuffer: !reversed, reversedDepthBuffer: reversed, powerPreference: 'high-performance' });
     // Error checks call getProgramInfoLog, which blocks until each shader finishes compiling.
     this.renderer.debug.checkShaderErrors=import.meta.env.DEV;
-    this.depthSign=this.renderer.capabilities.reversedDepthBuffer?-1:1;this.decalBias(this.skidMarks.mesh.material as THREE.Material,-2,-2);
+    this.depthSign=this.renderer.capabilities.reversedDepthBuffer?-1:1;this.decalBias(this.skidMarks.mesh.material as THREE.Material,-2,-2);this.decalBias(this.racingLine.mesh.material as THREE.Material,-2,-2);
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 1));
     this.renderer.setSize(innerWidth, innerHeight);
     this.renderer.shadowMap.enabled = false;
@@ -802,6 +805,7 @@ export class RaceWorld {
   /** Per-frame Training Grounds animation: cones and the start-box pulse. */
   updateLot(sim: Simulation | undefined, dt: number, showStart: boolean) { this.lotScene?.update(sim, dt, showStart); }
   setTrack(track: Track) {
+    void this.racingLine.setTrack(track.lot ? undefined : track);
     if (track.lot) { this.setLot(track); return; }
     this.lotScene = undefined;
     this.weatherMaterials.clear();
@@ -953,6 +957,8 @@ export class RaceWorld {
     }).catch(error=>{this.garageLoad=undefined;console.warn('Could not load garage.',error);});
     return this.garageLoad;
   }
+  /** Where the hood camera sits, in car space: the top of the bodywork ahead of the cockpit, measured per model. */
+  private hoodMount = { y: 0, z: 1 };
   async setCar(carId: CarId) {
     const token = ++this.carLoadToken; this.currentCarId = carId; this.wheelGroups = [];this.cockpitEye=undefined;this.legacyCockpitEye=undefined;
     this.carRig?.dispose();this.carRig=undefined;this.visualCarReady=false;
@@ -964,6 +970,7 @@ export class RaceWorld {
       this.tuneTextures(model);
       const legacy=model.userData.legacyCockpitEye;this.legacyCockpitEye=legacy?new THREE.Vector3(legacy.x,legacy.y,legacy.z):undefined;
       model.traverse(object=>{if(object instanceof THREE.Mesh){const materials=Array.isArray(object.material)?object.material:[object.material];object.castShadow=materials.some(m=>!m.transparent);object.receiveShadow=true;}});
+      this.hoodMount=measureHood(model,carById(carId));
       this.car.clear();this.car.add(model);this.carRig=new CarRig(model,carById(carId));this.wheelGroups=this.carRig.wheels;this.carDamage.attach(model);
       // Seat each model wheel where its physical tyre rests (hard point - 0.58 m rest length - radius): a few
       // models place a wheel a few centimetres off, which would otherwise float or sink that tyre.
@@ -1099,6 +1106,7 @@ export class RaceWorld {
       // Update before the cockpit-camera branch so interior and exterior views
       // share the same animations; signed travel spins backward in reverse.
       this.carRig.animate(sim.steering,Math.abs(travel)<10?travel:0,sim.brake,.16);
+      this.carRig.instruments.setDriverView(this.cameraMode==='cockpit'?'cockpit':this.cameraMode==='tcam'?'tcam':'none');
       this.carRig.instruments.update(sim,dt,this.firstPerson);
     }
     if(!updateCamera)return;
@@ -1106,6 +1114,8 @@ export class RaceWorld {
   }
   /** Positions the race camera for the current view. Exterior views use car-relative springs, so they never trail behind at speed. */
   private updateCamera(sim:Simulation,dt:number,snap:boolean) {
+    // A view the current car does not offer (the F1-only T-cam after switching cars) falls back to the chase view.
+    const mode=this.cameraMode==='tcam'&&this.currentCarId!=='red-bull-rb19'?'chase':this.cameraMode;
     const rig=this.rig,options=this.cameraOptions,still=this.reducedMotion,now=performance.now();
     rig.time+=dt;
     // Motion cues shared by every view: smoothed velocity and acceleration of the car.
@@ -1129,8 +1139,8 @@ export class RaceWorld {
     if(sim.hitCount!==rig.hits){rig.hits=sim.hitCount;rig.shake=Math.min(1.2,rig.shake+sim.lastHitSpeed/18);}
     rig.shake=Math.min(1.2,rig.shake+Math.min(.12,Math.max(0,sim.suspensionJolt-.02)*1.5))*Math.exp(-dt*6.5);
     // Mouse look drifts back to centre a moment after the mouse stops.
-    if(options.recenter&&this.cameraMode!=='cockpit'&&now-this.lookInputAt>1400){const k=1-Math.exp(-dt*2.4);this.lookYaw-=this.lookYaw*k;this.lookPitch-=this.lookPitch*k;}
-    if(this.cameraMode==='cockpit'){
+    if(options.recenter&&mode!=='cockpit'&&now-this.lookInputAt>1400){const k=1-Math.exp(-dt*2.4);this.lookYaw-=this.lookYaw*k;this.lookPitch-=this.lookPitch*k;}
+    if(mode==='cockpit'){
       const dimensions = sim.carSpec.dimensions;
       const seat=this.useDetectedSeat?this.cockpitEye:this.legacyCockpitEye;
       const eye = (seat?.clone()??new THREE.Vector3(dimensions.bodyWidthM*.21,-(.58+dimensions.wheelRadiusM)+dimensions.heightM*.78,-dimensions.wheelbaseM*.1)).add(this.cockpitOffset).applyQuaternion(this.car.quaternion).add(this.car.position);
@@ -1152,17 +1162,23 @@ export class RaceWorld {
     const heading=rig.heading.clone();
     if(this.lookBack)heading.negate();
     const right=new THREE.Vector3(heading.z,0,-heading.x);
-    if(this.cameraMode==='bumper'){
-      const d=sim.carSpec.dimensions,eye=new THREE.Vector3(0,-(.58+d.wheelRadiusM)+.62,d.lengthM*.5+.15).applyQuaternion(this.car.quaternion).add(this.car.position);
-      const yaw=this.lookYaw+(this.lookBack?Math.PI:0),look=new THREE.Vector3(Math.sin(yaw),Math.sin(this.lookPitch)-.02,Math.cos(yaw)).applyQuaternion(rig.carQ);
+    if(mode==='hood'||mode==='tcam'){
+      // Hood: just above the bonnet ahead of the windscreen (surface height measured when the car loads), looking over it.
+      // T-cam (F1 only): just above and ahead of the halo's rear mount (a 3 cm post to y 0.25 at z -0.5 to -0.4), behind the
+      // driver's helmet, looking down past it, as on F1 onboards.
+      const d=sim.carSpec.dimensions,hood=this.hoodMount;
+      const local=mode==='tcam'?new THREE.Vector3(0,.29,-.33):new THREE.Vector3(0,hood.y+.12,hood.z);
+      const eye=local.applyQuaternion(this.car.quaternion).add(this.car.position);
+      const yaw=this.lookYaw+(this.lookBack?Math.PI:0),pitch=this.lookPitch-(mode==='tcam'?.26:.05);
+      const look=new THREE.Vector3(Math.sin(yaw)*Math.cos(pitch),Math.sin(pitch),Math.cos(yaw)*Math.cos(pitch)).applyQuaternion(rig.carQ);
       // Half-level the horizon: the camera rolls with the car, but only part way.
       const carUp=new THREE.Vector3(0,1,0).applyQuaternion(rig.carQ);
       this.camera.position.copy(eye);this.camera.up.copy(carUp.lerp(up,.55).normalize());this.camera.lookAt(eye.clone().addScaledVector(look,40));
-      this.applyShake(.35);this.setFov(options.fov+10+(still?0:Math.min(speedMps*.1,10)),dt,snap);this.camera.near=.05;this.camera.updateProjectionMatrix();
+      this.applyShake(mode==='tcam'?.45:.35);this.setFov(options.fov+(mode==='tcam'?4:8)+(still?0:Math.min(speedMps*.1,10)),dt,snap);this.camera.near=.05;this.camera.updateProjectionMatrix();
       rig.ready=false;return;
     }
     // Chase, far chase and drone: a camera offset held on a spring in the car's frame.
-    const preset=this.cameraMode==='far'?{distance:15,height:6.4,look:9,stiffness:3.6,aim:7}:this.cameraMode==='drone'?{distance:15,height:21,look:10,stiffness:1.9,aim:3.2}:{distance:9.2,height:3.2,look:6.5,stiffness:5.2,aim:9};
+    const preset=mode==='far'?{distance:15,height:6.4,look:9,stiffness:3.6,aim:7}:mode==='drone'?{distance:15,height:21,look:10,stiffness:1.9,aim:3.2}:{distance:9.2,height:3.2,look:6.5,stiffness:5.2,aim:9};
     const zoom=options.distance,pull=still?0:Math.min(speedMps*.032,2.4);
     const distance=(preset.distance+pull)*zoom,height=Math.max(1.2,(preset.height-Math.min(speedMps*.01,.6))*zoom);
     const pitch=this.lookPitch;
@@ -1199,11 +1215,11 @@ export class RaceWorld {
     this.cameraTarget.copy(rig.anchor).add(rig.aim);
     this.camera.up.copy(up);this.camera.lookAt(this.cameraTarget);
     // Lean slightly into the turn, from the car's sideways acceleration.
-    const lean=still||this.cameraMode==='drone'?0:THREE.MathUtils.clamp(rig.accel.dot(right)*-.003,-.035,.035);
+    const lean=still||mode==='drone'?0:THREE.MathUtils.clamp(rig.accel.dot(right)*-.003,-.035,.035);
     rig.roll+=(lean-rig.roll)*(1-Math.exp(-dt*2));this.camera.rotateZ(rig.roll);
-    this.applyShake(this.cameraMode==='drone'?.15:1);
+    this.applyShake(mode==='drone'?.15:1);
     const boost=sim.boosting?3:0,launch=still?0:THREE.MathUtils.clamp(rig.accel.dot(heading)*.25,-1.5,3);
-    this.setFov(this.cameraMode==='drone'?options.fov-6:options.fov+(still?0:Math.min(speedMps*.13,13))+boost+launch,dt,snap);
+    this.setFov(mode==='drone'?options.fov-6:options.fov+(still?0:Math.min(speedMps*.13,13))+boost+launch,dt,snap);
   }
   private setFov(target:number,dt:number,snap:boolean) {
     this.rig.fov=snap?target:this.rig.fov+(target-this.rig.fov)*Math.min(1,dt*3.5);
@@ -1279,4 +1295,16 @@ export class RaceWorld {
     if(sunDirection)this.shadow.position.copy(this.car.position).addScaledVector(sunDirection,35);
     if(this.composer)this.composer.render();else this.renderer.render(this.scene,this.camera);
   }
+}
+
+/** The bonnet's top surface on the centreline, ahead of the cockpit, by casting a ray straight down onto the body. */
+function measureHood(model: THREE.Object3D, car: CarDefinition) {
+  const d = car.dimensions, z = d.wheelbaseM * (car.id === 'red-bull-rb19' ? .26 : .3), floor = -(.58 + d.wheelRadiusM);
+  const bodies: THREE.Object3D[] = [];
+  model.traverse(o => { if ((o as THREE.Mesh).isMesh && !/^apex-(wheel|steering|formula|glove|driver|tub|rim|seat|live|rear-lamp|front-lamp)/.test(o.name) && !o.parent?.name.startsWith('apex-wheel')) bodies.push(o); });
+  model.updateMatrixWorld(true);
+  const ray = new THREE.Raycaster(new THREE.Vector3(0, floor + d.heightM + 2, z).applyMatrix4(model.matrixWorld), new THREE.Vector3(0, -1, 0));
+  const hit = ray.intersectObjects(bodies, false)[0];
+  const top = hit ? model.worldToLocal(hit.point.clone()).y : floor + d.heightM * .7;
+  return { y: top, z };
 }

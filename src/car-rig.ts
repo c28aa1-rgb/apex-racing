@@ -167,7 +167,9 @@ export function prepareCarModel(scene: THREE.Object3D, definition: CarDefinition
     let yy=0,yz=0;for(const p of steering){const positions=p.geometry.getAttribute('position');for(let i=0;i<positions.count;i++){const y=positions.getY(i)-center.y,z=positions.getZ(i)-center.z;yy+=y*y;yz+=y*z;}p.geometry.translate(-center.x,-center.y,-center.z);}
     pivot.userData.axis=new THREE.Vector3(0,-THREE.MathUtils.clamp(yz/Math.max(yy,1e-6),-.7,.7),1).normalize().toArray();
     batch(steering,pivot);prepared.add(pivot);prepared.userData.cockpitEye={x:center.x,y:center.y+.2,z:center.z-.38};
-    if(definition.id==='red-bull-rb19')prepared.userData.cockpitEye={x:center.x,y:center.y+.14,z:center.z-.48};
+    // RB19: helmet under the halo's front crossbar (y ~0 at z 0.3), wheel 0.37 m ahead and ~17 degrees below the eye line,
+    // as in an F1 onboard view. The procedural cockpit is in src/formula-cockpit.ts.
+    if(definition.id==='red-bull-rb19')prepared.userData.cockpitEye={x:center.x,y:center.y+.15,z:center.z-.37};
   }
   // Clone only the actual rear-light materials. Headlights and body paint retain
   // their original materials, even where the exporter shared a texture atlas.
@@ -237,6 +239,7 @@ export class CarRig {
       if(spin)spin.rotation.x=THREE.MathUtils.euclideanModulo(spin.rotation.x+distance/wheel.userData.radius,Math.PI*2);
     }
     this.steeringWheel?.quaternion.setFromAxisAngle(this.steeringAxis,-steering*(this.steeringWheel.userData.steeringRatio??12));
+    this.instruments.pose();
     this.lamps.forEach(material=>{material.emissiveIntensity=.12+THREE.MathUtils.clamp(brake*4,0,1)*3.2;});
   }
   setHeadlights(enabled:boolean){this.headlights.forEach((original,material)=>{material.emissive.copy(enabled?new THREE.Color(0xdceeff):original.color);material.emissiveIntensity=enabled?2:original.intensity;});}

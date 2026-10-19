@@ -1,5 +1,5 @@
 import { motion, useReducedMotion } from 'framer-motion';
-import { CAMERA_LABELS, CAMERA_MODES, type CameraMode } from './camera-modes';
+import { CAMERA_LABELS, type CameraMode } from './camera-modes';
 
 const OUTER = 150, INNER = 62, SIZE = OUTER * 2 + 20, C = SIZE / 2;
 const point = (radius: number, angle: number) => [C + Math.sin(angle) * radius, C - Math.cos(angle) * radius];
@@ -12,14 +12,14 @@ function segment(angle: number, half: number) {
 }
 
 /** Radial camera picker shown while the camera key is held. Move the mouse toward a view and release the key. */
-export function CameraWheel({ current, pick, keyHint, onPick }: { current: CameraMode; pick?: CameraMode; keyHint: string; onPick: (mode: CameraMode) => void }) {
+export function CameraWheel({ modes, current, pick, keyHint, onPick }: { modes: readonly CameraMode[]; current: CameraMode; pick?: CameraMode; keyHint: string; onPick: (mode: CameraMode) => void }) {
   const still = useReducedMotion();
-  const step = Math.PI * 2 / CAMERA_MODES.length;
+  const step = Math.PI * 2 / modes.length;
   return <motion.div className="camera-wheel" role="listbox" aria-label="Choose camera"
     initial={{ opacity: 0, scale: still ? 1 : .9 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: still ? 1 : .95 }} transition={{ duration: still ? 0 : .14 }}>
     <svg viewBox={`0 0 ${SIZE} ${SIZE}`} width={SIZE} height={SIZE}>
       <circle className="camera-wheel-hub" cx={C} cy={C} r={INNER - 6} />
-      {CAMERA_MODES.map((mode, i) => {
+      {modes.map((mode, i) => {
         const angle = i * step, [lx, ly] = point((OUTER + INNER) / 2, angle);
         return <g key={mode} role="option" aria-selected={pick === mode} className={`camera-wheel-slice${pick === mode ? ' picked' : ''}${current === mode ? ' current' : ''}`} onPointerDown={() => onPick(mode)}>
           <path d={segment(angle, step / 2)} />

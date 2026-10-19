@@ -410,10 +410,10 @@ export class Simulation {
       RAPIER.QueryFilterFlags.EXCLUDE_DYNAMIC|RAPIER.QueryFilterFlags.EXCLUDE_KINEMATIC|RAPIER.QueryFilterFlags.EXCLUDE_SENSORS,QUERY_GROUPS);
     return !hit;
   }
-  roadEdgeDistance(position:Vec3,direction:Vec3):number {
-    const hit=this.world.castRay(new RAPIER.Ray(position,direction),40,false,
+  roadEdgeDistance(position:Vec3,direction:Vec3,range=40):number {
+    const hit=this.world.castRay(new RAPIER.Ray(position,direction),range,false,
       RAPIER.QueryFilterFlags.EXCLUDE_DYNAMIC|RAPIER.QueryFilterFlags.EXCLUDE_KINEMATIC|RAPIER.QueryFilterFlags.EXCLUDE_SENSORS,QUERY_GROUPS);
-    return hit?.timeOfImpact??40;
+    return hit?.timeOfImpact??range;
   }
   private updateWheelContacts() {
     this.vehicle.updateVehicle(

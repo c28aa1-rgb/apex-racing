@@ -29,7 +29,7 @@ Open http://127.0.0.1:5173. Dependencies are already installed in this delivered
 | Escape | Pause / resume |
 | Enter | Start a race |
 | G / M | Toggle ghost / sound |
-| C (tap) | Next camera: Chase, Far chase, Bumper, Cockpit, Drone |
+| C (tap) | Next camera: Chase, Far chase, Hood, Cockpit, Drone, plus T-cam (behind the driver's helmet) on the F1 car |
 | C (hold) | Camera wheel: point the mouse at a view, release C to switch |
 | B (hold) | Look behind |
 | Mouse / wheel | Look around / zoom the chase cameras |
@@ -38,6 +38,12 @@ Open http://127.0.0.1:5173. Dependencies are already installed in this delivered
 The camera choice is remembered, and Settings lists every view. In the garage, drag across the car to orbit horizontally and change viewing elevation. Rotation buttons and Reset view are also available. First-person mode uses the modeled cockpit and detected driver-seat position; `/dev` provides per-car camera adjustments. Interior detail and visibility depend on the supplied model.
 
 Pass the timing checkpoints in order and complete the lap. Each checkpoint is painted across the asphalt as a teal band and the finish as a checkered line. Their triggers are measured from the venue's collision mesh and span the whole drivable width between barriers, including grass and run-off, so no line past a marking can miss it (`shared/gates.ts`). Finish times and best input replays are saved on this device, and the best one races alongside you as the personal ghost (G toggles it). Custom layouts recorded in `/dev` keep their own personal best and ghost, keyed to that exact start, checkpoint and finish layout. Choose a nickname to submit a run. Leaderboard ghost buttons let you race another driver's verified run. Losing browser storage loses the anonymous identity; there is no account recovery or cross-device sign-in.
+
+### Racing line
+
+Settings → Driving → Racing line paints a driving line on every circuit: Full line (the default), Braking zones, or Off. Its colour reacts to your car and speed. Green means full throttle stays within reach of the next corners, yellow means ease off, and red means brake. Arrive too fast and the red starts sooner. A faster-braking, higher-grip car gets later braking points. The line is purely visual, so times still count.
+
+The line's path is baked offline from each circuit's drive trace and collision mesh by `npm run build:racing-lines` (`design/build-racing-lines.ts`, output `shared/racing-lines.ts`). Rerun it after changing a trace or a venue model. The collision mesh's surface labels are wrong in places, so the bake also uses what the track looks like. `npm run build:venue-surfaces` draws each venue from above in Google Chrome against a running dev server (set `GAME_URL` if it is not on port 5173) and classifies road, grass and gravel by colour into `design/surfaces/`. Run it before the bake after changing a venue model. Per-car target speeds come from the car physics at runtime (`shared/racing-line.ts`). `npm run test:racing-lines` drives every line with the route bot in five cars, and `/tests/racing-line-inspection.html` draws the line over the textured venue from above.
 
 ### Car damage
 

@@ -7,6 +7,10 @@ import { tireStress } from './race-audio';
 
 /** Size of the marshal drone model in the world: about 8 m across its rotors, lamps about 1 m apart. */
 const DRONE_SCALE=4.2;
+/** Probe points around the drone's centre (camera right, up; m): its rotor span and height, with a margin. */
+const DRONE_EXTENT:[number,number][]=[[0,0],[-4.3,-1.3],[4.3,-1.3],[-4.3,1.3],[4.3,1.3]];
+/** Space kept between the drone and scenery in front of it (m), and the closest it comes as a share of its usual distance. */
+const DRONE_CLEARANCE=1.5,MIN_FIT=.06;
 export class StartLight extends THREE.Group {
   private lamps:THREE.MeshStandardMaterial[]=[];
   /** Detailed model only: the inside of each lamp hood (lit with its lamp) and the always-on accent LEDs. */
@@ -14,6 +18,7 @@ export class StartLight extends THREE.Group {
   private rotors:THREE.Group[]=[];
   /** Spin of each rotor in radians per second; chosen so blades read as moving rather than strobing at 60 fps. */
   private rotorSpeeds:number[]=[];
+  private offset=new THREE.Vector3();private probe=new THREE.Vector3();private corner=new THREE.Vector3();
   /** Emissive strength of a lit lamp. The detailed model's LED lenses need more than the fallback's. */
   private glow=1;
   /** Lens tint while waiting [red phase, green phase]. The detailed LED lenses stay visibly red when off, like smoked glass. */
@@ -77,12 +82,24 @@ export class StartLight extends THREE.Group {
     for(const x of [-2.2,2.2]){add(new THREE.BoxGeometry(.42,.07,.42),alloy,x,-.86,0);add(new THREE.BoxGeometry(.08,.32,.08),alloy,x,-.72,0);}
     for(let i=0;i<14;i++)add(new THREE.BoxGeometry(.18,.12,.07),black,(i-6.5)*.23,.55,-.36);
   }
-  /** `sinceStart` is seconds since the lights sequence began; the drone swoops in from above and to one side during the first 1.5 s. */
-  update(camera:THREE.Camera,count:number,elapsedSinceGo:number,time:number,reduced:boolean,sinceStart=Infinity) {
+  /**
+   * `sinceStart` is seconds since the lights sequence began; the drone swoops in from above and to one side during the first 1.5 s.
+   * `freeDistance` returns how far a ray from a point travels before meeting the venue: where the ground or a wall
+   * stands between the camera and the drone (a camera looking down, a hill ahead), the drone moves towards the camera
+   * and shrinks by the same factor, so it keeps its place and size on screen without sinking into the scenery.
+   */
+  update(camera:THREE.Camera,count:number,elapsedSinceGo:number,time:number,reduced:boolean,sinceStart=Infinity,freeDistance?:(from:THREE.Vector3,direction:THREE.Vector3)=>number) {
     this.visible=count>0||(elapsedSinceGo>=0&&elapsedSinceGo<1.1);if(!this.visible)return;
     const exit=count>0?0:Math.min(1,elapsedSinceGo/1.1);
     const arrive=reduced||count===0?1:Math.max(0,Math.min(1,sinceStart/1.5)),away=Math.pow(1-arrive,3);
-    this.position.set(away*-26,3.1+(reduced?0:Math.sin(time*2)*.045)+exit*exit*12+away*30,-20-exit*10-away*55).applyQuaternion(camera.quaternion).add(camera.position);
+    const offset=this.offset.set(away*-26,3.1+(reduced?0:Math.sin(time*2)*.045)+exit*exit*12+away*30,-20-exit*10-away*55);
+    let fit=1;
+    if(freeDistance)for(const [x,y] of DRONE_EXTENT){
+      const probe=this.probe.copy(offset).add(this.corner.set(x,y,0)).applyQuaternion(camera.quaternion),distance=probe.length();
+      const free=freeDistance(camera.position,probe.normalize());
+      if(free<distance+DRONE_CLEARANCE)fit=Math.min(fit,Math.max(MIN_FIT,(free-DRONE_CLEARANCE)/distance));
+    }
+    this.position.copy(offset).multiplyScalar(fit).applyQuaternion(camera.quaternion).add(camera.position);this.scale.setScalar(fit);
     this.quaternion.copy(camera.quaternion);this.rotateX(-.055);this.rotateY(away*.5);this.rotateZ(away*-.18);
     this.lamps.forEach((m,i)=>{const lit=count===0||i<6-count;m.color.set(this.lensTint[count===0?1:0]);m.emissive.set(count===0?0x26ff6b:0xff1208);m.emissiveIntensity=lit?this.glow:0;});
     this.hoods.forEach((m,i)=>{const lit=count===0||i<6-count;m.emissive.set(count===0?0x26ff6b:0xff2a14);m.emissiveIntensity=lit?.95:0;});

@@ -2,7 +2,8 @@ import { DT, initPhysics, Input, MAX_TICKS, PHYSICS_VERSION, rotate, Simulation,
 import { CONE_TRACK, TRACKS, TRAINING_GROUNDS, medalFor, type Track, type Vec3 } from '../shared/tracks';
 import { carById, DEFAULT_CAR, type CarDefinition, type CarId } from '../shared/cars';
 import { stepReplay, type Run } from '../shared/replay';
-import { CAMERA_LABELS, CAMERA_MODES, RaceWorld, type CameraMode, type CockpitOffset } from './world';
+import { CAMERA_LABELS, RaceWorld, type CameraMode, type CockpitOffset } from './world';
+import { cameraModesFor } from './camera-modes';
 import { bestRun, read, saveBestRun, write } from './storage';
 import { loadCockpitOffsets, hasLocalStartPlacement } from './dev-spawns';
 import { RaceAudio } from './race-audio';
@@ -226,9 +227,11 @@ export class Game {
   setGarage(active:boolean) {this.garageView=active;this.world.setMouseLook(false);if(active){void this.world.loadGarage();this.world.garage(0,true);}else this.world.overview(0,true);}
   /** Steps to the next race camera and remembers it. */
   toggleCamera() {
-    const next=CAMERA_MODES[(CAMERA_MODES.indexOf(this.world.cameraMode)+1)%CAMERA_MODES.length];
+    const modes=this.cameraModes,next=modes[(modes.indexOf(this.world.cameraMode)+1)%modes.length];
     this.setCamera(next);
   }
+  /** The views the current car offers (the T-cam is F1 only). */
+  get cameraModes(){return cameraModesFor(this.state.car.id);}
   private cameraHoldTimer=0;
   private wheelAim={x:0,y:0};
   /** Tap the camera key to cycle views; hold it while driving to open the camera wheel. */
@@ -260,7 +263,7 @@ export class Game {
     if(length>28){
       // Segments run clockwise from the top, matching the wheel drawn by CameraWheel.
       const angle=(Math.atan2(aim.x,-aim.y)+Math.PI*2)%(Math.PI*2);
-      pick=CAMERA_MODES[Math.round(angle/(Math.PI*2/CAMERA_MODES.length))%CAMERA_MODES.length];
+      const modes=this.cameraModes;pick=modes[Math.round(angle/(Math.PI*2/modes.length))%modes.length];
     }
     if(pick!==this.state.cameraWheel?.pick)this.emit({cameraWheel:{pick}});
   };
@@ -672,9 +675,10 @@ export class Game {
     }
     this.sound.update(this.sim,['racing','replay','countdown','celebrating','finished'].includes(this.state.mode)||(this.state.mode==='party-finished'&&!!this.partyRace?.ready),this.state.muted,this.settings,!['celebrating','finished','party-finished'].includes(this.state.mode));
     this.world.skidMarks.update(this.sim,this.settings.skidMarks&&['racing','replay','paused','celebrating','finished'].includes(this.state.mode));
+    this.world.racingLine.update(this.sim,this.settings.racingLine,['countdown','racing','replay','paused'].includes(this.state.mode));
     this.world.carDamage.reducedMotion=this.world.reducedMotion;
     this.world.carDamage.update(this.sim,this.world.car,this.state.mode==='paused'?0:elapsed,this.settings.carDamage&&['racing','replay','paused','celebrating','finished','party-finished'].includes(this.state.mode));
-    this.world.startLight.update(this.world.camera,this.state.mode==='countdown'?this.state.countdown:0,this.state.mode==='racing'?(now-this.goAt)/1000:Infinity,now/1000,this.world.reducedMotion,this.state.mode==='countdown'?(now-(this.countdownUntil-6500))/1000:Infinity);
+    this.world.startLight.update(this.world.camera,this.state.mode==='countdown'?this.state.countdown:0,this.state.mode==='racing'?(now-this.goAt)/1000:Infinity,now/1000,this.world.reducedMotion,this.state.mode==='countdown'?(now-(this.countdownUntil-6500))/1000:Infinity,(from,direction)=>this.sim.roadEdgeDistance(from,direction,120));
     if(now-this.lastUI>65&&!['celebrating','finished'].includes(this.state.mode)){this.lastUI=now;const live:Partial<GameState>={time:this.partyRace?(this.state.mode==='party-finished'?this.state.time:this.partyRace.started?Math.max(0,Math.round(now-this.countdownUntil)):0):this.sim.timeMs,speed:Math.round(this.sim.speed*this.state.track.metersPerUnit*2.23694),checkpoint:this.sim.checkpoint,boost:this.sim.boosting,drifting:this.sim.drifting,...(this.noticeUntil&&now>this.noticeUntil&&this.state.mode==='racing'?{notice:''}:{})};
       // Menus and pauses re-render the whole interface; only do it when a shown value moved. Live driving modes always refresh for the RPM gauge.
       if(['countdown','racing','replay'].includes(this.state.mode)||(Object.keys(live) as (keyof GameState)[]).some(key=>live[key]!==this.state[key]))this.emit(live);}

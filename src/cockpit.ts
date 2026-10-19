@@ -1,8 +1,8 @@
 import * as THREE from 'three';
-import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import type { CarDefinition, CarId } from '../shared/cars';
 import type { Simulation } from '../shared/physics';
 import { TRANSMISSIONS } from '../shared/transmission';
+import { buildFormulaCockpit, type FormulaCockpit } from './formula-cockpit';
 
 type Mount={p:[number,number,number];size:[number,number];tilt:number;yaw?:number;wheel?:boolean};
 // Measured against the instrument faces in the normalized, metre-scale GLBs.
@@ -43,6 +43,10 @@ export class CockpitInstruments {
   private elapsed=1;
   private signature='';
   readonly surfaces:THREE.Mesh[]=[];
+  /** RB19 only: the procedural wheel, driver and tub (src/formula-cockpit.ts). */
+  private formula?:FormulaCockpit;
+  /** Re-aims parts that follow the steering wheel; call every frame after the wheel turns. */
+  pose(){this.formula?.pose();}
   constructor(root:THREE.Object3D,private definition:CarDefinition){
     const analog=dials[definition.id];
     this.canvas.width=analog?1024:512;this.canvas.height=analog?512:384;
@@ -53,9 +57,8 @@ export class CockpitInstruments {
     this.ownedTextures.push(this.texture);this.ownedMaterials.push(this.material);
     const wheel=root.getObjectByName('apex-steering-wheel');
     if(definition.id==='red-bull-rb19'&&wheel){
-      this.buildFormulaWheel(wheel);
-      this.mount(wheel,{p:[0,.022,-.027],size:[.110,.069],tilt:0},false);
-      wheel.scale.set(.90,.86,1);
+      this.formula=buildFormulaCockpit(root,wheel,{geometries:this.ownedGeometries,materials:this.ownedMaterials,textures:this.ownedTextures});
+      this.mount(wheel,{p:[0,.043,-.0265],size:[.104,.070],tilt:0},false);
     }else if(analog){
       analog.forEach((dial,i)=>{
         const geometry=new THREE.CircleGeometry(dial.radius,48),uv=geometry.getAttribute('uv');
@@ -76,6 +79,8 @@ export class CockpitInstruments {
     mesh.position.fromArray(mount.p);if(relative)mesh.position.sub(parent.position);
     mesh.rotation.set(mount.tilt,Math.PI+(mount.yaw??0),0);
   }
+  /** RB19: show the driver's body from the cockpit, and the helmet too from the T-cam behind it. */
+  setDriverView(view:'cockpit'|'tcam'|'none'){this.formula?.setDriverVisible(view!=='none',view==='tcam');}
   update(sim:Simulation,dt:number,visible:boolean){
     if(!visible){this.elapsed=1;return;}
     this.elapsed+=dt;if(this.elapsed<1/15)return;this.elapsed=0;
@@ -97,7 +102,8 @@ export class CockpitInstruments {
       });
     }else{
       const fraction=Math.min(1,rpm/redline);
-      for(let i=0;i<15;i++){c.fillStyle=i/15<fraction?(i<8?'#58ee9c':i<12?'#f9ce4b':'#fd5364'):'#203039';c.fillRect(12+i*33,12,26,17);}
+      if(this.formula)this.formula.paintLeds(fraction);
+      else for(let i=0;i<15;i++){c.fillStyle=i/15<fraction?(i<8?'#58ee9c':i<12?'#f9ce4b':'#fd5364'):'#203039';c.fillRect(12+i*33,12,26,17);}
       c.fillStyle='#a6b7c1';c.font='600 17px monospace';c.textAlign='left';c.fillText(this.definition.shortName.toUpperCase(),16,60);
       c.fillStyle='#edf8f4';c.font='bold 152px monospace';c.textAlign='center';c.fillText(gear<0?'R':String(gear),256,213);
       c.font='bold 39px monospace';c.fillText(String(speed).padStart(3,'0'),81,156);c.fillText(String(Math.round(rpm)),425,156);
@@ -131,55 +137,6 @@ export class CockpitInstruments {
     const angle=(135+Math.min(1,value/max)*270)*Math.PI/180;
     c.save();c.translate(128,128);c.rotate(angle);c.fillStyle='#ff543e';c.beginPath();c.moveTo(-20,-3);c.lineTo(104,0);c.lineTo(-20,3);c.closePath();c.fill();c.restore();
     c.fillStyle='#76868d';c.beginPath();c.arc(128,128,8,0,Math.PI*2);c.fill();
-  }
-  private buildFormulaWheel(wheel:THREE.Object3D){
-    wheel.clear();wheel.userData.steeringRatio=4;
-    const hard:THREE.BufferGeometry[]=[],rubber:THREE.BufferGeometry[]=[];
-    const add=(geometry:THREE.BufferGeometry,color:number,x=0,y=0,z=0,list=hard)=>{
-      geometry.translate(x,y,z);const count=geometry.getAttribute('position').count,colors=new Float32Array(count*3),c=new THREE.Color(color);
-      for(let i=0;i<count;i++)c.toArray(colors,i*3);geometry.setAttribute('color',new THREE.BufferAttribute(colors,3));list.push(geometry);
-    };
-    const outline=new THREE.Shape();outline.moveTo(-.060,.063);outline.lineTo(.060,.063);outline.lineTo(.070,.046);outline.lineTo(.112,.050);outline.quadraticCurveTo(.126,.039,.112,.017);outline.lineTo(.090,-.006);outline.lineTo(.079,-.057);outline.quadraticCurveTo(.074,-.068,.055,-.068);outline.lineTo(-.055,-.068);outline.quadraticCurveTo(-.074,-.068,-.079,-.057);outline.lineTo(-.090,-.006);outline.lineTo(-.112,.017);outline.quadraticCurveTo(-.126,.039,-.112,.050);outline.lineTo(-.070,.046);outline.closePath();
-    const plate=new THREE.ExtrudeGeometry(outline,{depth:.014,bevelEnabled:true,bevelThickness:.002,bevelSize:.002,bevelSegments:2,steps:1,curveSegments:8});plate.translate(0,0,-.018);
-    const weave=document.createElement('canvas');weave.width=weave.height=64;const wc=weave.getContext('2d')!;
-    for(let y=0;y<64;y+=8)for(let x=0;x<64;x+=8){wc.fillStyle=(x+y)%16?'#202326':'#171a1c';wc.fillRect(x,y,8,8);wc.fillStyle='#292c2e';wc.fillRect(x,y,(x+y)%16?2:7,(x+y)%16?7:2);}
-    const weaveTexture=new THREE.CanvasTexture(weave);weaveTexture.colorSpace=THREE.SRGBColorSpace;weaveTexture.wrapS=weaveTexture.wrapT=THREE.RepeatWrapping;weaveTexture.repeat.set(70,70);weaveTexture.anisotropy=4;
-    const plateMaterial=new THREE.MeshPhysicalMaterial({map:weaveTexture,roughness:.38,metalness:.02,clearcoat:.32,clearcoatRoughness:.28});
-    const plateMesh=new THREE.Mesh(plate,plateMaterial);plateMesh.name='apex-formula-carbon';wheel.add(plateMesh);
-    this.ownedGeometries.push(plate);this.ownedMaterials.push(plateMaterial);this.ownedTextures.push(weaveTexture);
-    for(const side of [-1,1]){
-      const curve=new THREE.CatmullRomCurve3([new THREE.Vector3(side*.109,.048,-.005),new THREE.Vector3(side*.139,.040,-.014),new THREE.Vector3(side*.143,.005,-.024),new THREE.Vector3(side*.132,-.044,-.019),new THREE.Vector3(side*.080,-.052,-.003)]);
-      const grip=new THREE.TubeGeometry(curve,36,.014,12,false);grip.scale(1,1,1.25);add(grip,0x121517,0,0,0,rubber);
-      const thumb=new THREE.SphereGeometry(1,12,8);thumb.scale(.014,.021,.010);add(thumb,0x121517,side*.121,.017,-.032,rubber);
-      const paddle=new THREE.BoxGeometry(.025,.066,.003);paddle.rotateZ(side*-.16);add(paddle,0x24292c,side*.119,-.003,.025);
-      add(new THREE.BoxGeometry(.024,.014,.003),0x262b2e,side*.093,-.057,.032);
-      for(let i=0;i<3;i++){
-        const collar=new THREE.CylinderGeometry(.0075,.008,.003,16);collar.rotateX(Math.PI/2);add(collar,0x656b6d,side*(.098-i*.012),.036-i*.028,-.023);
-        const button=new THREE.CylinderGeometry(.005,.0055,.004,16);button.rotateX(Math.PI/2);
-        add(button,[0xb82036,0x246f9c,0xba9a30][i],side*(.098-i*.012),.036-i*.028,-.026);
-      }
-      const ring=new THREE.CylinderGeometry(.011,.011,.003,24);ring.rotateX(Math.PI/2);add(ring,side<0?0x305789:0x947e2f,side*.041,-.045,-.023);
-      const dial=new THREE.CylinderGeometry(.008,.009,.007,12);dial.rotateX(Math.PI/2);add(dial,0x171b1d,side*.041,-.045,-.028);
-      add(new THREE.BoxGeometry(.002,.008,.001),0xdcded9,side*.041,-.042,-.032);
-      for(const y of [-.058,.041]){const screw=new THREE.CylinderGeometry(.0018,.0018,.001,8);screw.rotateX(Math.PI/2);add(screw,0x737c81,side*.066,y,-.022);}
-    }
-    const centerDial=new THREE.CylinderGeometry(.012,.013,.008,16);centerDial.rotateX(Math.PI/2);add(centerDial,0x1d2226,0,-.036,-.026);
-    add(new THREE.BoxGeometry(.002,.008,.001),0xd7d9d2,0,-.032,-.031);
-    const grain=document.createElement('canvas');grain.width=grain.height=64;const gc=grain.getContext('2d')!,pixels=gc.createImageData(64,64);let seed=119;
-    for(let i=0;i<pixels.data.length;i+=4){seed=(Math.imul(seed,1664525)+1013904223)>>>0;const value=110+(seed>>>27);pixels.data.set([value,value,value,255],i);}gc.putImageData(pixels,0,0);
-    const gripTexture=new THREE.CanvasTexture(grain);gripTexture.wrapS=gripTexture.wrapT=THREE.RepeatWrapping;gripTexture.repeat.set(8,2);this.ownedTextures.push(gripTexture);
-    for(const [parts,roughness] of [[hard,.36],[rubber,.78]] as const){
-      const sources=parts.map(g=>{const next=g.index?g.toNonIndexed():g;if(parts===hard)next.deleteAttribute('uv');return next;}),geometry=mergeGeometries(sources);
-      if(geometry){const material=new THREE.MeshStandardMaterial({vertexColors:true,roughness,metalness:parts===hard?.08:0,...(parts===rubber?{bumpMap:gripTexture,bumpScale:.00035}:{})});const mesh=new THREE.Mesh(geometry,material);mesh.name='apex-formula-wheel';wheel.add(mesh);this.ownedGeometries.push(geometry);this.ownedMaterials.push(material);}
-      new Set([...parts,...sources]).forEach(g=>g.dispose());
-    }
-    const labels=document.createElement('canvas');labels.width=1024;labels.height=512;const c=labels.getContext('2d')!;
-    c.fillStyle='#b9c6c8';c.textAlign='center';c.font='bold 19px sans-serif';
-    for(const [text,x,y] of [['N',68,80],['RADIO',130,191],['PIT',185,295],['DRS',956,80],['DIFF',894,191],['MARK',839,295],['ENTRY',316,476],['MULTI',708,476],['STRAT',512,438]] as const)c.fillText(text,x,y);
-    const texture=new THREE.CanvasTexture(labels);texture.colorSpace=THREE.SRGBColorSpace;
-    const material=new THREE.MeshBasicMaterial({map:texture,transparent:true,depthWrite:false,toneMapped:false});
-    const geometry=new THREE.PlaneGeometry(.215,.135),mesh=new THREE.Mesh(geometry,material);mesh.rotation.y=Math.PI;mesh.position.z=-.024;wheel.add(mesh);
-    this.ownedTextures.push(texture);this.ownedMaterials.push(material);this.ownedGeometries.push(geometry);
   }
   dispose(){this.ownedGeometries.forEach(g=>g.dispose());this.ownedMaterials.forEach(m=>m.dispose());this.ownedTextures.forEach(t=>t.dispose());}
 }
