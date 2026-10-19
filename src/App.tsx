@@ -15,6 +15,7 @@ import { RpmGauge, arcPath, arcPoint } from './RacePanels';
 import { NAME_NUDGE_FINISHES } from './progression';
 import { NameNudge } from './NameNudge';
 import { markPosted, syncBests } from './best-sync';
+import { deletedRunNotices, dismissDeletedRun } from './deleted-runs';
 import { PartyPanel } from './PartyPanel';
 import { LotMap } from './LotMap';
 import { CAMERA_LABELS } from './camera-modes';
@@ -237,6 +238,9 @@ export function App({game}:{game:Game}) {
   const [transitioning,setTransitioning]=useState(false);
   const [dialog,setDialog]=useState<'help'|'profile'|'leaderboard'|'settings'|null>(null);
   const [player,setPlayer]=useState<Player|null>(()=>read('player',null));
+  // Runs removed from the leaderboard by hand: told once, on the menu, with the reason.
+  const [removed,setRemoved]=useState(()=>deletedRunNotices(read<Player|null>('player',null)?.id));
+  const dismissRemoved=()=>{if(removed[0])dismissDeletedRun(removed[0]);setRemoved(list=>list.slice(1));};
   const [nickname,setNickname]=useState(player?.nickname??'Driver');
   const [entries,setEntries]=useState<Entry[]>([]),[boardStatus,setBoardStatus]=useState('Loading leaderboard…');
   const [message,setMessage]=useState(''),[busy,setBusy]=useState(false),[submission,setSubmission]=useState('');
@@ -295,6 +299,7 @@ export function App({game}:{game:Game}) {
     }catch(error){setMessage(error instanceof Error?error.message:'Ghost unavailable.');}finally{setBusy(false);}
   };
   const menu=state.mode==='menu';
+  const notice=menu&&!dialog?removed[0]:undefined;
   // After a few finished races, a driver with no nickname gets a pit board under the nickname button.
   const [nudge,setNudge]=useState(false);const lastMode=useRef(state.mode);
   useEffect(()=>{const from=lastMode.current;lastMode.current=state.mode;
@@ -376,6 +381,7 @@ export function App({game}:{game:Game}) {
       <AnimatePresence>{menu&&view==='garage'&&!state.modelReady&&<motion.div initial={{opacity:0,y:still?0:10}} animate={{opacity:1,y:0}} exit={{opacity:0,y:still?0:-6}} className={`car-loading ${game.modelError?'load-error':''}`} role="status" aria-live="polite">{!game.modelError&&<div className="loading-wheel"><i/><i/><i/></div>}<strong>{game.modelError?'Car unavailable':`Preparing ${state.car.shortName}`}</strong><span>{game.modelError||'Loading geometry, paint and wheel rig…'}</span>{game.modelError&&<button onClick={()=>void game.selectCar(state.car.id)}>Retry car load</button>}</motion.div>}</AnimatePresence>
       <PartyPanel game={game} active={menu&&view==='party'&&partyShown} player={player} onPlayer={next=>{setPlayer(next);setNickname(next.nickname);}} reduced={still}/>
       <AnimatePresence mode="wait">
+      {notice&&<Modal key={notice.key} title={notice.title} reduced={still} onClose={dismissRemoved}><p>{notice.summary}</p><p><strong>Why:</strong> {notice.reason} Checkpoints now only count when you drive over them, so the run no longer completes the lap.</p><p className="muted-text">Your other times are unchanged. Set a new time on this circuit any time.</p><button className="start-button" onClick={dismissRemoved}>Got it</button></Modal>}
       {dialog==='settings'&&<Modal key="settings" title="Race setup" reduced={still} onClose={()=>setDialog(null)}><SettingsPanel game={game}/></Modal>}
       {dialog==='help'&&<Modal key="help" title="Find your line" reduced={still} onClose={()=>setDialog(null)}><p>Hit every checkpoint in order, then cross the invisible finish line. Chase medals, race your best ghost, and put your time on the board.</p><div className="controls-list">{(Object.keys(ACTION_LABELS) as Action[]).map(action=><div key={action}><kbd>{game.keyHint(action)}</kbd><span>{ACTION_LABELS[action]}</span></div>)}</div><p className="muted-text">At speed, sustained steering lets the tail swing outward. Hold your drift key for a deeper slide: faster, harder turns create more drift. Release the drift key, lift off, brake or countersteer to regain grip. The drift key has no effect while parked or driving straight.</p></Modal>}
       {dialog==='profile'&&<Modal key="profile" title="Your driver name" reduced={still} onClose={()=>setDialog(null)}><p>No account needed. Your driver identity stays in this browser.</p><form onSubmit={e=>{e.preventDefault();void savePlayer();}}><label htmlFor="nickname">Nickname</label><input id="nickname" autoFocus value={nickname} onChange={e=>setNickname(e.target.value)} minLength={2} maxLength={18} required autoComplete="nickname"/><p className="muted-text">2–18 letters, numbers, spaces, underscores or hyphens.</p>{message&&<p className="form-message" role="status">{message}</p>}<button className="start-button" type="submit" disabled={busy}>{busy?'Saving…':'Save nickname'}<Icon name="check"/></button></form></Modal>}
