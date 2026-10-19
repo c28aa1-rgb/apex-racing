@@ -12,7 +12,7 @@
 // cells that are too dark or mixed to call stay unknown, and the bake falls back to the collision label there.
 //
 // Output: design/surfaces/<id>.bin.gz: int32 header [x0*100, z0*100, cell*1000, width, height] then one byte per
-// cell (0 road, 1 grass, 2 gravel, 255 unknown), rows from -z.
+// cell (0 road, 1 grass, 2 gravel, 3 kerb, 255 unknown), rows from -z.
 import { chromium } from '@playwright/test';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { gzipSync } from 'node:zlib';
@@ -22,7 +22,7 @@ const arg = (name: string) => process.argv.find(a => a.startsWith(`--${name}=`))
 const only = arg('track')?.split(','), base = process.env.GAME_URL ?? 'http://127.0.0.1:5173';
 /** Cell size (native units), tile size (cells), and how far from the trace the map reaches (native units). */
 const CELL = .5, TILE = 128, REACH = 45;
-export const SURFACE_ROAD = 0, SURFACE_GRASS = 1, SURFACE_GRAVEL = 2, SURFACE_UNKNOWN = 255;
+export const SURFACE_ROAD = 0, SURFACE_GRASS = 1, SURFACE_GRAVEL = 2, SURFACE_KERB = 3, SURFACE_UNKNOWN = 255;
 /** Raw class for white pixels, sorted out once the whole map is in (see below). */
 const WHITE = 254;
 
@@ -33,7 +33,8 @@ function classify(r: number, g: number, b: number) {
   const max = Math.max(r, g, b), min = Math.min(r, g, b), saturation = (max - min) / (max || 1);
   if (max < 40) return SURFACE_UNKNOWN;                          // nothing drawn, or too dark to judge
   if (min > 205) return WHITE;                                   // painted lines on the road, or banners lying on the run-off
-  if (r > g * 1.35 && r > b * 1.35) return SURFACE_ROAD;         // red kerb
+  if (r > g * 1.35 && r > b * 1.35) return SURFACE_KERB;         // red kerb (its white stripes stay unknown and follow it)
+  if (b > r * 1.3 && b > g * 1.1 && saturation > .3) return SURFACE_KERB; // blue kerb or painted run-off (Bugatti)
   if (saturation < .12) return SURFACE_ROAD;                     // near neutral: asphalt (some venues' is warm), concrete, paint
   // Grass and gravel both have clearly less blue than green; tinted asphalt does not.
   if (g > r + 2 && g - b >= 8) return SURFACE_GRASS;             // green-dominant
@@ -80,7 +81,17 @@ try {
       for (let dz = -2; dz <= 2 && all; dz++) for (let dx = -2; dx <= 2 && all; dx++) all = raw[(z + dz) * W + x + dx] === WHITE;
       if (all) for (let dz = -2; dz <= 2; dz++) for (let dx = -2; dx <= 2; dx++) wide[(z + dz) * W + x + dx] = 1;
     }
-    for (let k = 0; k < W * H; k++) if (raw[k] === WHITE) raw[k] = wide[k] ? SURFACE_GRAVEL : SURFACE_UNKNOWN;
+    // Kerbs are a metre wide, too thin to win the vote below: keep them apart, with the white stripes between red
+    // blocks (thin white within 2 m of red) and a cell either side.
+    const kerb = new Uint8Array(W * H);
+    for (let z = 4; z < H - 4; z++) for (let x = 4; x < W - 4; x++) {
+      const k = z * W + x;
+      if (raw[k] !== SURFACE_KERB && !(raw[k] === WHITE && !wide[k])) continue;
+      let near = raw[k] === SURFACE_KERB;
+      for (let dz = -4; dz <= 4 && !near; dz++) for (let dx = -4; dx <= 4 && !near; dx++) near = raw[(z + dz) * W + x + dx] === SURFACE_KERB;
+      if (near) for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) kerb[(z + dz) * W + x + dx] = 1;
+    }
+    for (let k = 0; k < W * H; k++) if (raw[k] === WHITE) raw[k] = wide[k] ? SURFACE_GRAVEL : SURFACE_UNKNOWN; else if (raw[k] === SURFACE_KERB) raw[k] = SURFACE_ROAD;
     // 5x5 majority vote; a winner needs 60% of the known cells, and at least half the window known.
     const surface = new Uint8Array(W * H).fill(SURFACE_UNKNOWN), counts = [0, 0, 0];
     for (let z = 0; z < H; z++) for (let x = 0; x < W; x++) {
@@ -96,11 +107,12 @@ try {
       const best = counts.indexOf(Math.max(...counts));
       if (counts[best] >= known * .6) surface[z * W + x] = best;
     }
+    for (let k = 0; k < W * H; k++) if (kerb[k]) surface[k] = SURFACE_KERB;
     const header = new Int32Array([Math.round(x0 * 100), Math.round(z0 * 100), Math.round(CELL * 1000), W, H]);
     const file = gzipSync(Buffer.concat([Buffer.from(header.buffer), Buffer.from(surface)]), { level: 9 });
     writeFileSync(`design/surfaces/${track.id}.bin.gz`, file);
     const share = (c: number) => (surface.filter(v => v === c).length / surface.filter(v => v !== SURFACE_UNKNOWN).length * 100).toFixed(0);
-    console.log(`${track.id.padEnd(12)} ${tiles} tiles, ${W}x${H} cells, road ${share(SURFACE_ROAD)}% grass ${share(SURFACE_GRASS)}% gravel ${share(SURFACE_GRAVEL)}% of known, ${(file.length / 1024).toFixed(0)} kB`);
+    console.log(`${track.id.padEnd(12)} ${tiles} tiles, ${W}x${H} cells, road ${share(SURFACE_ROAD)}% kerb ${share(SURFACE_KERB)}% grass ${share(SURFACE_GRASS)}% gravel ${share(SURFACE_GRAVEL)}% of known, ${(file.length / 1024).toFixed(0)} kB`);
   }
 } finally {
   await browser.close();

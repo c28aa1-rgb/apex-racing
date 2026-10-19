@@ -4,8 +4,10 @@ export type GateMesh = { vertices: Float32Array; indices: Uint32Array; surfaces:
 /**
  * A timing gate measured against the physical venue. Lateral offsets run along
  * `side` (forward rotated a quarter turn clockwise), relative to `position`.
- * The trigger spans every drivable metre between barriers; the painted line
- * covers the hard racing surface.
+ * The painted line covers the hard racing surface from edge to edge, and only
+ * a car whose centre crosses that paint passes the gate: cutting across grass,
+ * gravel or run-off beside it does not count. `left`/`right` reach out to the
+ * barriers and bound the surface heights.
  */
 export type FittedGate = Gate & {
   side: Vec3; left: number; right: number; roadLeft: number; roadRight: number;
@@ -206,11 +208,11 @@ export function fitGate(gate: Gate, mesh?: GateMesh): FittedGate {
     roadLeft: roadA - middle, roadRight: roadB - middle, heights, heightAt };
 }
 
-/** Whether a point where the car crosses a gate plane lies inside the gate. */
+/** Whether a point where the car crosses a gate plane lies over the gate's painted line. */
 export function insideGate(gate: FittedGate, point: Vec3) {
   const dx = point.x - gate.position.x, dz = point.z - gate.position.z;
   const lateral = dx*gate.side.x + dz*gate.side.z;
-  if (lateral < gate.left || lateral > gate.right) return false;
+  if (lateral < gate.roadLeft || lateral > gate.roadRight) return false;
   const position = (lateral - gate.left) / GATE_STEP, index = Math.max(0, Math.min(gate.heights.length - 2, Math.floor(position)));
   const t = Math.min(1, position - index), surface = gate.heights[index] + (gate.heights[index + 1] - gate.heights[index]) * t;
   const clearance = point.y - gate.position.y - surface;

@@ -2,7 +2,6 @@ import {useEffect,useMemo} from 'react';
 import {motion,useSpring,useTransform} from 'framer-motion';
 import {CARS} from '../shared/cars';
 import type {Game} from './game';
-import {unlocked,UNLOCK_XP} from './progression';
 
 // The tachometer shares the speedometer's 246° arc (viewBox 0 0 100 76), mirrored on the left of the screen.
 export const ARC={cx:50,cy:38.5,r:43,start:146.9,sweep:246.3};
@@ -34,8 +33,4 @@ export function RpmGauge({game}:{game:Game}){
     <strong>{reversing?'R':sim.gear}</strong><span>{Math.round(engine.rpm/100)*100} rpm</span>
     <small>{manual?(game.state.mode==='replay'?'Manual replay':'Manual'):'Automatic'}<b>{hint}</b></small>
   </div>;
-}
-export function CareerPanel({game}:{game:Game}){
-  const next=[...CARS].sort((a,b)=>UNLOCK_XP[a.id]-UNLOCK_XP[b.id]).find(c=>!unlocked(game.career,c.id));
-  return <><div className="career-overview"><strong>{game.career.xp.toLocaleString()}<small> REP</small></strong><span>{game.career.finishes} races completed<br/>{CARS.filter(c=>unlocked(game.career,c.id)).length} / {CARS.length} cars unlocked</span></div><p>REP means reputation. Hit every checkpoint in order, then cross the finish. REP arrives at the end; driving around alone earns none.</p><dl className="xp-rules"><div><dt>Complete a race</dt><dd>+100 REP</dd></div><div><dt>Finish in advanced driving mode<small>Manual gears for the whole race; enable in Settings.</small></dt><dd>+100 extra</dd></div><div><dt>First finish on each circuit</dt><dd>+100 extra</dd></div><div><dt>Improve a circuit medal<small>+50 per tier: Bronze, Silver, Gold. Awarded once per tier.</small></dt><dd>+50 / tier</dd></div></dl><p className="xp-example">First circuit + Gold + manual gears = <strong>450 REP</strong>. Repeat manual finish = <strong>200 REP</strong>.</p>{next?<div className="next-unlock"><span>Next unlock</span><strong>{next.name}</strong><progress aria-label="Next car unlock" max={UNLOCK_XP[next.id]} value={game.career.xp}/><small>{UNLOCK_XP[next.id]-game.career.xp} REP to go</small></div>:<p>All cars unlocked. Chase your next personal best.</p>}<p className="muted-text">Progress saves in this browser. Normal races on custom layouts earn REP too. Replays and editor drives do not.</p></>;
 }

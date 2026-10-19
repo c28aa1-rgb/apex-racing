@@ -11,11 +11,10 @@ import { api, read, write, bestRun, type Entry, type Player } from './storage';
 import { hasLocalStartPlacement } from './dev-spawns';
 import { SettingsPanel } from './SettingsPanel';
 import { ACTION_LABELS, type Action } from './controls';
-import { CareerPanel, RpmGauge, arcPath, arcPoint } from './RacePanels';
-import { NAME_NUDGE_REP, UNLOCK_XP, affordable, lifetimeRep, unlocked } from './progression';
+import { RpmGauge, arcPath, arcPoint } from './RacePanels';
+import { NAME_NUDGE_FINISHES } from './progression';
 import { NameNudge } from './NameNudge';
 import { markPosted, syncBests } from './best-sync';
-import { CarUnlock } from './CarUnlock';
 import { PartyPanel } from './PartyPanel';
 import { LotMap } from './LotMap';
 import { CAMERA_LABELS } from './camera-modes';
@@ -118,16 +117,13 @@ function Garage({game,car,modelReady,onRace,onTraining,reduced}:{game:Game;car:C
     ['Turning',car.stats.turning,`${car.stats.turning} / 100`],
     ['Braking',car.stats.braking,`${Math.round(car.physics.brakeDistance*.932*M_TO_FT)} ft · 60–0 mph`]
   ] as const;
-  const [celebrating,setCelebrating]=useState<CarId>();
-  const owned=unlocked(game.career,car.id),price=UNLOCK_XP[car.id],canBuy=affordable(game.career,car.id);
-  const buy=()=>{if(game.buyCar(car.id))setCelebrating(car.id);};
   return <motion.main key="garage" className="garage" initial={{opacity:0,x:reduced?0:24}} animate={{opacity:1,x:0}} exit={{opacity:0,x:reduced?0:16,transition:{duration:reduced?0:.18,ease:[.4,0,1,1]}}} transition={{duration:reduced?0:.38,ease}}>
     {/* Readability shade behind the roster and spec panels; it fades with them during a car unlock. */}
     <div className="garage-shade" aria-hidden="true"/>
     <motion.aside className="garage-roster" aria-label="Choose a car" initial={{opacity:0,x:reduced?0:-14}} animate={{opacity:1,x:0}} transition={{duration:reduced?0:.34,delay:reduced?0:.06,ease}}>
-      <p>{CARS.filter(c=>unlocked(game.career,c.id)).length} / {CARS.length} unlocked · {game.career.xp.toLocaleString()} REP</p><h1>Choose your<br/>next drive.</h1>
-      <div>{[...CARS].sort((a,b)=>UNLOCK_XP[a.id]-UNLOCK_XP[b.id]).map((item,index)=><button key={item.id} className={`${item.id===car.id?'active':''} ${affordable(game.career,item.id)?'can-buy':''}`} onClick={()=>game.selectCar(item.id)} aria-pressed={item.id===car.id}>
-        <span>{String(index+1).padStart(2,'0')}</span><strong>{item.shortName}</strong>{unlocked(game.career,item.id)?item.id===car.id&&<Icon name="check" size={16}/>:<small className="unlock-cost">{UNLOCK_XP[item.id]} REP</small>}</button>)}</div>
+      <p>{CARS.length} cars · all unlocked</p><h1>Choose your<br/>next drive.</h1>
+      <div>{CARS.map((item,index)=><button key={item.id} className={item.id===car.id?'active':''} onClick={()=>game.selectCar(item.id)} aria-pressed={item.id===car.id}>
+        <span>{String(index+1).padStart(2,'0')}</span><strong>{item.shortName}</strong>{item.id===car.id&&<Icon name="check" size={16}/>}</button>)}</div>
     </motion.aside>
     <div className="garage-orbit" aria-label="Drag to orbit around the car" onPointerDown={event => { event.currentTarget.setPointerCapture(event.pointerId); }} onPointerMove={event => { if(event.currentTarget.hasPointerCapture(event.pointerId)) game.world.rotateGarage(event.movementX); }} onPointerUp={event => { event.currentTarget.releasePointerCapture(event.pointerId); }} />
     <section className="garage-stage" aria-live="polite"><span className={modelReady?'ready':''}>{modelReady?'Model ready':'Loading detailed model…'}</span><small>Drag to move along the camera rail</small><button aria-label="Orbit car left" onClick={()=>game.world.rotateGarage(-35)}>↶</button><button aria-label="Orbit car right" onClick={()=>game.world.rotateGarage(35)}>↷</button><button onClick={()=>game.world.resetGarageView()}>Reset view</button></section>
@@ -135,20 +131,15 @@ function Garage({game,car,modelReady,onRace,onTraining,reduced}:{game:Game;car:C
       <span className="garage-discipline">{car.discipline}</span><h2>{car.name}</h2><p>{car.description}</p>
       <dl className="car-facts"><div><dt>Drive</dt><dd>{car.physics.drivetrain}</dd></div><div><dt>Weight</dt><dd>{Math.round(car.physics.massKg*KG_TO_LB).toLocaleString()} lb</dd></div></dl>
       <div className="car-stats">{details.map(([label,value,detail])=><div key={label}><span>{label}<strong>{detail}</strong></span><i><motion.b style={{width:`${value}%`,transformOrigin:"left"}} initial={{scaleX:reduced?1:0}} animate={{scaleX:1}} transition={{duration:reduced?0:.4,delay:reduced?0:.08,ease}}/></i></div>)}</div>
-      <div className="unlock-progress"><span>{owned?'Ready to race':canBuy?`Price ${price.toLocaleString()} REP · you have ${game.career.xp.toLocaleString()}`:`${(price-game.career.xp).toLocaleString()} more REP to buy`}</span><progress aria-label="REP saved toward this car" max={price||1} value={owned?price||1:Math.min(price,game.career.xp)}/><small>Finish +100 REP · manual finish +100 extra<br/>First circuit +100 · medal improvements +50 each</small></div>
-      <details className="garage-rep-guide"><summary>How reputation works</summary><CareerPanel game={game}/></details>
-      {owned||!canBuy?<button className="start-button" disabled={!owned||!modelReady} onClick={onRace}><Icon name="arrow"/><span>{owned?`Race with ${car.shortName}`:`Locked · ${price.toLocaleString()} REP`}</span></button>
-        :<motion.button className="start-button buy-button" onClick={buy} whileHover={{x:reduced?0:3}} whileTap={{scale:reduced?1:.97}}><Icon name="check"/><span>Buy for {price.toLocaleString()} REP</span></motion.button>}
+      <button className="start-button" disabled={!modelReady} onClick={onRace}><Icon name="arrow"/><span>Race with {car.shortName}</span></button>
       <button className="training-entry" disabled={!modelReady} onClick={onTraining}><span className="training-icon" aria-hidden="true"><svg viewBox="0 0 48 48" width="40" height="40">
         <ellipse cx="24" cy="43" rx="17" ry="3" fill="#0006"/>
         <path d="M21.2 5.5h5.6L36 37H12Z" fill="#ff6a1a"/><path d="M24 5.5h2.8L36 37h-6.5Z" fill="#d94a0c"/>
         <path d="M18.3 15.5h11.4l1.9 6.5H16.4ZM14.7 27.5h18.6l1.8 6H12.9Z" fill="#f4f1ea"/>
         <rect x="7" y="36" width="34" height="5" rx="1.5" fill="#22262a"/><rect x="7" y="36" width="34" height="1.6" rx=".8" fill="#3a4046"/>
-      </svg></span><span><strong>Training Grounds</strong><small>Free roam with {car.shortName}{unlocked(game.career,car.id)?'':' · works while locked'} · no clock</small></span><Icon name="arrow" size={18}/></button>
+      </svg></span><span><strong>Training Grounds</strong><small>Free roam with {car.shortName} · no clock</small></span><Icon name="arrow" size={18}/></button>
       <small className="garage-note">Vehicle ratings alter engine force, mass, aero, grip, steering and braking in the simulation.</small>
     </motion.aside></AnimatePresence>
-    <AnimatePresence>{celebrating&&<CarUnlock key={celebrating} car={carById(celebrating)} price={UNLOCK_XP[celebrating]} balance={game.career.xp} still={reduced}
-      onClose={()=>{game.world.endUnveil();setCelebrating(undefined);}} onRace={()=>{game.world.endUnveil();setCelebrating(undefined);onRace();}}/>}</AnimatePresence>
     <footer className="garage-footer"><span>Rear grip breaks progressively under fast, loaded steering.</span><a href={assetUrl('models/garage/CREDITS.txt')} target="_blank" rel="noreferrer">Garage credit</a><a href={assetUrl('models/cars/CREDITS.txt')} target="_blank" rel="noreferrer">Vehicle credits</a></footer>
   </motion.main>;
 }
@@ -304,10 +295,10 @@ export function App({game}:{game:Game}) {
     }catch(error){setMessage(error instanceof Error?error.message:'Ghost unavailable.');}finally{setBusy(false);}
   };
   const menu=state.mode==='menu';
-  // After a race, a driver with enough REP but no nickname gets a pit board under the nickname button.
+  // After a few finished races, a driver with no nickname gets a pit board under the nickname button.
   const [nudge,setNudge]=useState(false);const lastMode=useRef(state.mode);
   useEffect(()=>{const from=lastMode.current;lastMode.current=state.mode;
-    if(state.mode==='menu'&&from!=='menu'&&from!=='replay'&&!player&&lifetimeRep(game.career)>=NAME_NUDGE_REP)setNudge(true);},[state.mode,player,game]);
+    if(state.mode==='menu'&&from!=='menu'&&from!=='replay'&&!player&&game.career.finishes>=NAME_NUDGE_FINISHES)setNudge(true);},[state.mode,player,game]);
   useEffect(()=>{if(player)setNudge(false);},[player]);
   // The paddock mounts only once the curtain covers the old page (its own 3D stage replaces the world view),
   // and leaves first when you switch away, so the two never pop over each other.
@@ -326,8 +317,8 @@ export function App({game}:{game:Game}) {
           <button className={view==='party'&&dialog!=='leaderboard'?'nav-active':''} onClick={()=>changeView('party')}>Party{view==='party'&&dialog!=='leaderboard'&&<motion.span className="nav-line" layoutId="primary-nav-line" transition={{duration:still?0:.26,ease}}/>}</button>
           <button className={dialog==='leaderboard'?'nav-active':''} onClick={()=>{setBoardTrack(trackById(track.id)?.kind==='lot'?TRACKS[0].id:track.id);open('leaderboard');}}>Leaderboards{dialog==='leaderboard'&&<motion.span className="nav-line" layoutId="primary-nav-line" transition={{duration:still?0:.26,ease}}/>}</button>
         </nav>:<span className="current-track">{track.lot?'TG':String(TRACKS.findIndex(t=>t.id===track.id)+1).padStart(2,'0')} <span>/</span> {track.name} <small>{state.car.shortName}</small></span>}
-        <div className="top-actions">{menu&&<button className="career-chip" title="Reputation and car unlocks" onClick={showGarage}>{game.career.xp.toLocaleString()} REP</button>}{menu&&<span className="profile-anchor"><button className={`profile-button ${nudge&&view==='tracks'&&!dialog?'is-nudged':''}`} onClick={()=>{setNudge(false);open('profile');}}><Icon name="user" size={16}/><span>{player?.nickname??'Set nickname'}</span></button>
-          <AnimatePresence>{nudge&&view==='tracks'&&!dialog&&<NameNudge key="name-nudge" rep={lifetimeRep(game.career)} still={still} onDismiss={()=>setNudge(false)} onChoose={()=>{setNudge(false);open('profile');}}/>}</AnimatePresence></span>}
+        <div className="top-actions">{menu&&<span className="profile-anchor"><button className={`profile-button ${nudge&&view==='tracks'&&!dialog?'is-nudged':''}`} onClick={()=>{setNudge(false);open('profile');}}><Icon name="user" size={16}/><span>{player?.nickname??'Set nickname'}</span></button>
+          <AnimatePresence>{nudge&&view==='tracks'&&!dialog&&<NameNudge key="name-nudge" still={still} onDismiss={()=>setNudge(false)} onChoose={()=>{setNudge(false);open('profile');}}/>}</AnimatePresence></span>}
           <div className="volume-control">
             <button className="icon-button" aria-label={state.muted?'Enable sound':'Mute sound'} aria-pressed={state.muted} title={`Sound (${game.keyHint('mute')})`} onClick={()=>game.toggleMute()}><Icon name={state.muted||game.settings.volume===0?'mute':game.settings.volume<=.5?'soundLow':'sound'}/></button>
             <div className="volume-popover">
@@ -350,7 +341,7 @@ export function App({game}:{game:Game}) {
             <h1>{track.name}</h1><p className="description">{track.description}</p>
             <div className="medals" aria-label="Medal target times">{track.medals.map((ms,i)=><div key={i}><span className={`medal medal-${i}`}><Icon name="trophy" size={17}/></span><span>{['Gold','Silver','Bronze'][i]}<strong>{formatTime(ms).slice(0,-1)}</strong></span></div>)}</div>
             <div className="personal-best"><span>{hasLocalStartPlacement(track)?'Personal best · custom layout':'Personal best'}</span><strong>{state.personalBest?formatTime(state.personalBest):'Set your first time'}</strong></div>
-            <motion.button className="start-button" disabled={state.trackLoading||!state.modelReady||!unlocked(game.career,state.car.id)} whileHover={{x:still?0:3}} whileTap={{scale:still?1:.98}} onClick={()=>game.start()}><Icon name="play" size={23}/><span>{!unlocked(game.career,state.car.id)?'Choose an unlocked car':!state.modelReady?'Loading car…':state.trackLoading?'Preparing circuit…':'Race this track'}</span><kbd>Enter</kbd></motion.button>
+            <motion.button className="start-button" disabled={state.trackLoading||!state.modelReady} whileHover={{x:still?0:3}} whileTap={{scale:still?1:.98}} onClick={()=>game.start()}><Icon name="play" size={23}/><span>{!state.modelReady?'Loading car…':state.trackLoading?'Preparing circuit…':'Race this track'}</span><kbd>Enter</kbd></motion.button>
             {state.notice&&<p className="form-message" role="status">{state.notice}</p>}
             <button className={`ghost-toggle ${state.ghost?'selected':''}`} onClick={()=>game.toggleGhost()} aria-pressed={state.ghost}><Icon name="ghost" size={17}/><span>Personal best ghost</span><span className="switch"><i/></span></button>
           </motion.section></AnimatePresence>
@@ -376,7 +367,7 @@ export function App({game}:{game:Game}) {
         {state.mode==='paused'&&<motion.div className="overlay" key="pause" initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}}><motion.section className="result-card" initial={{y:still?0:18,scale:still?1:.97}} animate={{y:0,scale:1}} exit={{y:still?0:8,scale:still?1:.99}} transition={{duration:still?0:.3,ease}}><p className="result-eyebrow">{track.kind==='lot'?'Training Grounds':track.kind==='cones'?'Cone Attack':'Take a breath'}</p><h2>Paused</h2>{state.notice&&<p>{state.notice}</p>}<button className="start-button" onClick={()=>game.resume()}><Icon name="play"/>{track.kind==='lot'?'Keep driving':'Resume race'}<kbd>Esc</kbd></button><button className="secondary-button" onClick={()=>game.restart()}><Icon name="restart"/>{track.kind==='lot'?'Reset car':'Restart run'}</button>{track.kind==='cones'&&<button className="secondary-button" onClick={()=>void game.enterTraining()}>Back to free roam</button>}<button className="secondary-button" onClick={()=>open('settings')}>Settings & controls</button><button className="text-button" onClick={()=>game.menu()}>{track.lot?'Leave the Training Grounds':'Back to tracks'}</button></motion.section></motion.div>}
         {state.mode==='finished'&&<motion.div className="overlay finish-results" key="finish" initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}}><motion.section className="result-card" initial={{y:still?0:20,scale:still?1:.97}} animate={{y:0,scale:1}}>
           <span className="finish-medal"><Icon name="trophy" size={36}/></span><p className="result-eyebrow">{state.newBest?'New personal best':`${track.name} complete`}</p><h2>{medalFor(track,state.time)}{medalFor(track,state.time)!=='Finished'?' medal':''}</h2><strong className="finish-time">{formatTime(state.time)}</strong>
-          {game.reward&&<div className="career-reward"><strong>+{game.reward.earned} REP</strong><span>{game.career.xp.toLocaleString()} total · {game.career.finishes} finishes</span>{game.reward.newCars.map(id=><p key={id}>Unlocked: {carById(id).name}</p>)}<details className="xp-breakdown"><summary>REP breakdown</summary>{Object.entries(game.reward.breakdown).filter(([,value])=>value>0).map(([key,value])=><div key={key}><span>{{finish:'Race completed',firstCircuit:'First circuit finish',medal:'Medal improvement',manual:'Manual driving bonus'}[key]}</span><b>+{value}</b></div>)}</details></div>}<p className="finish-detail">{track.kind==='cones'?(state.penalties?`${state.penalties} ${state.penalties===1?'cone':'cones'} · +${state.penalties} s included`:'Clean run · no cones touched'):game.sim.respawns?`${game.sim.respawns} checkpoint recoveries`:'Clean run'}<span> / </span>{state.checkpoint} {track.kind==='cones'?'gates':'checkpoints'}</p>
+          <p className="finish-detail">{track.kind==='cones'?(state.penalties?`${state.penalties} ${state.penalties===1?'cone':'cones'} · +${state.penalties} s included`:'Clean run · no cones touched'):game.sim.respawns?`${game.sim.respawns} checkpoint recoveries`:'Clean run'}<span> / </span>{state.checkpoint} {track.kind==='cones'?'gates':'checkpoints'}</p>
           <div className="result-actions"><button className="start-button" onClick={()=>game.restart()}><Icon name="restart"/>Race again<kbd>{game.keyHint('restart')}</kbd></button>{!hasLocalStartPlacement(track)&&<button className="secondary-button" onClick={submit} disabled={busy}><Icon name="trophy"/>{busy?'Verifying…':'Submit to leaderboard'}</button>}<button className="secondary-button" onClick={()=>state.run&&game.watch(state.run)}><Icon name="play"/>Watch replay</button></div>
           {submission&&<p className="form-message" role="status">{submission}</p>}{state.notice&&<p className="form-message">{state.notice}</p>}{track.kind==='cones'&&<button className="secondary-button" onClick={()=>void game.enterTraining()}>Back to free roam</button>}<button className="text-button" onClick={()=>game.menu()}>{track.lot?'Leave the Training Grounds':'Back to tracks'}</button>
         </motion.section></motion.div>}
@@ -391,7 +382,7 @@ export function App({game}:{game:Game}) {
       {dialog==='leaderboard'&&<Modal key="leaderboard" title="Leaderboards" reduced={still} onClose={()=>setDialog(null)}><div className="board-selector"><label htmlFor="board-circuit">Circuit</label><select id="board-circuit" value={boardTrack} onChange={e=>{setBoardTrack(e.target.value);setMessage('');}}>{boardTracks.map(t=><option key={t.id} value={t.id}>{t.name}</option>)}</select><button className="text-button" onClick={()=>void refresh()}>Refresh</button></div><div className="board-summary"><strong>{entries.length?formatTime(entries[0].timeMs):'—'}</strong><span>{entries.length?`${entries[0].nickname} · fastest ${MULTIPLAYER_BACKEND==='cloudflare'?'unverified':'verified'} lap`:'The starting grid is open'}</span></div><p className="board-intro">Top 50 · best time per driver, all cars · {MULTIPLAYER_BACKEND==='cloudflare'?'casual times · unverified':'replay-verified'}</p>{MULTIPLAYER_BACKEND==='cloudflare'&&<p className="board-intro">Times are recorded by drivers. Saved ghosts are available, but server physics verification is not enabled.</p>}
         {boardStatus&&<div className="board-empty" role="status"><Icon name="trophy" size={32}/><p>{boardStatus}</p><button className="text-button" onClick={()=>void refresh()}>Refresh leaderboard</button></div>}
         {entries.length>0&&<div className="table-scroll"><table><thead><tr><th>Rank</th><th>Driver</th><th>Lap / gap</th><th>Ghost</th></tr></thead><tbody>{entries.map(entry=><tr key={entry.id} className={entry.playerId===player?.id?'is-you':''}><td>{String(entry.rank).padStart(2,'0')}</td><td>{entry.nickname}{entry.playerId===player?.id&&<small> you</small>}<small className="entry-car">{carById(entry.carId).shortName} · {entry.manual?'Manual':'Auto'}</small></td><td className="lap-time">{formatTime(entry.timeMs)}<small>{entry.rank===1?'Leader':`+${((entry.timeMs-entries[0].timeMs)/1000).toFixed(3)}`}</small></td><td><button className="icon-button" aria-label={`Race ${entry.nickname}'s ghost`} disabled={busy} onClick={()=>void raceGhost(entry)}><Icon name="ghost" size={18}/></button></td></tr>)}</tbody></table></div>}
-        {message&&<p className="form-message" role="status">{message}</p>}<button className="secondary-button" disabled={busy||!unlocked(game.career,state.car.id)} onClick={async()=>{setBusy(true);setView('tracks');game.partyView=false;game.setGarage(false);if(activeTrack.lot)await game.enterTraining();else{await game.select(activeTrack,true);game.start();}setBusy(false);setDialog(null);}}>{activeTrack.lot?'Go to the Training Grounds':`Race ${activeTrack.name}`}<Icon name="play"/></button>
+        {message&&<p className="form-message" role="status">{message}</p>}<button className="secondary-button" disabled={busy} onClick={async()=>{setBusy(true);setView('tracks');game.partyView=false;game.setGarage(false);if(activeTrack.lot)await game.enterTraining();else{await game.select(activeTrack,true);game.start();}setBusy(false);setDialog(null);}}>{activeTrack.lot?'Go to the Training Grounds':`Race ${activeTrack.name}`}<Icon name="play"/></button>
       </Modal>}
       </AnimatePresence>
     </div>

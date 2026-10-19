@@ -9,7 +9,7 @@ import { loadCockpitOffsets, hasLocalStartPlacement } from './dev-spawns';
 import { RaceAudio } from './race-audio';
 import { loadSettings, type Settings } from './settings';
 import { GRAPHICS_PRESETS, PRESET_LABELS, isPreset, sanitizeGraphics, type GraphicsOptions, type GraphicsPreset, type GraphicsQuality } from './graphics';
-import { CAR_ACCENT, awardFinish, buyCar, loadCareer, saveCareer, unlocked, type Career } from './progression';
+import { loadCareer, recordFinish, saveCareer, type Career } from './progression';
 import { keyLabel, type Action } from './controls';
 import { Quaternion, Vector3 } from 'three';
 import { FinishDriver } from './finish-driver';
@@ -36,7 +36,7 @@ export type GameState={mode:Mode;track:Track;trackReady:boolean;trackLoading?:bo
   coneResult?:{run:Run;timeMs:number;medal:string;newBest:boolean;previousBest?:number;penalties:number;offCourse:number;at:number}};
 export class Game {
   world:RaceWorld;sim:Simulation;state:GameState;private coarse!:GameState;
-  settings=loadSettings();career:Career=loadCareer();reward?:ReturnType<typeof awardFinish>;
+  settings=loadSettings();career:Career=loadCareer();
   modelError='';
   awaitingPedal=false;authoring=false;
   /** The camera stays locked this long after the green light. */
@@ -115,8 +115,7 @@ export class Game {
   private steeringStrength=Math.max(.7,Math.min(2,Number(read('steeringStrength',1.5))||1.5));
   private driftStrength=Math.max(0,Math.min(2,Number(read('driftStrength',1))));
   constructor(canvas:HTMLCanvasElement) {
-    const preferred=carById(read<CarId>('car',DEFAULT_CAR.id));
-    const selectedCar=unlocked(this.career,preferred.id)?preferred:DEFAULT_CAR;
+    const selectedCar=carById(read<CarId>('car',DEFAULT_CAR.id));
     this.world=new RaceWorld(canvas);this.sim=new Simulation(location.pathname.startsWith('/dev')?TRACKS[0]:TRAINING_GROUNDS,selectedCar.id);
     if(location.pathname.startsWith('/dev'))this.world.setTrack(TRACKS[0]);
     this.world.setCockpitOffset(loadCockpitOffsets()[selectedCar.id]);
@@ -210,12 +209,6 @@ export class Game {
       this.emit({trackReady:true,trackLoading:false,notice:''});
     }catch(error){console.error(error);if(token===this.selectionToken)this.emit({trackLoading:false,notice:'This circuit could not be prepared. Try racing again.'});}
   }
-  /** Spends REP on a car. Returns false when it is owned, too expensive or the save failed. */
-  buyCar(carId:CarId) {
-    const next=buyCar(this.career,carId);if(!next)return false;
-    if(!saveCareer(next)){this.emit({notice:'Purchase could not be saved: device storage is full.'});return false;}
-    this.career=next;this.sound.unlock(carId);if(!this.settings.reducedMotion)this.world.unveilGarage(CAR_ACCENT[carId]);this.emit({});return true;
-  }
   async selectCar(carId:CarId) {
     const token=++this.carToken,car=carById(carId);write('car',car.id);this.keys.clear();
     this.modelError='';
@@ -282,7 +275,7 @@ export class Game {
   finishRouteRecording() { this.routeRecording=false; this.menu(); return smoothRoute(this.routePoints); }
   start(countdown=true,replay=false) {
     if(this.partyView||this.partyRace)return;
-        if(!replay&&!this.state.track.lot&&!location.pathname.startsWith('/dev')&&!unlocked(this.career,this.state.car.id)){this.emit({notice:'This car is locked. Buy it in the garage with REP.'});return;}
+        
     if(!this.state.modelReady){this.emit({notice:'The car is still loading.'});return;}
     if(!this.state.trackReady){
       if(this.state.trackLoading)return;
@@ -291,7 +284,7 @@ export class Game {
       return;
     }
     this.world.applyPendingGraphics();
-    this.awaitingPedal=!countdown;this.bogUntil=0;this.reward=undefined;this.goAt=-Infinity;this.finishRevealAt=0;this.world.endFinish();this.world.skidMarks.clear();this.world.carDamage.reset();this.pendingShifts=0;this.seenBlockedShifts=0;this.runManual=this.settings.advancedDriving;
+    this.awaitingPedal=!countdown;this.bogUntil=0;this.goAt=-Infinity;this.finishRevealAt=0;this.world.endFinish();this.world.skidMarks.clear();this.world.carDamage.reset();this.pendingShifts=0;this.seenBlockedShifts=0;this.runManual=this.settings.advancedDriving;
     this.keys.clear();this.garageView=false;this.cockpitPreview=false;this.inputs=[];this.steeringInputs=[];this.driftInputs=[];this.accumulator=0;this.lastCheckpoint=0;this.lastRespawns=0;this.previousFrame=undefined;this.queuedRespawn=false;this.queuedFlip=false;this.replayInput=undefined;
     if(this.state.track.kind!=='cones')this.runOrigin=undefined;
     this.sim.dispose();this.sim=new Simulation(this.state.track,this.state.car.id,this.runOrigin);this.sim.steeringStrength=this.steeringStrength;this.sim.driftStrength=this.driftStrength;
@@ -384,7 +377,7 @@ export class Game {
     let notice=custom?'Custom layout — personal best and ghost saved here; online ranking unavailable.':'';
     if(newBest&&!saveBestRun(this.state.track,run))notice=custom?'Device storage is full; this ghost was not saved.':'Device storage is full. Submit this run before leaving.';
     else if(newBest)void this.world.setGhostCar(run.carId);
-    if(!location.pathname.startsWith('/dev')&&!this.state.track.lot){this.reward=awardFinish(this.career,this.state.track,run.timeMs,this.runManual);this.career=this.reward.career;if(!saveCareer(this.career))notice='Career could not be saved: device storage is full.';}
+    if(!location.pathname.startsWith('/dev')&&!this.state.track.lot){this.career=recordFinish(this.career,this.state.track,run.timeMs);if(!saveCareer(this.career))notice='Career could not be saved: device storage is full.';}
     this.keys.clear();this.finishRevealAt=performance.now()+(this.world.reducedMotion?1200:3200);this.world.beginFinish(this.sim);
     this.finishDriver??=new FinishDriver(this.state.track);this.finishDriver.begin(this.sim);this.accumulator=0;
     this.emit({mode:'celebrating',time:run.timeMs,checkpoint:this.sim.checkpoint,run,newBest,personalBest:newBest?run.timeMs:best?.timeMs,notice});
@@ -421,7 +414,7 @@ export class Game {
     track.spawn=structuredClone(race.grid[me.slot]);track.checkpoints=structuredClone(race.checkpoints);track.finish=structuredClone(race.finish);
     this.partyFinishDriver=undefined;this.spectating=undefined;
     this.partyRace={id:race.id,lap:me.pose?.lap??1,laps:lobby.settings.laps,ready:false,started:false,finished:!!(me.finishedAt||me.disconnected||race.ended)};
-    this.partySequence=me.pose?.sequence??0;this.lapStartTick=me.pose?-1:0;this.partyBestLap=me.pose?.best;this.partyView=false;this.keys.clear();this.garageView=false;this.reward=undefined;this.awaitingPedal=false;
+    this.partySequence=me.pose?.sequence??0;this.lapStartTick=me.pose?-1:0;this.partyBestLap=me.pose?.best;this.partyView=false;this.keys.clear();this.garageView=false;this.awaitingPedal=false;
     this.inputs=[];this.steeringInputs=[];this.driftInputs=[];this.accumulator=0;this.previousFrame=undefined;
     this.lastCheckpoint=0;this.lastRespawns=0;this.queuedRespawn=false;this.queuedFlip=false;this.pendingShifts=0;this.seenBlockedShifts=0;
     this.ghostSim?.dispose();this.ghostSim=undefined;this.ghostRun=undefined;this.world.ghostFrame(undefined);this.world.endFinish();

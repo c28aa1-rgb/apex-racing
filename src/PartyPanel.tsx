@@ -14,7 +14,6 @@ const fade: Variants = { hidden: { opacity: 0 }, shown: { opacity: 1, transition
 const still: Variants = { hidden: { opacity: 0 }, shown: { opacity: 1, transition: { duration: 0 } }, exit: { opacity: 0, transition: { duration: 0 } } };
 import { ArrowRight, Check, Copy, Crown, DoorOpen, Flag, Hash, Minus, Plus, Sun, CloudRain, Snowflake, CloudFog, UsersRound, Wifi, WifiOff } from 'lucide-react';
 import { CARS, DEFAULT_CAR, carById } from '../shared/cars';
-import { UNLOCK_XP, unlocked } from './progression';
 import { TRACKS, formatTime } from '../shared/tracks';
 import { DEFAULT_PARTY_SETTINGS, PARTY_WEATHER, type PartyWeather, type PartyRace } from '../shared/party';
 import { Game } from './game';
@@ -91,7 +90,7 @@ export function PartyPanel({ game, active, player, onPlayer, reduced }: {
   const me = lobby?.members.find(member => member.id === player?.id);
   const selectedCar = carById(me?.carId ?? game.state.car.id);
   // Party grids use the same garage ownership as time trials; a locked garage preview joins in the starter car.
-  const joinCar = unlocked(game.career, selectedCar.id) ? selectedCar : DEFAULT_CAR;
+  const joinCar = selectedCar;
   const hostName = lobby?.members.find(member => member.id === lobby.hostId)?.nickname;
   const error = identityError || party.error;
   const validNickname = /^[\p{L}\p{N} _-]{2,18}$/u.test(nickname.trim());
@@ -177,7 +176,7 @@ export function PartyPanel({ game, active, player, onPlayer, reduced }: {
       {lobby ? <motion.aside className="party-setup" aria-label="Shared race settings" variants={reduced ? still : fromRight}>
         <div className="party-your-car">
           <div><label htmlFor="party-car">Your car</label><span>{player?.nickname}</span></div>
-          <select id="party-car" value={me?.carId ?? selectedCar.id} disabled={busy || !party.connected} onChange={event => { const car = carById(event.target.value); if (unlocked(game.career, car.id)) void party.chooseCar(car.id); }}>{CARS.map(car => { const owned = unlocked(game.career, car.id); return <option key={car.id} value={car.id} disabled={!owned}>{owned ? car.name : `${car.name} · locked, ${UNLOCK_XP[car.id].toLocaleString()} REP`}</option>; })}</select>
+          <select id="party-car" value={me?.carId ?? selectedCar.id} disabled={busy || !party.connected} onChange={event => void party.chooseCar(carById(event.target.value).id)}>{CARS.map(car => <option key={car.id} value={car.id}>{car.name}</option>)}</select>
           <span className="party-car-drive">{selectedCar.physics.drivetrain}</span>
         </div>
         <div className="party-section-title"><h2>Race setup</h2><span><Crown size={14}/>{host ? 'You are host' : `${hostName} hosts`}</span></div>

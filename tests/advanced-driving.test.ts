@@ -5,7 +5,6 @@ import {initPhysics,Input,Simulation,PHYSICS_VERSION} from '../shared/physics';
 import {engineState} from '../shared/transmission';
 import {runSchema,stepReplay,type Run} from '../shared/replay';
 import {handlingTrack} from './handling-harness';
-import {awardFinish} from '../src/progression';
 import {DEFAULT_BINDINGS,bindingChange,bindingConflicts,loadBindings} from '../src/controls';
 import {Store} from '../server/store';
 import {SkidMarks} from '../src/race-effects';
@@ -25,7 +24,6 @@ test('manual cars require upshifts, obey their limiter and replay deterministica
       assert.equal(low.gear,1,car.id);assert.ok(low.speed<engineState(car,0,1).top*1.05,`${car.id} first-gear limiter`);assert.ok(shifted.gear>1,`${car.id} can upshift`);assert.ok(shifted.speed>low.speed*1.6,`${car.id} shifting unlocks speed`);
       const run:Run={trackId:track.id,trackVersion:track.version,physicsVersion:PHYSICS_VERSION,carId:car.id,timeMs:shifted.timeMs,inputs,manual:true};assert.ok(runSchema.safeParse(run).success);
       inputs.forEach(()=>stepReplay(replay,run));assert.deepEqual(shifted.world.takeSnapshot(),replay.world.takeSnapshot(),car.id);assert.equal(shifted.gear,replay.gear);assert.equal(shifted.engine.rpm,replay.engine.rpm);
-      const reward=awardFinish({xp:0,finishes:0,medals:{},owned:[]},track,1,true);assert.equal(reward.breakdown.manual,100);assert.equal(reward.earned,450);
     }finally{low.dispose();shifted.dispose();replay.dispose();}
   }
 });

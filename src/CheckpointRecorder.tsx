@@ -44,6 +44,6 @@ export function CheckpointRecorder({game,onSaved}:{game:Game;onSaved:(mapPath?:V
       <button onClick={()=>{game.finishRouteRecording();game.authoring=false;setRecording(false);setMessage('Draft discarded. Saved layout unchanged.');}}>Cancel draft</button>
     </>}
     {!recording&&<button onClick={()=>void reset()}>Restore project race gates</button>}
-    <small>Recorded drive creates minimap line. Placement follows car position and heading. Editor drives earn no REP; normal races on saved layouts earn career REP but cannot rank online.</small>
+    <small>Recorded drive creates minimap line. Placement follows car position and heading. Normal races on saved layouts cannot rank online.</small>
   </div>;
 }

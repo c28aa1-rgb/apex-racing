@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {awardFinish,buyCar,hasAllCars,unlocked,UNLOCK_XP} from '../src/progression';
+import {recordFinish} from '../src/progression';
 import {TRACKS} from '../shared/tracks';
 import {TRACK_LAYOUTS} from '../shared/track-layouts';
 import {CAR_IDS} from '../shared/cars';
@@ -11,21 +11,12 @@ import {Store} from '../server/store';
 import {createApp} from '../server/app';
 import {ENGINE_VOICES} from '../src/race-audio';
 
-test('starter cars are free, others are bought with REP earned from finishes',()=>{
-  const start={xp:0,finishes:0,medals:{},owned:[]},track=TRACKS[0];
-  for(const id of CAR_IDS)assert.equal(unlocked(start,id),UNLOCK_XP[id]===0,id);
-  assert.ok(CAR_IDS.filter(id=>UNLOCK_XP[id]===0).length>=2,'players start with a choice of cars');
-  const first=awardFinish(start,track,track.medals[2]+1000);assert.equal(first.earned,200);assert.equal(first.career.finishes,1);
-  assert.deepEqual(first.newCars,[]);
-  const repeat=awardFinish(first.career,track,track.medals[2]+1000);assert.equal(repeat.earned,100);assert.deepEqual(repeat.newCars,['nascar-camry'],'300 REP makes the Camry affordable');
-  const gold=awardFinish(repeat.career,track,track.medals[0]);assert.equal(gold.earned,250);
-  assert.equal(awardFinish(gold.career,track,track.medals[0]).earned,100,'medal bonus cannot be farmed');
-  assert.equal(buyCar(first.career,'nascar-camry'),undefined,'cannot buy without enough REP');
-  assert.equal(buyCar(gold.career,'porsche-911-gt3'),undefined,'starter cars are never charged for');
-  const bought=buyCar(gold.career,'nascar-camry')!;assert.ok(unlocked(bought,'nascar-camry'));assert.equal(bought.xp,gold.career.xp-UNLOCK_XP['nascar-camry']);
-  assert.equal(buyCar(bought,'nascar-camry'),undefined,'a car is only bought once');
-  assert.equal(awardFinish(bought,track,track.medals[2]+1000).career.owned.includes('nascar-camry'),true,'finishing keeps owned cars');
-  assert.deepEqual(Object.keys(UNLOCK_XP).sort(),[...CAR_IDS].sort());assert.deepEqual(Object.keys(ENGINE_VOICES).sort(),[...CAR_IDS].sort());
+test('finishes and best medals are recorded per circuit; every car has its own engine voice',()=>{
+  const track=TRACKS[0],first=recordFinish({finishes:0,medals:{}},track,track.medals[2]+1000);
+  assert.deepEqual(first,{finishes:1,medals:{[track.id]:0}});
+  const gold=recordFinish(first,track,track.medals[0]);assert.equal(gold.medals[track.id],3);
+  assert.equal(recordFinish(gold,track,track.medals[2]+1000).medals[track.id],3,'a slower finish keeps the best medal');
+  assert.deepEqual(Object.keys(ENGINE_VOICES).sort(),[...CAR_IDS].sort());
   assert.notDeepEqual(ENGINE_VOICES['red-bull-rb19'],ENGINE_VOICES['nascar-camry']);
 });
 
@@ -68,15 +59,3 @@ test('replays retain drift samples and checkpoint layouts survive the API',async
   }finally{await app.close();await store.close();}
 });
 
-test('nicknames on the all-cars list unlock every car without spending REP',()=>{
-  const store=new Map<string,string>(),previous=(globalThis as {localStorage?:unknown}).localStorage;
-  (globalThis as {localStorage?:unknown}).localStorage={getItem:(k:string)=>store.get(k)??null,setItem:(k:string,v:string)=>void store.set(k,v),removeItem:(k:string)=>void store.delete(k)};
-  try{
-    const career={xp:0,finishes:0,medals:{},owned:[]},owned=()=>CAR_IDS.filter(id=>unlocked(career,id)).length;
-    const as=(nickname:string)=>{for(const key of ['apex:player','apex:player:cloudflare'])store.set(key,JSON.stringify({id:'p',token:'t',nickname}));};
-    assert.equal(hasAllCars(),false);assert.equal(owned(),3,'no nickname: starters only');
-    as('Schwarber');assert.equal(owned(),CAR_IDS.length);
-    as(' yoapop ');assert.equal(owned(),CAR_IDS.length);
-    as('someone');assert.equal(owned(),3);
-  }finally{(globalThis as {localStorage?:unknown}).localStorage=previous;}
-});

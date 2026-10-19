@@ -745,8 +745,8 @@ export class Simulation {
     if (after.y < this.recoveryFloor || Math.abs(after.x) > 10000 || Math.abs(after.z) > 10000) this.respawn();
   }
   private crossed(a: Vec3, b: Vec3, gate: FittedGate) {
-    // Gates are vertical planes across the whole drivable width, so no line
-    // past the barriers or over the grass can skip one.
+    // Gates are vertical planes; only crossing over the painted line counts, so
+    // a car cutting across grass or run-off beside a gate does not pass it.
     const f = gate.forward, p = gate.position;
     const da = (a.x-p.x)*f.x + (a.z-p.z)*f.z;
     const db = (b.x-p.x)*f.x + (b.z-p.z)*f.z;

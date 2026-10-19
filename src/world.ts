@@ -120,7 +120,6 @@ export class RaceWorld {
   private currentCarId: CarId = DEFAULT_CAR.id;
   private garageAngle = -2.8;
   /** Car unlock reveal: clock time it started (-1 when idle) and a livery-coloured flash light. */
-  private unveilStart = -1; private unveilLight = new THREE.PointLight(0xffffff, 0, 9, 1.6);
   private visualCarPosition = new THREE.Vector3();
   private visualCarQuaternion = new THREE.Quaternion();
   private visualSuspensionLift = 0;
@@ -154,11 +153,6 @@ export class RaceWorld {
   private lookDrag?: { x: number; y: number };
   rotateGarage(dx: number) { this.garageAngle = THREE.MathUtils.clamp(this.garageAngle-dx*.009,-2.8,-.65); }
   resetGarageView() { this.garageAngle = -2.8; }
-  /** Plays the unlock reveal around the garage car; snapAt matches the lock snapping open in the UI. */
-  unveilGarage(color: string) { this.unveilStart = this.clock; this.unveilLight.color.set(color); }
-  /** Ends the reveal hold; the camera eases back to the normal garage orbit. */
-  endUnveil() { if (this.unveilStart >= 0) { this.garageAngle = THREE.MathUtils.clamp(this.unveilAngle, -2.8, -.65); this.unveilStart = -1; } }
-  private unveilAngle = -2.8;
   setMouseLook(active: boolean) {
     this.mouseLookEnabled = active;
     this.lookDrag = undefined;
@@ -232,7 +226,7 @@ export class RaceWorld {
     void this.startLight.load(this.loader).then(()=>this.prewarm([this.startLight])).catch(error=>console.warn('Marshal drone model unavailable; using the built-in drone.',error));
     const sea = new THREE.Mesh(new THREE.PlaneGeometry(5000,5000), material(0x8fcbd1));
     sea.rotation.x = -Math.PI/2; sea.position.y = -80; sea.receiveShadow = true; this.scene.add(sea);
-    this.garageGroup.visible = false; this.garageGroup.add(this.unveilLight);
+    this.garageGroup.visible = false;
     this.scene.add(this.venueGroup, this.trackGroup, this.garageGroup, this.car, this.ghost, this.editorMarker, this.editorFinishMarker, this.editorRoadGuide);
     this.buildEditorMarker(); this.buildEditorFinishMarker(); this.editorMarker.visible = false; this.editorFinishMarker.visible = false; this.editorRoadGuide.visible = false;
     this.buildPlaceholder(this.car, false);this.buildPlaceholder(this.ghost, true); this.ghost.visible = false;
@@ -1046,27 +1040,11 @@ export class RaceWorld {
     const definition=carById(this.currentCarId);
     this.car.position.set(-3.86,.61+definition.dimensions.wheelRadiusM,2.48);
     this.car.quaternion.setFromAxisAngle(new THREE.Vector3(0,1,0),-Math.PI/2);
-    let angle = this.garageAngle, distance = 7, height = 2.55, offsetX = innerWidth > 900 ? 2 : 0, fov = 48, lift = .28;
-    // Unlock reveal: start low and close at the nose, sweep around while the lock strains, and
-    // the car drops onto its springs as the lock snaps (0.62 s). The car stays centred on a slow
-    // turntable until endUnveil(), when the camera eases back to the garage orbit.
-    const reveal = this.unveilStart < 0 || this.reducedMotion ? -1 : this.clock - this.unveilStart;
-    if (reveal >= 0) {
-      const sweep = 1 - Math.pow(1 - Math.min(1, reveal / 2.9), 3), drift = Math.max(0, reveal - 2.9) * .09;
-      angle = this.unveilAngle = THREE.MathUtils.lerp(-.75, -2.55, sweep) + Math.min(drift, 1.9);
-      distance = THREE.MathUtils.lerp(4.3, 7.2, sweep); height = THREE.MathUtils.lerp(.85, 1.7, sweep);
-      offsetX = 0; fov = THREE.MathUtils.lerp(56, 46, sweep); lift = THREE.MathUtils.lerp(-.25, -.85, sweep);
-      const after = reveal - .62;
-      this.car.position.y += after < 0 ? Math.sin(Math.min(1, reveal / .6) * Math.PI) * .025 : -.07 * Math.exp(-after * 4.5) * Math.cos(after * 15);
-      this.unveilLight.position.copy(this.car.position).add(new THREE.Vector3(0, 2.2, 0));
-      this.unveilLight.intensity = after < 0 ? 0 : 60 * Math.exp(-after * 2.4);
-    } else this.unveilLight.intensity = 0;
-    // During the reveal the camera aims below the car so it sits above the title in the lower third.
+    const angle = this.garageAngle, distance = 7, height = 2.55, offsetX = innerWidth > 900 ? 2 : 0, fov = 48, lift = .28;
     const focus = this.car.position.clone().add(new THREE.Vector3(0,lift,-.5));
     const offset = new THREE.Vector3(Math.cos(angle)*distance,height,-Math.sin(angle)*distance);
     const target = focus.clone().add(offset);
-    // During the reveal the camera follows its path closely; otherwise it eases to the orbit.
-    if (snap) this.camera.position.copy(target); else this.camera.position.lerp(target, 1 - Math.exp(-dt * (reveal >= 0 ? 14 : 4)));
+    if (snap) this.camera.position.copy(target); else this.camera.position.lerp(target, 1 - Math.exp(-dt * 4));
     this.cameraTarget.lerp(focus, snap ? 1 : 1 - Math.exp(-dt * 7));
     this.camera.lookAt(this.cameraTarget); this.camera.fov = fov; this.camera.filmOffset = offsetX; this.camera.updateProjectionMatrix();
   }

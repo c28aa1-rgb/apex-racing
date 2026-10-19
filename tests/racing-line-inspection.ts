@@ -6,6 +6,8 @@ import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import { TRACKS } from '../shared/tracks';
 import { RACING_LINES } from '../shared/racing-lines';
 import { racingLine } from '../shared/racing-line';
+import { collisionGeometry } from '../shared/physics';
+import { fittedGates } from '../shared/gates';
 
 const renderer = new THREE.WebGLRenderer({ canvas: document.querySelector('canvas')!, antialias: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
@@ -54,6 +56,12 @@ async function load() {
   const line = racingLine(RACING_LINES[track.id], track.metersPerUnit);
   const points = Array.from({ length: line.n + 1 }, (_, i) => new THREE.Vector3(line.x[i % line.n], line.y[i % line.n] + .3, line.z[i % line.n]));
   overlay.add(strip(track.mapPath!.map(p => new THREE.Vector3(p.x, p.y + .3, p.z)), '#40e0ff', .5), strip(points, '#ff3030', 1));
+  // Timing gates: the painted band that counts (yellow) and the barrier-to-barrier reach (thin magenta).
+  const gates = fittedGates(track, await collisionGeometry(track));
+  for (const gate of [...gates.checkpoints, gates.finish]) {
+    const across = (from: number, to: number) => [from, to].map(l => new THREE.Vector3(gate.position.x + gate.side.x * l, gate.position.y + .4, gate.position.z + gate.side.z * l));
+    overlay.add(strip(across(gate.left, gate.right), '#ff40ff', .3), strip(across(gate.roadLeft, gate.roadRight), '#ffe040', 1.6));
+  }
   // Corners: local curvature maxima, tightest first.
   corners = [];
   for (let i = 0; i < line.n; i++) if (line.curvature[i] > .012 && line.curvature[i] >= line.curvature[(i + line.n - 1) % line.n] && line.curvature[i] > line.curvature[(i + 1) % line.n]) corners.push(i);

@@ -45,15 +45,10 @@ test('a faster-braking, higher-grip car brakes later and carries more speed thro
   let apex = 0;
   for (let i = 0; i < line.n; i++) if (line.curvature[i] > line.curvature[apex]) apex = i;
   assert.ok(fast[apex] > slow[apex], `apex ${fast[apex].toFixed(1)} vs ${slow[apex].toFixed(1)} m/s`);
-  // Arriving at the same speed 300 m before the apex, each car's first braking station.
-  const before = Math.round(300 / (line.length / line.n)), start = (apex - before + line.n) % line.n, speed = 45;
-  const firstBrake = (car: typeof rb19, envelope: Float32Array) => {
-    const zones = new Uint8Array(line.n);
-    predictZones(line, envelope, car, start, speed, before, zones);
-    for (let k = 0; k < before; k++) if (zones[(start + k) % line.n] === Zone.Brake) return k;
-    return before;
-  };
-  assert.ok(firstBrake(rb19, fast) > firstBrake(celica, slow), 'the RB19 starts braking closer to the corner');
+  // Walking back from the apex: where each car can last be doing 50 m/s and still make the corner. Harder braking
+  // and more grip put that point closer to the apex.
+  const brakingPoint = (envelope: Float32Array) => { let k = 0; while (envelope[(apex - k + line.n) % line.n] < 50 && k < line.n) k++; return k; };
+  assert.ok(brakingPoint(fast) < brakingPoint(slow), `the RB19 brakes ${brakingPoint(fast)} stations before the apex, the Celica ${brakingPoint(slow)}`);
 });
 
 test('the colours follow the car: too fast is red at once, from a standstill it is green', () => {

@@ -26,7 +26,7 @@ import { TRACKS, type Track, type Vec3 } from '../shared/tracks';
 import type { BakedLine } from '../shared/racing-line';
 
 /** Metres between final stations, car-centre clearance from the edge, ribbon half width (m). */
-const STEP = 4, MARGIN = 1.7, RIBBON = .45;
+const STEP = 4, MARGIN = 1.5, RIBBON = .45;
 /** Car-centre clearance from a solid wall (m): more than from a grass or gravel edge. */
 const WALL_MARGIN = 2.8;
 /**
@@ -36,8 +36,16 @@ const WALL_MARGIN = 2.8;
  * circuit runs and the labels only widen it nearby.
  */
 const CELL = .5, REACH = 8, TRUST = 2.5;
+/** Share of the way towards the reference path a station moves each iteration (see relax). */
+const PULL = 0;
 /** How far from the trace the least-cost path may look for the road (m). */
 const SEARCH = 30;
+/** How far from its trace anchor a leg of the least-cost path may end (m). */
+const LEG_SLACK = 20;
+/** How many anchors (100 m each) the path may skip past an excursion of the trace over a kerb or gravel. */
+const SKIP = 4;
+/** How far from the trace the path costs double (m): loose, so a corner the trace ran wide is taken on the track. */
+const TRACE_SPREAD = 25;
 const arg = (name: string) => process.argv.find(a => a.startsWith(`--${name}=`))?.slice(name.length + 3);
 const only = arg('track')?.split(','), mapDir = arg('map');
 
@@ -99,8 +107,8 @@ function distanceTransform(feature: Uint8Array, W: number, H: number): Float32Ar
   return result;
 }
 
-/** Surface classes in the raster: the collision labels, then no floor and wall. */
-const ASPHALT = 0, GRASS = 1, NONE = 3, WALL = 4;
+/** Surface classes in the raster: the collision labels (0-2), no floor, wall, and kerb (seen in the textures). */
+const ASPHALT = 0, GRASS = 1, GRAVEL = 2, NONE = 3, WALL = 4, KERB = 5;
 
 /** A circuit's visual surface map (design/surfaces/<id>.bin.gz), if built. */
 function loadSurface(id: string) {
@@ -206,18 +214,23 @@ async function bake(track: Track) {
     if (cls[k] === WALL || cls[k] === NONE) continue;
     const X = Math.floor((x0 + (gx + .5) * CELL - visual.x0) / visual.cell), Z = Math.floor((z0 + (gz + .5) * CELL - visual.z0) / visual.cell);
     const seen = X >= 0 && Z >= 0 && X < visual.width && Z < visual.height ? visual.cells[Z * visual.width + X] : 255;
-    if (seen === 255 || seen === cls[k]) continue;
-    cls[k] = seen; repainted++;
+    const now = seen === 3 ? KERB : seen;
+    if (seen === 255 || now === cls[k]) continue;
+    cls[k] = now; repainted++;
   }
   const cellOf = (p: P) => Math.floor((p.z - z0) / CELL) * W + Math.floor((p.x - x0) / CELL);
-  const COST = [1, 3, 15, 40, Infinity], CLOSING_COST = [1, 30, 30, 60, Infinity];
+  // Kerbs line the track: crossing one is dear (the paved run-off beyond is not the circuit), and the line keeps
+  // clear of them like any other edge.
+  const COST = [1, 40, 40, 60, Infinity, 40], CLOSING_COST = [1, 40, 40, 60, Infinity, 40];
   // Dijkstra on 8-connected cells inside a box, with a binary heap; `dist`/`from` are reset after each search.
   const dist = new Float64Array(W * H).fill(Infinity), from = new Int32Array(W * H).fill(-1), seen: number[] = [];
   const boxAround = (points: P[], reach: number) => [
     Math.max(0, Math.floor((Math.min(...points.map(p => p.x)) - reach - x0) / CELL)), Math.min(W - 1, Math.ceil((Math.max(...points.map(p => p.x)) + reach - x0) / CELL)),
     Math.max(0, Math.floor((Math.min(...points.map(p => p.z)) - reach - z0) / CELL)), Math.min(H - 1, Math.ceil((Math.max(...points.map(p => p.z)) + reach - z0) / CELL)),
   ] as const;
-  const search = (start: number, [minX, maxX, minZ, maxZ]: readonly number[], cost: (k: number) => number, goal = -1, closed?: (k: number) => boolean) => {
+  /** Dijkstra from `start` until it settles a cell `goal` accepts (or the whole box); returns that cell, or -1. */
+  const search = (start: number, [minX, maxX, minZ, maxZ]: readonly number[], cost: (k: number) => number, goal: number | ((k: number) => boolean) = -1, closed?: (k: number) => boolean) => {
+    const done = typeof goal === 'number' ? (k: number) => k === goal : goal;
     for (const k of seen) { dist[k] = Infinity; from[k] = -1; }
     seen.length = 0;
     const heap: [number, number][] = [];
@@ -226,7 +239,7 @@ async function bake(track: Track) {
     dist[start] = 0; seen.push(start); push(0, start);
     while (heap.length) {
       const [d, k] = pop();
-      if (k === goal) break;
+      if (done(k)) return k;
       if (d > dist[k]) continue;
       const x = k % W, z = (k - x) / W;
       for (let dx = -1; dx <= 1; dx++) for (let dz = -1; dz <= 1; dz++) {
@@ -240,6 +253,7 @@ async function bake(track: Track) {
         if (next < dist[j]) { if (dist[j] === Infinity) seen.push(j); dist[j] = next; from[j] = k; push(next, j); }
       }
     }
+    return -1;
   };
   /** Cells from `start` to `goal` of the last search, or undefined if it never reached `goal`. */
   const pathTo = (start: number, goal: number) => {
@@ -274,16 +288,19 @@ async function bake(track: Track) {
     if (bridge.length * CELL * mpu > 40) console.warn(`  the trace's ends are ${(bridge.length * CELL * mpu).toFixed(0)} m of road apart: the lap closes along the road`);
   }
 
-  // The trace runs wide into gravel traps and run-off in places (driving errors, not the circuit). The reference
-  // is rebuilt as the cheapest path along it over the raster, a hundred metres at a time: asphalt is cheap, grass
-  // affordable (real road is labelled grass in places), gravel and bare ground dear, walls closed, and every cell
-  // dearer the further it lies from the trace, so the path follows the road where the trace ran wide but does not
-  // cut a chicane across a trap that happens to be labelled asphalt.
+  // The trace runs wide into gravel traps and onto paved run-off in places (driving errors, not the circuit). The
+  // reference is rebuilt as the cheapest path along it over the raster, a hundred metres at a time: asphalt is cheap;
+  // kerbs, painted strips, grass and gravel (the edges of the circuit) are dear to cross; walls are closed; and every
+  // cell is a little dearer the further it lies from the trace, so the path follows the trace's road without
+  // stepping out over the edge where the trace ran wide, nor cutting a chicane across a trap.
   const traceCells = new Uint8Array(W * H);
   // Only where the trace is on the road does it pull the path: where it ran wide it would drag the path to the edge.
-  for (const p of trace) { const k = cellOf(p); if (k >= 0 && k < W * H && (cls[k] === ASPHALT || cls[k] === GRASS)) traceCells[k] = 1; }
+  for (const p of trace) { const k = cellOf(p); if (k >= 0 && k < W * H && (cls[k] === ASPHALT || cls[k] === GRASS || cls[k] === KERB)) traceCells[k] = 1; }
   const fromTrace = distanceTransform(traceCells, W, H);
-  const cost = (k: number) => COST[cls[k]] * (1 + (fromTrace[k] * CELL * mpu / 8) ** 2);
+  // Near the road's edge a cell costs more, so the path keeps to the middle of the road rather than hugging the
+  // inside of every corner over its kerb (the curvature pass below finds the racing line inside the road anyway).
+  const toEdge = distanceTransform(cls.map(c => c === ASPHALT ? 0 : 1), W, H);
+  const cost = (k: number) => COST[cls[k]] * (1 + (fromTrace[k] * CELL * mpu / TRACE_SPREAD) ** 2) + 3 * Math.max(0, 1 - toEdge[k] * CELL * mpu / 4) ** 2;
   const reference: P[] = [], throughWalls: string[] = [], corridor = Math.ceil((TRUST + MARGIN) / mpu / CELL);
   let strays = 0;
   {
@@ -294,11 +311,26 @@ async function bake(track: Track) {
       for (let k = 0; k < chunk / 2 && i + k < trace.length; k++) if (cls[cellOf(trace[i + k])] === ASPHALT) { best = i + k; break; }
       anchors.push(best);
     }
+    // Each leg ends on asphalt anywhere within LEG_SLACK of its anchor, and the next starts there: where the trace
+    // ran out onto paved run-off beyond a kerb, the path stays on the circuit instead of visiting it.
+    const first = cellOf(trace[anchors[0]]), slack = (LEG_SLACK / mpu) ** 2;
+    let start = first;
+    const crossesEdge = (path: number[]) => path.some(k => cls[k] === KERB || cls[k] === GRAVEL || cls[k] === GRASS);
     for (let leg = 0; leg < anchors.length; leg++) {
-      const a = anchors[leg], b = anchors[(leg + 1) % anchors.length], start = cellOf(trace[a]), goal = cellOf(trace[b]);
-      const span = b > a ? trace.slice(a, b + 1) : [...trace.slice(a), ...trace.slice(0, b + 1)];
-      search(start, boxAround(span, SEARCH / mpu), cost, goal);
-      const path = pathTo(start, goal);
+      // Where reaching the next anchor means crossing a kerb, verge or gravel (the trace ran wide onto run-off), aim for a
+      // later one instead, up to SKIP anchors on, and leave the excursion out.
+      const a = anchors[leg]; let target = trace[a], span: P[] = [], reached = -1, path: number[] | undefined;
+      for (let skip = 1; skip <= SKIP && leg + skip <= anchors.length; skip++) {
+        const last = leg + skip === anchors.length, to = anchors[(leg + skip) % anchors.length], aim = trace[to];
+        const legSpan = to > a ? trace.slice(a, to + 1) : [...trace.slice(a), ...trace.slice(0, to + 1)];
+        const end = search(start, boxAround(legSpan, SEARCH / mpu), cost, last ? first : k => {
+          if (cls[k] !== ASPHALT) return false;
+          const c = centre(k); return (c.x - aim.x) ** 2 + (c.z - aim.z) ** 2 <= slack;
+        });
+        const found = end >= 0 ? pathTo(start, end) : undefined;
+        if (skip === 1 || (found && !crossesEdge(found))) { target = aim; span = legSpan; reached = end; path = found; }
+        if (!found || !crossesEdge(found)) { if (skip > 1 && found) leg += skip - 1; break; }
+      }
       if (!path) {
         // The trace passes through a wall here (it was recorded before the venue's barriers were solid, or
         // squeezes through a gap). The circuit is what the trace says: follow it, and open a corridor along it.
@@ -308,12 +340,14 @@ async function bake(track: Track) {
           const k = cellOf(p) + dz * W + dx;
           if (dx * dx + dz * dz <= corridor * corridor && k >= 0 && k < W * H) cls[k] = GRASS;
         }
+        start = cellOf(target);
         continue;
       }
       reference.push(...path.map(centre));
+      start = reached;
     }
   }
-  strays = trace.filter(p => cls[cellOf(p)] !== ASPHALT && cls[cellOf(p)] !== GRASS).length;
+  strays = trace.filter(p => ![ASPHALT, GRASS, KERB].includes(cls[cellOf(p)])).length;
   {
     const smoothed = smooth(resample(reference, Math.round(lapLength(reference) * mpu / 2)), 1.5);
     reference.length = 0; reference.push(...smoothed);
@@ -339,7 +373,8 @@ async function bake(track: Track) {
     };
     reference.forEach((p, i) => {
       const k = cellOf(p);
-      if (k < 0 || k >= W * H || toWall[k] * CELL >= clear || across(p, i) >= clear * 2) return;
+      // Only where the trace itself drove through: a path merely passing near a barrier's end keeps its margin.
+      if (k < 0 || k >= W * H || toWall[k] * CELL >= clear || fromTrace[k] * CELL * mpu > 3 || across(p, i) >= clear * 2) return;
       if (i - last > 10) narrow.push(`${p.x.toFixed(0)},${p.z.toFixed(0)}`);
       last = i;
       for (let dx = -corridor; dx <= corridor; dx++) for (let dz = -corridor; dz <= corridor; dz++) {
@@ -367,13 +402,27 @@ async function bake(track: Track) {
   for (let k = 0; k < W * H; k++) if (onReference[k] && cls[k] === GRASS) grassReference[k] = 1;
   const toGrassReference = distanceTransform(grassReference, W, H);
   const reach = REACH / mpu / CELL, trust = (TRUST + MARGIN) / mpu / CELL;
-  // Drivable: road near the reference, or grass where the reference runs over it (gravel and walls never). Only the part connected
-  // to the trace counts (no islands of a neighbouring road).
+  // Drivable: the asphalt seen sideways from the reference, out to the first kerb, verge, gravel or wall (and at most
+  // REACH), so paved run-off beyond a kerb is not the circuit even where it joins the track at the kerb's end; plus
+  // grass where the reference runs over it. Only the part connected to the reference counts.
   const connected = new Uint8Array(W * H), sdf = new Float32Array(W * H), edge = new Float32Array(W * H);
   {
-    const drivable = new Uint8Array(W * H);
-    for (let k = 0; k < W * H; k++)
-      drivable[k] = (cls[k] === ASPHALT && toReference[k] <= reach) || (cls[k] === GRASS && toGrassReference[k] <= trust) ? 1 : 0;
+    const drivable = new Uint8Array(W * H), n = reference.length;
+    for (let i = 0; i < n; i++) {
+      const p = reference[i], q = reference[wrap(i + 1, n)], a = reference[wrap(i - 1, n)], b = reference[wrap(i + 2, n)];
+      const fx = b.x - a.x, fz = b.z - a.z, l = Math.hypot(fx, fz) || 1, nx = fz / l, nz = -fx / l;
+      for (let u = 0; u < 1; u += CELL / 2 / (Math.hypot(q.x - p.x, q.z - p.z) || 1)) {
+        const ox = p.x + (q.x - p.x) * u, oz = p.z + (q.z - p.z) * u;
+        // A reference hugging a kerb starts on it: step off it (up to 3 m) before the asphalt run begins.
+        for (const sign of [1, -1]) for (let t = 0, started = false; t <= reach * CELL; t += CELL / 2) {
+          const k = cellOf({ x: ox + nx * t * sign, y: 0, z: oz + nz * t * sign });
+          if (k < 0 || k >= W * H || cls[k] === WALL) break;
+          if (cls[k] !== ASPHALT) { if (started || t * mpu > 3) break; continue; }
+          started = true; drivable[k] = 1;
+        }
+      }
+    }
+    for (let k = 0; k < W * H; k++) if (cls[k] === GRASS && toGrassReference[k] <= trust) drivable[k] = 1;
     const stack: number[] = [];
     for (let k = 0; k < W * H; k++) if (onReference[k] && drivable[k]) { connected[k] = 1; stack.push(k); }
     while (stack.length) {
@@ -436,6 +485,19 @@ async function bake(track: Track) {
     return [fz / l, -fx / l] as const;
   };
   /** Minimum-curvature band, coarse to fine (long corners settle at coarse spacing in fewer iterations). */
+  // Nearest reference point to each station, for the pull towards it (refreshed whenever the band is resampled).
+  const referenceBuckets = new Map<number, number[]>();
+  reference.forEach((p, i) => { const k = key(Math.floor(p.x / BUCKET), Math.floor(p.z / BUCKET)); const list = referenceBuckets.get(k); if (list) list.push(i); else referenceBuckets.set(k, [i]); });
+  const nearestReference = (p: P) => {
+    let best = Infinity, found = p;
+    for (let r = 1; r <= 4 && best === Infinity; r++) {
+      const bx = Math.floor(p.x / BUCKET), bz = Math.floor(p.z / BUCKET);
+      for (let i = -r; i <= r; i++) for (let j = -r; j <= r; j++) for (const t of referenceBuckets.get(key(bx + i, bz + j)) ?? []) {
+        const d = (reference[t].x - p.x) ** 2 + (reference[t].z - p.z) ** 2; if (d < best) { best = d; found = reference[t]; }
+      }
+    }
+    return found;
+  };
   const relax = (start: P[]) => {
     let band = start.map(p => ({ ...p }));
     band.forEach(p => snap(p, margin));
@@ -443,18 +505,22 @@ async function bake(track: Track) {
       band = resample(band, Math.round(lapLength(band) * mpu / spacing));
       const n = band.length;
       band.forEach((p, i) => project(p, ...normal(band, i), margin));
+      let anchors = band.map(nearestReference);
       for (let it = 0; it < iterations; it++) {
         for (let i = 0; i < n; i++) {
           const p = band[i], a = band[wrap(i - 1, n)], b = band[wrap(i + 1, n)], aa = band[wrap(i - 2, n)], bb = band[wrap(i + 2, n)];
           const [nx, nz] = normal(band, i);
           const tx = (4 * (a.x + b.x) - aa.x - bb.x) / 6, tz = (4 * (a.z + b.z) - aa.z - bb.z) / 6;
-          // Over-relaxed step along the normal only, so stations keep their spacing.
-          const along = ((tx - p.x) * nx + (tz - p.z) * nz) * 1.5;
+          // Over-relaxed step along the normal only, so stations keep their spacing. A weak pull towards the
+          // reference decides where a straight runs (curvature does not care there), so the line keeps to the
+          // driven surface instead of drifting onto a paved shoulder; through corners the curvature term wins.
+          const anchor = anchors[i];
+          const along = ((tx - p.x) * nx + (tz - p.z) * nz) * 1.5 + ((anchor.x - p.x) * nx + (anchor.z - p.z) * nz) * PULL;
           const next = { x: p.x + nx * along, y: p.y, z: p.z + nz * along };
           if (clearPath(p, next)) { p.x = next.x; p.z = next.z; }
           project(p, nx, nz, margin);
         }
-        if (it % 200 === 199) band = resample(band, n);
+        if (it % 200 === 199) { band = resample(band, n); anchors = band.map(nearestReference); }
       }
     }
     return band;

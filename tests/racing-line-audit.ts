@@ -5,9 +5,9 @@
 //
 //   node --max-old-space-size=4096 --import tsx tests/racing-line-audit.ts [--track=id[,id]] [--cars=id,...]
 //
-// Per lap: time, wall contacts (chassis impulses against steep faces), share of ticks with two or more wheels
-// off the asphalt, widest the car ran from the line, recoveries. Exit code 1 when a lap is not completed, or any
-// wall contact or recovery happens.
+// Per lap: time, whether every checkpoint and the finish were taken over their paint, wall contacts (chassis impulses against steep faces), share of ticks with two or more wheels
+// off the asphalt, widest the car ran from the line, recoveries. Exit code 1 when a lap is not completed, a gate is
+// missed, or any wall contact or recovery happens.
 import { DT, Simulation, initPhysics } from '../shared/physics';
 import { TRACKS, formatTime } from '../shared/tracks';
 import { CARS, carById } from '../shared/cars';
@@ -34,12 +34,15 @@ for (const track of tracks) {
     sim.maxTicks = Infinity;
     driver.start(sim);
     const limit = Math.ceil((line.length / 15 + 60) / DT);
-    let ticks = 0, walls = 0, offRoad = 0, widest = 0, wallTick = -100;
+    let ticks = 0, walls = 0, offRoad = 0, widest = 0, wallTick = -100, lapTicks = 0, finished = false, after = 0;
     const where: string[] = [];
     // The lap is timed from the first tick at speed, so the standing start counts once like a real lap.
-    for (; ticks < limit && !driver.done; ticks++) {
+    // Past the line's own lap, keep going (up to 30 s) until the car takes the finish: every checkpoint in order,
+    // then the finish, each crossed over its paint.
+    for (; ticks < limit && !(driver.done && (finished || after > 1800)); ticks++) {
       sim.step(driver.input(sim));
-      if (sim.finished) { sim.finished = false; sim.checkpoint = 0; }
+      if (sim.finished) { finished = true; sim.finished = false; sim.checkpoint = 0; }
+      if (driver.done) after++; else lapTicks++;
       if (sim.offRoad) offRoad++;
       widest = Math.max(widest, Math.abs(driver.lateral) * mpu);
       const chassis = sim.car.collider(0);
@@ -58,10 +61,10 @@ for (const track of tracks) {
       }
     }
     sim.world.free();
-    const ok = driver.done && !walls && !driver.recoveries;
+    const ok = driver.done && finished && !walls && !driver.recoveries;
     failed ||= !ok;
-    console.log(`${track.id.padEnd(13)} ${car.id.padEnd(17)} ${(driver.done ? formatTime(ticks * DT * 1000) : 'DNF').padEnd(10)} ${formatTime(track.medals[0]).padEnd(10)} ` +
-      `${String(walls).padStart(5)}  ${(offRoad / ticks * 100).toFixed(1).padStart(7)}%  ${widest.toFixed(1).padStart(5)} m  ${String(driver.recoveries).padStart(10)}${ok ? '' : '   FAIL'}`);
+    console.log(`${track.id.padEnd(13)} ${car.id.padEnd(17)} ${(driver.done ? formatTime(lapTicks * DT * 1000) : 'DNF').padEnd(10)} ${formatTime(track.medals[0]).padEnd(10)} ` +
+      `${String(walls).padStart(5)}  ${(offRoad / ticks * 100).toFixed(1).padStart(7)}%  ${widest.toFixed(1).padStart(5)} m  ${String(driver.recoveries).padStart(10)}${finished ? '' : '   gates missed'}${ok ? '' : '   FAIL'}`);
     if (where.length && process.argv.includes('--where')) console.log(`    walls at ${where.slice(0, 8).join('; ')}`);
   }
 }

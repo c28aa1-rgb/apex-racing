@@ -11,18 +11,18 @@ const RECORDED = [
   { track: 'marina-bay', position: { x: -311.76654052734375, y: 47.43900921344757, z: 237.363037109375 }, heading: 1.5023485784381643 }
 ];
 
-for (const placement of RECORDED) test(`${placement.track} checkpoint spans the whole road and run-off`, async () => {
+for (const placement of RECORDED) test(`${placement.track} checkpoint counts only over its painted line`, async () => {
   const base = trackById(placement.track)!;
   await initPhysics(base);
   const gate = fittedGate(base, placementGate(base, placement), await collisionGeometry(base));
   assert.ok(gate.roadRight - gate.roadLeft >= 8, 'the painted line covers a full racing surface');
   assert.ok(gate.left <= gate.roadLeft - 3 && gate.right >= gate.roadRight + 3, 'the trigger reaches past both road edges');
-  // The outer lanes sit on the last drivable ground before a barrier or the reach limit.
-  const lanes = [gate.roadLeft + .6, 0, gate.roadRight - .6, gate.left + 3.5, gate.right - 3.5];
-  for (const lateral of lanes) {
+  // Across the paint the gate counts; a metre beyond either painted edge, on the run-off or grass, it does not.
+  const lanes = [[gate.roadLeft + .6, true], [0, true], [gate.roadRight - .6, true], [gate.roadLeft - 1, false], [gate.roadRight + 1, false]] as const;
+  for (const [lateral, counts] of lanes) {
     const at = (along: number) => ({ x: gate.position.x + gate.forward.x*along + gate.side.x*lateral, z: gate.position.z + gate.forward.z*along + gate.side.z*lateral });
     const surface = gate.heightAt(0, lateral);
-    assert.ok(insideGate(gate, { ...at(0), y: surface + .7 }), `a car ${lateral.toFixed(1)} m across counts`);
+    assert.equal(insideGate(gate, { ...at(0), y: surface + .7 }), counts, `a car ${lateral.toFixed(1)} m across ${counts ? 'counts' : 'does not count'}`);
     assert.ok(!insideGate(gate, { ...at(0), y: surface + 12 }), 'a road passing high overhead does not');
     // Drive the real simulation through the plane at this lateral offset.
     const track: Track = { ...base, checkpoints: [placementGate(base, placement)] };
@@ -34,7 +34,7 @@ for (const placement of RECORDED) test(`${placement.track} checkpoint spans the 
       sim.car.setLinvel({ x: gate.forward.x*25, y: 0, z: gate.forward.z*25 }, true);
       sim.car.setAngvel({ x: 0, y: 0, z: 0 }, true);
       for (let tick = 0; tick < 30 && !sim.checkpoint; tick++) sim.step(0);
-      assert.equal(sim.checkpoint, 1, `checkpoint credit ${lateral.toFixed(1)} m across the ${placement.track} gate`);
+      assert.equal(sim.checkpoint, counts ? 1 : 0, `checkpoint credit ${lateral.toFixed(1)} m across the ${placement.track} gate`);
     } finally { sim.dispose(); }
   }
   // Moving backwards through the gate never awards credit.
@@ -49,7 +49,7 @@ for (const placement of RECORDED) test(`${placement.track} checkpoint spans the 
   } finally { sim.dispose(); }
 });
 
-test('gates without physical geometry keep the route-width trigger', () => {
+test('gates without physical geometry use the route width', () => {
   const track = trackById('bugatti')!, gate = fittedGate(track, track.checkpoints[0]);
   assert.equal(gate.right - gate.left, track.checkpoints[0].width + 1.6);
   assert.ok(insideGate(gate, { ...gate.position, y: gate.position.y + .5 }));
