@@ -1,6 +1,5 @@
 import { trackById, formatTime } from '../shared/tracks';
-import { carById } from '../shared/cars';
-import { read, write } from './storage';
+import { dressedCar, read, write } from './storage';
 
 /**
  * Leaderboard runs removed by hand, so their drivers are told once why. Checkpoints count only when the middle
@@ -31,7 +30,7 @@ export function deletedRunNotices(playerId: string | undefined): DeletedRunNotic
     return {
       key: seenKey(run),
       title: 'Leaderboard run removed',
-      summary: `Your ${formatTime(run.timeMs)} on ${track} in the ${carById(run.carId).shortName} was removed from the leaderboard.`,
+      summary: `Your ${formatTime(run.timeMs)} on ${track} in the ${dressedCar(run.carId).shortName} was removed from the leaderboard.`,
       reason: run.reason,
     };
   });

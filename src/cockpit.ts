@@ -1,8 +1,8 @@
 import * as THREE from 'three';
-import type { CarDefinition, CarId } from '../shared/cars';
+import { lookOf, type CarDefinition, type CarId } from '../shared/cars';
 import type { Simulation } from '../shared/physics';
 import { TRANSMISSIONS } from '../shared/transmission';
-import { buildFormulaCockpit, type FormulaCockpit } from './formula-cockpit';
+import { buildFormulaCockpit, FORMULA_FITS, type FormulaCockpit } from './formula-cockpit';
 
 type Mount={p:[number,number,number];size:[number,number];tilt:number;yaw?:number;wheel?:boolean};
 // Measured against the instrument faces in the normalized, metre-scale GLBs.
@@ -43,7 +43,7 @@ export class CockpitInstruments {
   private elapsed=1;
   private signature='';
   readonly surfaces:THREE.Mesh[]=[];
-  /** RB19 only: the procedural wheel, driver and tub (src/formula-cockpit.ts). */
+  /** The formula car only, in every livery: the procedural wheel, driver and tub (src/formula-cockpit.ts). */
   private formula?:FormulaCockpit;
   /** Re-aims parts that follow the steering wheel; call every frame after the wheel turns. */
   pose(){this.formula?.pose();}
@@ -55,9 +55,9 @@ export class CockpitInstruments {
     this.texture.generateMipmaps=false;this.texture.minFilter=THREE.LinearFilter;
     this.material=new THREE.MeshBasicMaterial({map:this.texture,toneMapped:false});
     this.ownedTextures.push(this.texture);this.ownedMaterials.push(this.material);
-    const wheel=root.getObjectByName('apex-steering-wheel');
-    if(definition.id==='red-bull-rb19'&&wheel){
-      this.formula=buildFormulaCockpit(root,wheel,{geometries:this.ownedGeometries,materials:this.ownedMaterials,textures:this.ownedTextures});
+    const wheel=root.getObjectByName('apex-steering-wheel'),fit=FORMULA_FITS[lookOf(definition)];
+    if(fit&&wheel){
+      this.formula=buildFormulaCockpit(root,wheel,{geometries:this.ownedGeometries,materials:this.ownedMaterials,textures:this.ownedTextures},fit);
       this.mount(wheel,{p:[0,.043,-.0265],size:[.104,.070],tilt:0},false);
     }else if(analog){
       analog.forEach((dial,i)=>{
@@ -79,7 +79,7 @@ export class CockpitInstruments {
     mesh.position.fromArray(mount.p);if(relative)mesh.position.sub(parent.position);
     mesh.rotation.set(mount.tilt,Math.PI+(mount.yaw??0),0);
   }
-  /** RB19: show the driver's body from the cockpit, and the helmet too from the T-cam behind it. */
+  /** Formula car: show the driver's body from the cockpit, and the helmet too from the T-cam behind it. */
   setDriverView(view:'cockpit'|'tcam'|'none'){this.formula?.setDriverVisible(view!=='none',view==='tcam');}
   update(sim:Simulation,dt:number,visible:boolean){
     if(!visible){this.elapsed=1;return;}

@@ -1,4 +1,4 @@
-import type { CarId } from '../shared/cars';
+import type { CarId, LookId } from '../shared/cars';
 import { rotate, type Simulation } from '../shared/physics';
 import type { Settings } from './settings';
 import { assetUrl } from '../shared/assets';
@@ -20,6 +20,15 @@ export const ENGINE_VOICES: Record<CarId,{cylinders:number;harmonics:number[];fi
   'skyline-r34':{cylinders:6,harmonics:[1,.5,.27,.35,.12],filter:1700,turbo:.28},
   'red-bull-rb19':{cylinders:6,harmonics:[1,.12,.62,.26,.42,.2],filter:3900,turbo:.19},
   'nascar-camry':{cylinders:8,harmonics:[1,.95,.48,.65,.25,.3],filter:1500,turbo:0},
+};
+
+/** Formula liveries keep the RB19's V6 layout and revs but change its colour (see ENGINE_VOICES). */
+const LIVERY_VOICES: Partial<Record<LookId,typeof ENGINE_VOICES[CarId]>> = {
+  // Mercedes power: a touch darker in the intake with more turbo whistle.
+  'mclaren-mcl35m':{cylinders:6,harmonics:[1,.18,.55,.3,.36,.16],filter:3400,turbo:.24},
+  'mercedes-w14':{cylinders:6,harmonics:[1,.22,.5,.34,.3,.14],filter:3100,turbo:.26},
+  // Ferrari: brighter and raspier, with strong upper harmonics.
+  'ferrari-sf23':{cylinders:6,harmonics:[1,.1,.7,.22,.52,.28],filter:4400,turbo:.16},
 };
 
 /** Shared tire stress drives both audio and marks, without changing physics. */
@@ -61,7 +70,10 @@ export class RaceAudio {
   private musicEl?:HTMLAudioElement;private playlist:{file:string;title:string}[]=[];private playlistLoad?:Promise<void>;private trackIndex=0;private trackErrors=0;
   /** Title of the track now playing in the menu, for display. */
   nowPlaying='';
-  private carId?:CarId;
+  /** The car and livery the engine voice was last built for. */
+  private carId?:string;
+  /** The player's livery, which colours the engine voice; set by the game when the car or livery changes. */
+  look?:LookId;
   private lastGear=0;
   private lastHitCount=-1;
   private lastImpact=0;
@@ -214,9 +226,9 @@ export class RaceAudio {
     if(!active){this.lastHitCount=-1;this.airSince=-1;this.lastThrottle=0;return;}
     const effects=settings.effectsVolume,now=c.currentTime;
     this.rainGain?.gain.setTargetAtTime(settings.weather==='rain'?effects*.09:0,now,.4);
-    const voice=ENGINE_VOICES[sim.carSpec.id],speed=sim.speed*sim.track.metersPerUnit;
-    if(this.carId!==sim.carSpec.id){
-      this.carId=sim.carSpec.id;this.lastGear=0;this.idleKey=undefined;
+    const voice=LIVERY_VOICES[this.look??sim.carSpec.id]??ENGINE_VOICES[sim.carSpec.id],speed=sim.speed*sim.track.metersPerUnit,voiceKey=`${sim.carSpec.id}|${this.look}`;
+    if(this.carId!==voiceKey){
+      this.carId=voiceKey;this.lastGear=0;this.idleKey=undefined;
       this.engine!.setPeriodicWave(c.createPeriodicWave(new Float32Array(voice.harmonics.length+1),new Float32Array([0,...voice.harmonics])));
     }
     const gear=sim.gear,load=sim.throttle+sim.reverse,{rpm,redline,idle}=sim.engine,frac=Math.min(1,Math.max(0,(rpm-idle)/(redline-idle)));

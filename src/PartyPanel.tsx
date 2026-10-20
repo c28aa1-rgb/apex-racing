@@ -17,7 +17,7 @@ import { CARS, DEFAULT_CAR, carById } from '../shared/cars';
 import { TRACKS, formatTime } from '../shared/tracks';
 import { DEFAULT_PARTY_SETTINGS, PARTY_WEATHER, type PartyWeather, type PartyRace } from '../shared/party';
 import { Game } from './game';
-import { api, write, type Player } from './storage';
+import { api, dressedCar, write, type Player } from './storage';
 import { PartyStage } from './PartyStage';
 import { useParty, requestParty } from './use-party';
 import { PartyUpdates, POSE_INTERVAL_MS } from './party-network';
@@ -176,7 +176,7 @@ export function PartyPanel({ game, active, player, onPlayer, reduced }: {
       {lobby ? <motion.aside className="party-setup" aria-label="Shared race settings" variants={reduced ? still : fromRight}>
         <div className="party-your-car">
           <div><label htmlFor="party-car">Your car</label><span>{player?.nickname}</span></div>
-          <select id="party-car" value={me?.carId ?? selectedCar.id} disabled={busy || !party.connected} onChange={event => void party.chooseCar(carById(event.target.value).id)}>{CARS.map(car => <option key={car.id} value={car.id}>{car.name}</option>)}</select>
+          <select id="party-car" value={me?.carId ?? selectedCar.id} disabled={busy || !party.connected} onChange={event => void party.chooseCar(carById(event.target.value).id)}>{CARS.map(car => <option key={car.id} value={car.id}>{dressedCar(car.id).name}</option>)}</select>
           <span className="party-car-drive">{selectedCar.physics.drivetrain}</span>
         </div>
         <div className="party-section-title"><h2>Race setup</h2><span><Crown size={14}/>{host ? 'You are host' : `${hostName} hosts`}</span></div>

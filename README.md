@@ -4,7 +4,7 @@ Play live on [GitHub Pages](https://c28aa1-rgb.github.io/apex-racing/). Multipla
 
 The live site's casual leaderboard and saved ghosts use Cloudflare D1. Public times are marked unverified; the Node backend retains physics replay verification. Career progress and personal bests stay on your device.
 
-A playable browser racer with seven imported real-world circuits, eleven selectable cars, a Rapier physics vehicle, instant restarts, drifting, medals, personal and online ghosts, and a replay-verified leaderboard. See `VALIDATION.md` for current checks and known route-test limitations.
+A playable browser racer with seven imported real-world circuits, eleven selectable cars (the formula car in four liveries), a Rapier physics vehicle, instant restarts, drifting, medals, personal and online ghosts, and a replay-verified leaderboard. See `VALIDATION.md` for current checks and known route-test limitations.
 
 ## Play locally
 
@@ -29,7 +29,7 @@ Open http://127.0.0.1:5173. Dependencies are already installed in this delivered
 | Escape | Pause / resume |
 | Enter | Start a race |
 | G / M | Toggle ghost / sound |
-| C (tap) | Next camera: Chase, Far chase, Hood, Cockpit, Drone, plus T-cam (behind the driver's helmet) on the F1 car |
+| C (tap) | Next camera: Chase, Far chase, Hood, Cockpit, Drone, plus T-cam (behind the driver's helmet) on the formula car |
 | C (hold) | Camera wheel: point the mouse at a view, release C to switch |
 | B (hold) | Look behind |
 | Mouse / wheel | Look around / zoom the chase cameras |

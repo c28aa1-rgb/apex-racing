@@ -1,10 +1,10 @@
 import { DT, initPhysics, Input, MAX_TICKS, PHYSICS_VERSION, rotate, Simulation, type Frame, type RunOrigin, type Weather } from '../shared/physics';
 import { CONE_TRACK, TRACKS, TRAINING_GROUNDS, medalFor, type Track, type Vec3 } from '../shared/tracks';
-import { carById, DEFAULT_CAR, type CarDefinition, type CarId } from '../shared/cars';
+import { carById, DEFAULT_CAR, lookOf, withLivery, type CarDefinition, type CarId } from '../shared/cars';
 import { stepReplay, type Run } from '../shared/replay';
 import { CAMERA_LABELS, RaceWorld, type CameraMode, type CockpitOffset } from './world';
 import { cameraModesFor } from './camera-modes';
-import { bestRun, read, saveBestRun, write } from './storage';
+import { bestRun, dressedCar as dressed, read, saveBestRun, write } from './storage';
 import { loadCockpitOffsets, hasLocalStartPlacement } from './dev-spawns';
 import { RaceAudio } from './race-audio';
 import { loadSettings, type Settings } from './settings';
@@ -118,7 +118,7 @@ export class Game {
   private readonly steeringStrength=1.5;
   private driftStrength=Math.max(0,Math.min(2,Number(read('driftStrength',1))));
   constructor(canvas:HTMLCanvasElement) {
-    const selectedCar=carById(read<CarId>('car',DEFAULT_CAR.id));
+    const selectedCar=dressed(read<CarId>('car',DEFAULT_CAR.id));this.sound.look=lookOf(selectedCar);
     this.world=new RaceWorld(canvas);this.sim=new Simulation(location.pathname.startsWith('/dev')?TRACKS[0]:TRAINING_GROUNDS,selectedCar.id);
     if(location.pathname.startsWith('/dev'))this.world.setTrack(TRACKS[0]);
     this.world.setCockpitOffset(loadCockpitOffsets()[selectedCar.id]);
@@ -126,7 +126,7 @@ export class Game {
     this.sim.steeringStrength=this.steeringStrength;
     this.state={mode:'menu',track:TRACKS[0],trackReady:location.pathname.startsWith('/dev'),car:selectedCar,modelReady:false,time:0,speed:0,checkpoint:0,countdown:3,boost:false,drifting:false,ghost:read('ghost',true),muted:read('muted',false),driftStrength:this.driftStrength,personalBest:bestRun(TRACKS[0])?.timeMs,newBest:false,notice:'',worstFrame:0,fps:60,penalties:0,driftCombo:0,driftBest:0,atStart:false};
     this.coarse=this.state;
-    void this.world.setCar(selectedCar.id).then(modelReady=>{if(this.carToken!==0)return;this.modelError=modelReady?'':'Car could not load. Check your connection and retry.';this.emit({modelReady});});
+    void this.world.setCar(selectedCar.id,selectedCar.look).then(modelReady=>{if(this.carToken!==0)return;this.modelError=modelReady?'':'Car could not load. Check your connection and retry.';this.emit({modelReady});});
     addEventListener('keydown',this.keyDown);addEventListener('keyup',event=>{this.keys.delete(event.code);if(this.settings.bindings.camera.includes(event.code))this.cameraKeyUp();});
     addEventListener('blur',()=>this.pause());document.addEventListener('visibilitychange',()=>{if(document.hidden)this.pause();});
     document.addEventListener('pointerlockchange',()=>{if(!document.pointerLockElement)this.pause();});
@@ -213,12 +213,20 @@ export class Game {
     }catch(error){console.error(error);if(token===this.selectionToken)this.emit({trackLoading:false,notice:'This circuit could not be prepared. Try racing again.'});}
   }
   async selectCar(carId:CarId) {
-    const token=++this.carToken,car=carById(carId);write('car',car.id);this.keys.clear();
+    const token=++this.carToken,car=dressed(carId);write('car',car.id);this.keys.clear();this.sound.look=lookOf(car);
     this.modelError='';
     this.world.setCockpitOffset(loadCockpitOffsets()[car.id]);
     if(this.state.trackReady){this.sim.dispose();this.sim=new Simulation(this.state.track,car.id);this.sim.steeringStrength=this.steeringStrength;this.sim.driftStrength=this.driftStrength;}this.ghostSim?.dispose();this.ghostSim=undefined;
     this.emit({car,modelReady:false,time:0,speed:0,checkpoint:0,run:undefined,newBest:false,notice:''});
-    await this.world.setCar(car.id).then(modelReady=>{if(token!==this.carToken)return;this.modelError=modelReady?'':'Car could not load. Check your connection and retry.';this.emit({modelReady});});
+    await this.world.setCar(car.id,car.look).then(modelReady=>{if(token!==this.carToken)return;this.modelError=modelReady?'':'Car could not load. Check your connection and retry.';this.emit({modelReady});});
+  }
+  /** Dresses the current car in another of its liveries and remembers the choice; the drive itself is unchanged. */
+  async selectLivery(liveryId:string) {
+    const base=carById(this.state.car.id);if(!base.liveries?.some(livery=>livery.id===liveryId))return;
+    write(`livery:${base.id}`,liveryId);
+    const token=++this.carToken,car=withLivery(base,liveryId);this.sound.look=lookOf(car);this.modelError='';
+    this.emit({car,modelReady:false});
+    await this.world.setCar(car.id,car.look).then(modelReady=>{if(token!==this.carToken)return;this.modelError=modelReady?'':'Car could not load. Check your connection and retry.';this.emit({modelReady});});
   }
   setGarage(active:boolean) {this.garageView=active;this.world.setMouseLook(false);if(active){void this.world.loadGarage();this.world.garage(0,true);}else this.world.overview(0,true);}
   /** Steps to the next race camera and remembers it. */
@@ -422,14 +430,15 @@ export class Game {
     this.ghostSim?.dispose();this.ghostSim=undefined;this.ghostRun=undefined;this.world.ghostFrame(undefined);this.world.endFinish();
     this.partyWeather=lobby.settings.weather;this.world.setTrack(track);this.world.setWeather(lobby.settings.weather);
     this.partyLoadStep='Loading circuit';
-    this.emit({mode:'party-loading',track,car:carById(me.carId),trackReady:false,modelReady:false,time:0,speed:0,checkpoint:0,run:undefined,newBest:false,notice:''});
+    const myCar=dressed(me.carId);this.sound.look=lookOf(myCar);
+    this.emit({mode:'party-loading',track,car:myCar,trackReady:false,modelReady:false,time:0,speed:0,checkpoint:0,run:undefined,newBest:false,notice:''});
     await initPhysics(track);
     if(this.partyRace?.id!==race.id)return;
     this.sim.dispose();this.sim=new Simulation(track,me.carId);this.sim.weather=lobby.settings.weather;this.sim.maxTicks=60*3600;this.sim.steeringStrength=this.steeringStrength;this.sim.driftStrength=this.driftStrength;this.sim.manual=this.settings.advancedDriving;
     if(me.pose){this.sim.car.setTranslation(me.pose.p,true);this.sim.car.setRotation(me.pose.q,true);this.sim.car.setLinvel({x:0,y:0,z:0},true);this.sim.car.setAngvel({x:0,y:0,z:0},true);this.sim.checkpoint=me.pose.checkpoint;this.sim.ticks=Math.max(0,Math.round((this.serverTime()-(race.startAt??this.serverTime()))/1000/DT));this.sim.finished=this.partyRace.finished;}
     this.world.setCockpitOffset(loadCockpitOffsets()[me.carId]);
     this.partyLoadStep='Loading your car';this.emit();
-    const loaded=await this.world.setCar(me.carId);this.partyLoadStep='Loading the circuit scenery';this.emit();await this.world.venueReady;
+    const loaded=await this.world.setCar(me.carId,myCar.look);this.partyLoadStep='Loading the circuit scenery';this.emit();await this.world.venueReady;
     if(this.partyRace?.id!==race.id)return;
     if(!loaded)throw new Error('Your car could not load. Return to lobby and retry.');
     if(this.world.venueLoadError)throw new Error(this.world.venueLoadError);

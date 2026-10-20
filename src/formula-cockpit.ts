@@ -1,9 +1,10 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import type { LookId } from '../shared/cars';
 
 /**
- * Procedural cockpit for the Red Bull RB19, built from reference images (work/cockpit-rb19/ref-*.png):
+ * Procedural cockpit for the formula cars, built from RB19 reference images (work/cockpit-rb19/ref-*.png):
  * a 2023-style steering wheel, the driver's gloves, sleeves, torso and thighs, a carbon liner over the
  * tub walls and the suede rim padding. Everything here is built in code; the GLB supplies the bodywork.
  *
@@ -11,6 +12,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
  * The car's +X is the driver's LEFT, so a reference x measured from the driver's view is negated.
  * Car-space parts are positioned against the RB19 tub, measured by ray casts: side walls at |x| = 0.16-0.17,
  * floor y = -0.47, front bulkhead z ≈ 0.53, rim top y ≈ -0.05 with its upper flare reaching |x| ≈ 0.25.
+ * Other formula cars move the driver and tub by a measured offset (FORMULA_FITS) and dress them in their own colours.
  */
 
 type Owned = { geometries: THREE.BufferGeometry[]; materials: THREE.Material[]; textures: THREE.Texture[] };
@@ -21,6 +23,26 @@ export type FormulaCockpit = {
   paintLeds(fraction: number): void;
   /** The driver shows only from on board: the body from the cockpit, plus the helmet from the T-cam (the cockpit camera is inside it). */
   setDriverVisible(visible: boolean, helmet: boolean): void;
+};
+
+export type FormulaFit = {
+  /** Car-space shift of the driver, tub liner and helmet from the RB19 positions below. The wheel keeps the model's own pivot. */
+  offset: [x: number, y: number, z: number];
+  /** Line the tub with carbon walls, bulkhead and suede pads. Off where the model has its own finished cockpit interior. */
+  liner: boolean;
+  suit: number; suede: number;
+  /** Helmet shell, crown band and pinstripe colours: a generic team-style design, not any real driver's. */
+  helmet: [shell: string, crown: string, stripe: string];
+};
+// Measured by ray casts against each model. McLaren: the tub walls (|x| 0.14-0.17) match the RB19's, but the halo top (y -0.045)
+// and cockpit rim sit ~4.5 cm lower and the opening 2.5 cm further forward. W14: RB19 heights, but a wider tub (|x| 0.22) with
+// its own seat. SF-23: RB19-width walls and floor in an empty shell, with the bodywork 5-6 cm lower. Models with a finished
+// interior take the driver without the liner. Helmets are generic team-style designs.
+export const FORMULA_FITS: Partial<Record<LookId, FormulaFit>> = {
+  'red-bull-rb19': { offset: [0, 0, 0], liner: true, suit: 0x1b2446, suede: 0x1f2a52, helmet: ['#1a2650', '#d6232f', '#f4c21b'] },
+  'mclaren-mcl35m': { offset: [0, -.045, .025], liner: false, suit: 0xe8731c, suede: 0x1c1f26, helmet: ['#f07d1a', '#1f4fd1', '#f2f4f4'] },
+  'mercedes-w14': { offset: [0, 0, 0], liner: false, suit: 0x1b1e22, suede: 0x15171a, helmet: ['#c9ced3', '#00a19c', '#1b1e22'] },
+  'ferrari-sf23': { offset: [0, -.05, 0], liner: true, suit: 0xc4121f, suede: 0x1a1a1c, helmet: ['#d40000', '#f6d300', '#f4f4f4'] },
 };
 
 /** Reference x (driver's view, right positive) to car/wheel-space x. */
@@ -84,7 +106,7 @@ function smooth(points: [number, number][], divisions = 6) {
   return curve.getPoints(points.length * divisions).map(p => [p.x, p.y] as [number, number]);
 }
 
-export function buildFormulaCockpit(root: THREE.Object3D, wheel: THREE.Object3D, owned: Owned): FormulaCockpit {
+export function buildFormulaCockpit(root: THREE.Object3D, wheel: THREE.Object3D, owned: Owned, fit: FormulaFit): FormulaCockpit {
   const add = (parent: THREE.Object3D, geometry: THREE.BufferGeometry, material: THREE.Material, name: string) => {
     owned.geometries.push(geometry); const mesh = new THREE.Mesh(geometry, material); mesh.name = name; parent.add(mesh); return mesh;
   };
@@ -101,13 +123,14 @@ export function buildFormulaCockpit(root: THREE.Object3D, wheel: THREE.Object3D,
   const glovePanel = material(new THREE.MeshStandardMaterial({ color: 0x24272b, roughness: .78, bumpMap: grain, bumpScale: .0005 }));
   const gloveLogo = material(new THREE.MeshStandardMaterial({ color: 0x8d959b, roughness: .5, metalness: .3 }));
   const glove = material(new THREE.MeshStandardMaterial({ color: 0x17191c, roughness: .88, bumpMap: grain, bumpScale: .0006 }));
-  const suit = material(new THREE.MeshStandardMaterial({ color: 0x1b2446, roughness: .92, bumpMap: grain, bumpScale: .0004 }));
-  const suede = material(new THREE.MeshStandardMaterial({ color: 0x1f2a52, roughness: 1, bumpMap: grain, bumpScale: .0009 }));
+  const suit = material(new THREE.MeshStandardMaterial({ color: fit.suit, roughness: .92, bumpMap: grain, bumpScale: .0004 }));
+  const suede = material(new THREE.MeshStandardMaterial({ color: fit.suede, roughness: 1, bumpMap: grain, bumpScale: .0009 }));
   const strap = material(new THREE.MeshStandardMaterial({ color: 0x0f1012, roughness: .7 }));
 
   // ---- Steering wheel --------------------------------------------------------------------------
   // The wheel keeps the supplied model's pivot: hub at (0, -0.285, 0.519), just behind the chassis lip (y -0.21 at z 0.6).
-  wheel.clear(); wheel.userData.steeringRatio = 4;
+  // The procedural wheel is authored upright, so it turns about a level column whatever the model's wheel leaned at.
+  wheel.clear(); wheel.userData.steeringRatio = 4; wheel.userData.axis = [0, 0, 1];
   // Rubber body: the whole outline including the grips, with the two hand slots cut through.
   const body = symmetric(smooth([[0, .094], [.112, .09], [.130, .074], [.138, .035], [.139, -.02], [.131, -.068], [.108, -.090], [.080, -.088], [.050, -.082], [0, -.080]], 5));
   for (const side of [-1, 1]) {
@@ -184,6 +207,9 @@ export function buildFormulaCockpit(root: THREE.Object3D, wheel: THREE.Object3D,
   const legends = add(wheel, new THREE.PlaneGeometry(W, H), material(new THREE.MeshBasicMaterial({ map: legendMap, transparent: true, depthWrite: false, toneMapped: false })), 'apex-formula-legends');
   legends.position.z = front - .0068; legends.rotation.y = Math.PI;
 
+  // Car-space parts (driver's body, tub, helmet) live in one group shifted by the car's fit; the wheel parts above follow the wheel.
+  const tub = new THREE.Group(); tub.name = 'apex-formula-tub'; tub.position.set(...fit.offset); root.add(tub);
+
   // ---- Driver: gloves on the grips, sleeves, torso, thighs ---------------------------------------
   // One hand, built for the car's +X grip (the driver's left) and mirrored for the other.
   const tube = (points: [number, number, number][], radius: number, segments = 16) =>
@@ -209,35 +235,37 @@ export function buildFormulaCockpit(root: THREE.Object3D, wheel: THREE.Object3D,
     add(hand, tube([[.136, -.040, -.036], [.146, -.066, -.046]], .025, 8), glove, 'apex-glove-cuff');
     add(hand, tube([[.146, -.066, -.046], [.156, -.094, -.058]], .029, 8), suit, 'apex-driver-sleeve');
     // Forearm: a tapered sleeve from the wrist (turns with the wheel) to a fixed elbow, re-aimed every frame in pose().
-    const forearm = add(root, new THREE.CylinderGeometry(.029, .036, 1, 18, 1, false), suit, 'apex-driver-forearm');
+    const forearm = add(tub, new THREE.CylinderGeometry(.029, .036, 1, 18, 1, false), suit, 'apex-driver-forearm');
     wrists.push({ hand, wrist: new THREE.Vector3(.156, -.094, -.058), elbow: new THREE.Vector3(side * .152, -.42, .26), forearm });
-    const elbow = new THREE.SphereGeometry(.036, 16, 12); elbow.translate(side * .152, -.42, .26); add(root, elbow, suit, 'apex-driver-elbow');
-    add(root, tube([[side * .152, -.42, .26], [side * .157, -.38, .10], [side * .158, -.32, -.04]], .040, 12), suit, 'apex-driver-upper-arm');
+    const elbow = new THREE.SphereGeometry(.036, 16, 12); elbow.translate(side * .152, -.42, .26); add(tub, elbow, suit, 'apex-driver-elbow');
+    add(tub, tube([[side * .152, -.42, .26], [side * .157, -.38, .10], [side * .158, -.32, -.04]], .040, 12), suit, 'apex-driver-upper-arm');
     // Thigh from the hip up to the knee under the chassis top.
-    add(root, tube([[side * .075, -.44, -.02], [side * .072, -.432, .22], [side * .066, -.425, .47]], .046, 14), suit, 'apex-driver-thigh');
+    add(tub, tube([[side * .075, -.44, -.02], [side * .072, -.432, .22], [side * .066, -.425, .47]], .046, 14), suit, 'apex-driver-thigh');
   }
-  { const torso = new THREE.SphereGeometry(1, 28, 18); torso.scale(.14, .09, .16); torso.translate(0, -.385, .0); add(root, torso, suit, 'apex-driver-torso'); }
-  for (const side of [1, -1]) add(root, tube([[side * .095, -.30, -.10], [side * .085, -.30, .06], [side * .040, -.35, .15]], .009, 12), strap, 'apex-driver-harness');
+  { const torso = new THREE.SphereGeometry(1, 28, 18); torso.scale(.14, .09, .16); torso.translate(0, -.385, .0); add(tub, torso, suit, 'apex-driver-torso'); }
+  for (const side of [1, -1]) add(tub, tube([[side * .095, -.30, -.10], [side * .085, -.30, .06], [side * .040, -.35, .15]], .009, 12), strap, 'apex-driver-harness');
 
   // ---- Tub: carbon liner over the side walls, front bulkhead, suede rim padding --------------------
-  for (const side of [1, -1]) {
+  if (fit.liner) for (const side of [1, -1]) {
     // Kept below the rim, which drops to y -0.23 towards the front of the opening.
-    const wall = tileUV(new THREE.BoxGeometry(.004, .22, .80), .80, .22, .05); wall.translate(side * .158, -.355, .14); add(root, wall, linerCarbon, 'apex-tub-liner');
+    const wall = tileUV(new THREE.BoxGeometry(.004, .22, .80), .80, .22, .05); wall.translate(side * .158, -.355, .14); add(tub, wall, linerCarbon, 'apex-tub-liner');
     // Headrest wings beside the helmet: mostly behind the eye, so only their front ends show at the edges of view.
-    const pad = new RoundedBoxGeometry(.05, .045, .34, 3, .016); pad.translate(side * .19, -.15, -.12); add(root, pad, suede, 'apex-rim-pad');
-    const sidePad = new RoundedBoxGeometry(.03, .14, .22, 3, .012); sidePad.translate(side * .14, -.30, -.17); add(root, sidePad, suede, 'apex-seat-pad');
+    const pad = new RoundedBoxGeometry(.05, .045, .34, 3, .016); pad.translate(side * .19, -.15, -.12); add(tub, pad, suede, 'apex-rim-pad');
+    const sidePad = new RoundedBoxGeometry(.03, .14, .22, 3, .012); sidePad.translate(side * .14, -.30, -.17); add(tub, sidePad, suede, 'apex-seat-pad');
   }
-  { const bulkhead = tileUV(new THREE.BoxGeometry(.29, .26, .004), .29, .26, .06); bulkhead.translate(0, -.34, .548); add(root, bulkhead, satinCarbon, 'apex-tub-bulkhead'); }
-  { const column = new THREE.CylinderGeometry(.013, .013, .04, 16); column.rotateX(Math.PI / 2); column.translate(0, -.286, .565); add(root, column, metal, 'apex-steering-column'); }
+  if (fit.liner) { const bulkhead = tileUV(new THREE.BoxGeometry(.29, .26, .004), .29, .26, .06); bulkhead.translate(0, -.34, .548); add(tub, bulkhead, satinCarbon, 'apex-tub-bulkhead'); }
+  // The column runs from the wheel's own pivot along its axis (on the RB19: hub (0, -0.285, 0.519) to (0, -0.286, 0.565)).
+  { const column = new THREE.CylinderGeometry(.013, .013, .04, 16); column.rotateX(Math.PI / 2); column.translate(0, 0, .046); const mesh = add(root, column, metal, 'apex-steering-column'); mesh.position.copy(wheel.position); mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), new THREE.Vector3().fromArray(wheel.userData.axis ?? [0, 0, 1])); }
 
   // Helmet, HANS collar and shoulders for the T-cam. Head centred round the cockpit eye (0, -0.135, 0.149).
-  const helmet = new THREE.Group(); helmet.name = 'apex-driver-helmet'; root.add(helmet);
+  const helmet = new THREE.Group(); helmet.name = 'apex-driver-helmet'; tub.add(helmet);
   const helmetMap = canvasTexture(owned, 512, 256, c => {
-    // Generic team-style livery on an equirectangular map: navy shell, red crown band, yellow stripes. Not any real driver's design.
-    c.fillStyle = '#1a2650'; c.fillRect(0, 0, 512, 256);
-    c.fillStyle = '#d6232f'; c.fillRect(0, 0, 512, 54);
-    c.fillStyle = '#f4c21b'; c.fillRect(0, 54, 512, 10); c.fillRect(0, 150, 512, 8);
-    c.fillStyle = '#d6232f'; for (const x of [96, 352]) { c.beginPath(); c.moveTo(x - 60, 64); c.lineTo(x + 60, 64); c.lineTo(x + 20, 150); c.lineTo(x - 20, 150); c.closePath(); c.fill(); }
+    // Generic team-style livery on an equirectangular map (RB19: navy shell, red crown band, yellow stripes). Not any real driver's design.
+    const [shellColor, crown, stripe] = fit.helmet;
+    c.fillStyle = shellColor; c.fillRect(0, 0, 512, 256);
+    c.fillStyle = crown; c.fillRect(0, 0, 512, 54);
+    c.fillStyle = stripe; c.fillRect(0, 54, 512, 10); c.fillRect(0, 150, 512, 8);
+    c.fillStyle = crown; for (const x of [96, 352]) { c.beginPath(); c.moveTo(x - 60, 64); c.lineTo(x + 60, 64); c.lineTo(x + 20, 150); c.lineTo(x - 20, 150); c.closePath(); c.fill(); }
     c.fillStyle = '#e8ecef'; c.font = 'bold 30px Arial, sans-serif'; c.textAlign = 'center'; c.fillText('APEX', 128, 120); c.fillText('APEX', 384, 120);
   });
   const shell = material(new THREE.MeshPhysicalMaterial({ map: helmetMap, roughness: .25, clearcoat: 1, clearcoatRoughness: .08 }));
@@ -247,9 +275,9 @@ export function buildFormulaCockpit(root: THREE.Object3D, wheel: THREE.Object3D,
   { const g = new THREE.CylinderGeometry(.075, .095, .07, 24); g.translate(0, -.215, .085); add(helmet, g, strap, 'apex-driver-hans'); }
   { const g = new THREE.SphereGeometry(1, 28, 16); g.scale(.20, .065, .11); g.translate(0, -.27, .04); add(helmet, g, suit, 'apex-driver-shoulders'); }
   // Merge parts that share a material into one draw call per material (the cockpit has ~130 small pieces).
-  for (const parent of [wheel, root, ...wrists.map(w => w.hand)]) mergeByMaterial(parent, owned);
+  for (const parent of [wheel, tub, ...wrists.map(w => w.hand)]) mergeByMaterial(parent, owned);
   const driver: THREE.Object3D[] = [];
-  root.traverse(o => { if (/^apex-(glove|driver)/.test(o.name)) driver.push(o); });
+  for (const parent of [wheel, tub]) parent.traverse(o => { if (/^apex-(glove|driver)/.test(o.name)) driver.push(o); });
   for (const o of driver) o.visible = false;
   helmet.visible = false;
   const wrist = new THREE.Vector3(), axis = new THREE.Vector3(), up = new THREE.Vector3(0, 1, 0);
@@ -257,7 +285,7 @@ export function buildFormulaCockpit(root: THREE.Object3D, wheel: THREE.Object3D,
     pose() {
       wheel.updateMatrix();
       for (const arm of wrists) {
-        wrist.copy(arm.wrist); wrist.x *= arm.hand.scale.x; wrist.applyMatrix4(wheel.matrix);
+        wrist.copy(arm.wrist); wrist.x *= arm.hand.scale.x; wrist.applyMatrix4(wheel.matrix).sub(tub.position);
         axis.subVectors(arm.elbow, wrist); const length = axis.length();
         arm.forearm.position.copy(wrist).addScaledVector(axis, .5);
         arm.forearm.quaternion.setFromUnitVectors(up, axis.normalize());

@@ -2,11 +2,16 @@ import { MULTIPLAYER_BACKEND, API_URL, multiplayerUrl } from './multiplayer-conf
 import { PHYSICS_VERSION } from '../shared/physics';
 import { runSchema, type Run } from '../shared/replay';
 import type { Track } from '../shared/tracks';
+import { carById, withLivery } from '../shared/cars';
 import { hasLocalStartPlacement } from './dev-spawns';
 export type Player = { id: string; token: string; nickname: string };
 export type Entry = { id: string; playerId: string; nickname: string; carId: string; timeMs: number; rank: number; manual?:boolean|null; verified?:boolean };
 export function read<T>(key: string, fallback: T): T { try { return JSON.parse(localStorage.getItem(`apex:${key === 'player' && MULTIPLAYER_BACKEND === 'cloudflare' ? 'player:cloudflare' : key}`) ?? 'null') ?? fallback; } catch { return fallback; } }
 export function write(key:string,value:unknown) { try { localStorage.setItem(`apex:${key === 'player' && MULTIPLAYER_BACKEND === 'cloudflare' ? 'player:cloudflare' : key}`,JSON.stringify(value));return true; }catch{return false;} }
+/** The livery this browser last chose for a car ('' for its default). Cosmetic: runs and parties carry only the car id. */
+export const chosenLivery = (carId: string) => read<string>(`livery:${carId}`, '');
+/** A car in the livery this browser last chose for it, so it is named and drawn as the player last saw it. */
+export const dressedCar = (carId: string) => { const car = carById(carId); return withLivery(car, chosenLivery(car.id)); };
 /**
  * Personal bests and their ghosts belong to one layout: start, checkpoints,
  * finish, road widths and driven route. A run on a different layout would

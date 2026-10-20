@@ -33,8 +33,28 @@ export type CarDimensions = {
   wheelRadiusM: number;
 };
 
+/** Formula car liveries: other teams' cars on the formula car's game setup. The first is the default and shares the car's id. */
+export const LIVERY_IDS = ['red-bull-rb19', 'mclaren-mcl35m', 'mercedes-w14', 'ferrari-sf23'] as const;
+export type LiveryId = typeof LIVERY_IDS[number];
+/** Which 3D model a car is drawn with: the car's own, or a livery's. Rig and cockpit calibration is keyed by it. */
+export type LookId = CarId | LiveryId;
+
+export type Livery = {
+  id: LiveryId;
+  /** Team colour for the livery swatch. */
+  color: string;
+  name: string;
+  shortName: string;
+  description: string;
+  model: string;
+};
+
 export type CarDefinition = {
   id: CarId;
+  /** The model this definition draws with; absent means the car's own (its id). Set by withLivery. */
+  look?: LookId;
+  /** Cosmetic alternatives. Physics, leaderboards and replays only ever see the car id. */
+  liveries?: readonly Livery[];
   name: string;
   shortName: string;
   discipline: string;
@@ -47,9 +67,20 @@ export type CarDefinition = {
 
 export const CARS: readonly CarDefinition[] = [
   {
-    id: 'red-bull-rb19', name: '2023 Oracle Red Bull RB19', shortName: 'Red Bull RB19', discipline: 'Formula · game setup',
+    id: 'red-bull-rb19', name: 'Formula car', shortName: 'Formula car', discipline: 'Formula · game setup',
     description: 'An open-wheel flagship with a sharp turbo-hybrid voice and immense cornering grip. Performance is tuned for the game.',
     model: 'oracle_red_bull_f1_car_rb19_2023.glb',
+    // Every livery drives identically; only the model, cockpit fit and engine voice change.
+    liveries: [
+      { id: 'red-bull-rb19', color: '#1e2b5e', name: '2023 Oracle Red Bull RB19', shortName: 'Red Bull RB19', model: 'oracle_red_bull_f1_car_rb19_2023.glb',
+        description: 'An open-wheel flagship with a sharp turbo-hybrid voice and immense cornering grip. Performance is tuned for the game.' },
+      { id: 'mclaren-mcl35m', color: '#ff8000', name: '2021 McLaren MCL35M', shortName: 'McLaren MCL35M', model: 'f1_2021_mclaren_mcl35m.glb',
+        description: 'Papaya and blue, with a Mercedes turbo-hybrid voice. The same formula setup as every livery, so it is purely a look.' },
+      { id: 'mercedes-w14', color: '#00a19c', name: '2023 Mercedes-AMG W14', shortName: 'Mercedes W14', model: 'mercedes_amg_petronas__w14_2023.glb',
+        description: 'Black with a teal flash and a deep turbo-hybrid note. The same formula setup as every livery, so it is purely a look.' },
+      { id: 'ferrari-sf23', color: '#d40000', name: '2023 Ferrari SF-23', shortName: 'Ferrari SF-23', model: 'scuderia_ferrari_f1_sf23_2023.glb',
+        description: 'Rosso red with a high, raspy V6. The same formula setup as every livery, so it is purely a look.' },
+    ],
     dimensions: { lengthM: 5.63, bodyWidthM: 2, heightM: .95, wheelbaseM: 3.60, trackM: 1.65, wheelRadiusM: .36 },
     stats: { acceleration: 98, topSpeed: 96, turning: 100, braking: 100 },
     physics: { massKg: 800, zeroToHundred: 2.6, topSpeedKph: 350, brakeDistance: 31, drivetrain: 'RWD', steerAngle: .36, grip: 7, sideGrip: 3, driftGrip: 1.3, driftBrake: 29, drag: .62, downforce: 1.3 }
@@ -138,3 +169,14 @@ export const CARS: readonly CarDefinition[] = [
 
 export const DEFAULT_CAR = CARS.find(car => car.id === 'porsche-911-gt3')!;
 export const carById = (id: string | undefined): CarDefinition => CARS.find(car => car.id === id) ?? DEFAULT_CAR;
+/** The open-wheel car: the T-cam and the procedural formula cockpit belong to it. */
+export const FORMULA_CARS: readonly CarId[] = ['red-bull-rb19'];
+export const isFormula = (id: string) => (FORMULA_CARS as readonly string[]).includes(id);
+/** The model a definition draws with. */
+export const lookOf = (car: CarDefinition): LookId => car.look ?? car.id;
+/** The car dressed in one of its liveries (unknown or absent: its default); same id, physics and stats. */
+export function withLivery(car: CarDefinition, liveryId?: string): CarDefinition {
+  const livery = car.liveries?.find(item => item.id === liveryId) ?? car.liveries?.[0];
+  if (!livery) return car;
+  return { ...car, look: livery.id, name: livery.name, shortName: livery.shortName, description: livery.description, model: livery.model };
+}

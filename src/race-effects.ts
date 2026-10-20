@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import type { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { assetUrl } from '../shared/assets';
+import { isFormula } from '../shared/cars';
 import type { Simulation } from '../shared/physics';
 import { tireStress } from './race-audio';
 
@@ -166,7 +167,7 @@ export class SkidMarks {
       const distance=point.distanceTo(previous);if(distance<.18)continue;
       this.last[wheel]=point;if(distance>5)continue;
       const normal=sim.vehicle.wheelContactNormal(wheel),up=new THREE.Vector3(normal?.x??0,normal?.y??1,normal?.z??0);
-      const edge=new THREE.Vector3().subVectors(point,previous).cross(up).normalize().multiplyScalar(sim.carSpec.id==='red-bull-rb19'?.17:.12);
+      const edge=new THREE.Vector3().subVectors(point,previous).cross(up).normalize().multiplyScalar(isFormula(sim.carSpec.id)?.17:.12);
       const a=previous.clone().add(edge),b=previous.clone().sub(edge),c=point.clone().add(edge),d=point.clone().sub(edge);
       this.positions.set([...a,...b,...c,...b,...d,...c],this.cursor*18);
       this.attribute.addUpdateRange(this.cursor*18,18);written=true;

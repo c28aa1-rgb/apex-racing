@@ -6,6 +6,7 @@ import { Crown, UserRound, RotateCcw } from 'lucide-react';
 import { carById } from '../shared/cars';
 import type { PartyMember } from '../shared/party';
 import type { RaceWorld } from './world';
+import { chosenLivery, dressedCar } from './storage';
 
 type Slot = { x: number; y: number; width: number };
 type Stage = { update: (members: PartyMember[], capacity: number) => void; retry: () => void; orbit: (dx: number) => void };
@@ -17,6 +18,8 @@ export function PartyStage({ members, capacity, hostId, selfId, world, reduced, 
   const [slots, setSlots] = useState<Slot[]>([]), [loaded, setLoaded] = useState<Record<string, string>>({}), [failed, setFailed] = useState<string[]>([]);
   const [rendererError, setRendererError] = useState(false), [retry, setRetry] = useState(0);
 
+  // Only your own car shows your livery: liveries are not shared with the party.
+  const self = useRef(selfId); self.current = selfId;
   useEffect(() => {
     let renderer: THREE.WebGLRenderer;
     try { renderer = new THREE.WebGLRenderer({ canvas: canvas.current!, antialias: true, alpha: false }); }
@@ -112,7 +115,7 @@ export function PartyStage({ members, capacity, hostId, selfId, world, reduced, 
         if (models.has(member.id)) continue;
         const group = new THREE.Group(); scene.add(group);
         const record = { carId: member.carId, group, ready: false, failed: false, entered: 0 }; models.set(member.id, record);
-        void world.partyModel(member.carId).then(model => {
+        void world.partyModel(member.carId, member.id === self.current ? chosenLivery(member.carId) : undefined).then(model => {
           if (disposed || models.get(member.id) !== record) return;
           model.rotation.y = -.32;
           const box = new THREE.Box3().setFromObject(model), center = box.getCenter(new THREE.Vector3());
@@ -165,7 +168,7 @@ export function PartyStage({ members, capacity, hostId, selfId, world, reduced, 
           const member = members[index], slot = slots[index]; if (!slot) return null;
           return <li key={member?.id ?? `empty-${index}`} style={{ left: slot.x, top: slot.y, width: slot.width }} className={member ? 'occupied' : 'vacant'}>
             <motion.div initial={{ opacity: 0, y: reduced ? 0 : 5 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: reduced ? 0 : .22 }}>
-              {member ? <><strong>{member.id === hostId && <Crown size={13} aria-label="Host"/>}<span className="party-driver-name" title={member.nickname}>{member.nickname}</span>{member.id === selfId && <small>You</small>}</strong><span title={carById(member.carId).name}>{carById(member.carId).shortName}</span>{failed.includes(member.id) ? <button className="party-model-retry" onClick={() => stage.current?.retry()}><RotateCcw size={12}/> Retry model</button> : loaded[member.id] !== member.carId && <small className="party-model-loading" role="status">Loading car...</small>}</> : <><UserRound size={15}/><span>Open place</span></>}
+              {member ? <><strong>{member.id === hostId && <Crown size={13} aria-label="Host"/>}<span className="party-driver-name" title={member.nickname}>{member.nickname}</span>{member.id === selfId && <small>You</small>}</strong><span title={(member.id === selfId ? dressedCar(member.carId) : carById(member.carId)).name}>{(member.id === selfId ? dressedCar(member.carId) : carById(member.carId)).shortName}</span>{failed.includes(member.id) ? <button className="party-model-retry" onClick={() => stage.current?.retry()}><RotateCcw size={12}/> Retry model</button> : loaded[member.id] !== member.carId && <small className="party-model-loading" role="status">Loading car...</small>}</> : <><UserRound size={15}/><span>Open place</span></>}
             </motion.div>
           </li>;
         })}

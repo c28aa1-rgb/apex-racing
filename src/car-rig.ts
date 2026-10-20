@@ -1,19 +1,29 @@
 import * as THREE from 'three';
 import { deinterleaveGeometry, mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import type { CarDefinition, CarId } from '../shared/cars';
+import { lookOf, type CarDefinition, type LookId } from '../shared/cars';
 import { CockpitInstruments } from './cockpit';
 
 type Part = { geometry: THREE.BufferGeometry; material: THREE.Material; name: string };
 type Region = { min: [number,number,number]; max: [number,number,number] };
 // Audited in the supplied GLBs, in their source coordinates converted to metres.
 // These four exporters merge the steering wheel into the interior material.
-const cockpitRegions: Partial<Record<CarId, Region>> = {
+const cockpitRegions: Partial<Record<LookId, Region>> = {
   'mclaren-720s-gt3': { min:[.12,.61,.32], max:[.435,.785,.45] },
   'bugatti-bolide': { min:[.255,.485,.28], max:[.58,.705,.43] },
   'porsche-963': { min:[.02,.54,.63], max:[.31,.73,.705] },
   'skyline-r34': { min:[-.545,.66,.265], max:[-.175,.992,.44] },
 };
-const steeringObjects: Partial<Record<CarId, number[]>> = {
+// Formula cars: the helmet sits under the halo's front crossbar, the wheel ~0.37 m ahead and below the eye line, as in an
+// F1 onboard view. Offsets are from the wheel pivot, and keep each eye where the cockpit fit in src/formula-cockpit.ts puts the
+// helmet: the McLaren's halo sits 4.5 cm lower than the RB19's and its wheel 8 cm lower; the W14's wheel sits 3 cm lower in an
+// RB19-height tub; the SF-23 is 5 cm lower throughout.
+const formulaEyes: Partial<Record<LookId, [number, number, number]>> = {
+  'red-bull-rb19': [0, .15, -.37], 'mclaren-mcl35m': [0, .184, -.37], 'mercedes-w14': [0, .181, -.37], 'ferrari-sf23': [0, .15, -.37],
+};
+// Models without a steering wheel of their own get an empty pivot here (metre-scale car space) for the procedural one:
+// the SF-23's sits where the RB19's does, moved down with its 5 cm lower bodywork.
+const steeringPivots: Partial<Record<LookId, [number, number, number]>> = { 'ferrari-sf23': [0, -.335, .519] };
+const steeringObjects: Partial<Record<LookId, number[]>> = {
   'porsche-911-gt3': [100,102,104,106,108,110,112,114,116,118,120,122,124],
   'celica-gt4': [298,301,303,305,307,309,311],
   'mazda-787b': [270,274,344,348],
@@ -66,9 +76,28 @@ function batch(parts: Part[], target: THREE.Group) {
   }
 }
 
-// RB19 export bakes every material into seven unnamed meshes. Classify whole
-// welded islands, not individual triangles, so suspension and wings stay intact.
-function separateRB19(part:Part) {
+// These exports bake every material into a handful of unnamed meshes (the RB19 into seven, the W14 and SF-23 into one
+// material split by vertex count). Classify whole welded islands, not individual triangles, so suspension and wings
+// stay intact: an island inside a wheel region spins with that wheel, one inside the steering region turns with it.
+// Regions are in each file's own coordinates (after its node transforms, before scaling), audited per model.
+type Baked = { wheels: Region[]; steering?: Region };
+const mirrored = (region: Region): Region[] => [region, { min: [-region.max[0], region.min[1], region.min[2]], max: [-region.min[0], region.max[1], region.max[2]] }];
+const bakedRegions: Partial<Record<LookId, Baked>> = {
+  'red-bull-rb19': {
+    wheels: [...mirrored({ min: [.378, -.005, -1.272], max: [.695, .512, -.756] }), ...mirrored({ min: [.397, -.005, 1.124], max: [.685, .506, 1.631] })],
+    steering: { min: [-.074, .39, .710], max: [.074, .479, .733] },
+  },
+  // Half-scale model. The brake ducts and uprights inboard of each tyre stay on the body.
+  'mercedes-w14': {
+    wheels: [...mirrored({ min: [.285, -.01, -1.235], max: [.525, .37, -.84] }), ...mirrored({ min: [.30, -.01, .56], max: [.53, .37, .955] })],
+    steering: { min: [-.08, .25, .225], max: [.08, .36, .27] },
+  },
+  // No steering wheel in the model; the cockpit gets a pivot from steeringPivots.
+  'ferrari-sf23': {
+    wheels: [...mirrored({ min: [.515, -.01, -2.06], max: [.88, .61, -1.45] }), ...mirrored({ min: [.535, -.01, 1.0], max: [.88, .6, 1.6] })],
+  },
+};
+function separateBaked(part:Part,baked:Baked) {
   const p=part.geometry.getAttribute('position'),index=part.geometry.index,parent=new Int32Array(p.count),vertices=new Map<string,number>(),point=new THREE.Vector3();
   for(let i=0;i<p.count;i++){const key=`${Math.round(p.getX(i)*1e5)},${Math.round(p.getY(i)*1e5)},${Math.round(p.getZ(i)*1e5)}`;parent[i]=vertices.get(key)??i;if(!vertices.has(key))vertices.set(key,i);}
   const root=(i:number)=>{while(parent[i]!==i){parent[i]=parent[parent[i]];i=parent[i];}return i;};
@@ -76,14 +105,9 @@ function separateRB19(part:Part) {
   for(let i=0;i<count;i+=3){const a=root(index?.getX(i)??i),b=root(index?.getX(i+1)??i+1),c=root(index?.getX(i+2)??i+2);parent[b]=a;parent[c]=a;}
   const bounds=new Map<number,THREE.Box3>();
   for(let i=0;i<p.count;i++){const id=root(i),box=bounds.get(id)??new THREE.Box3();box.expandByPoint(point.fromBufferAttribute(p,i));bounds.set(id,box);}
-  const regions=[
-    new THREE.Box3(new THREE.Vector3(-.695,-.005,-1.272),new THREE.Vector3(-.378,.512,-.756)),
-    new THREE.Box3(new THREE.Vector3(.378,-.005,-1.272),new THREE.Vector3(.695,.512,-.756)),
-    new THREE.Box3(new THREE.Vector3(-.685,-.005,1.124),new THREE.Vector3(-.397,.506,1.631)),
-    new THREE.Box3(new THREE.Vector3(.397,-.005,1.124),new THREE.Vector3(.685,.506,1.631)),
-    new THREE.Box3(new THREE.Vector3(-.074,.39,.710),new THREE.Vector3(.074,.479,.733)),
-  ];
-  const names=new Map([...bounds].map(([id,box])=>{const region=regions.findIndex(r=>r.containsBox(box));return [id,region<0?'body':region===4?'steering':'wheel'];}));
+  const box=(r:Region)=>new THREE.Box3(new THREE.Vector3(...r.min),new THREE.Vector3(...r.max));
+  const wheels=baked.wheels.map(box),steering=baked.steering&&box(baked.steering);
+  const names=new Map([...bounds].map(([id,b])=>[id,wheels.some(r=>r.containsBox(b))?'wheel':steering?.containsBox(b)?'steering':'body']));
   return [...partition(part,(_a,_b,_c,t)=>names.get(root(index?.getX(t*3)??t*3))!).entries()].map(([name,p])=>({...p,name:`${p.name} ${name}`}));
 }
 
@@ -118,19 +142,19 @@ export function prepareCarModel(scene: THREE.Object3D, definition: CarDefinition
   const transform=new THREE.Matrix4().makeTranslation(translate.x,translate.y,translate.z).multiply(new THREE.Matrix4().makeScale(scale,scale,scale)).multiply(rotation);
   const body:Part[]=[],steering:Part[]=[],lamps:Part[]=[],headlamps:Part[]=[],wheels=[0,1,2,3].map(()=>[] as Part[]),calipers=[0,1,2,3].map(()=>[] as Part[]);
   let legacyEye:THREE.Vector3|undefined;
-  const region=cockpitRegions[definition.id],sourceToMetres=size.z<.1?100:1;
+  const look=lookOf(definition),region=cockpitRegions[look],sourceToMetres=size.z<.1?100:1;
   const regionBox=region?new THREE.Box3(new THREE.Vector3(...region.min).multiplyScalar(1/sourceToMetres),new THREE.Vector3(...region.max).multiplyScalar(1/sourceToMetres)).applyMatrix4(transform):undefined;
   const corner=(v:THREE.Vector3)=>(v.z>=0?0:2)+(v.x>=0?1:0);
-  if(definition.id==='red-bull-rb19'){const separated=parts.flatMap(separateRB19);parts.splice(0,parts.length,...separated);}
+  const baked=bakedRegions[look];if(baked){const separated=parts.flatMap(part=>separateBaked(part,baked));parts.splice(0,parts.length,...separated);}
   for(const part of parts){
     part.geometry.applyMatrix4(transform);
     if(!legacyEye&&/(?:steer.*wheel|wheel.*steer)/i.test(part.name)){
       part.geometry.computeBoundingBox();legacyEye=part.geometry.boundingBox!.getCenter(new THREE.Vector3()).add(new THREE.Vector3(0,.2,-.38));
     }
     const objectNumber=Number(/Object_(\d+)/.exec(part.name)?.[1]);
-    if(/steer/i.test(part.name)||steeringObjects[definition.id]?.includes(objectNumber)){steering.push(part);continue;}
+    if(/steer|st_wheel/i.test(part.name)||steeringObjects[look]?.includes(objectNumber)){steering.push(part);continue;}
     const isCaliper=/cali?l?iper/i.test(part.name);
-    if(isCaliper||/wheel|tyre|tire|rim|brakedisc|rotor|EXT_Disc|\bDiscs\b/i.test(part.name)){
+    if(isCaliper||/wheel|tyre|tire|tread|rim|brakedisc|rotor|EXT_Disc|\bDiscs\b/i.test(part.name)){
       for(const [index,p] of partition(part,(a,b,c)=>String(corner(a.clone().add(b).add(c).multiplyScalar(1/3))))) (isCaliper?calipers:wheels)[Number(index)].push(p);
       continue;
     }
@@ -152,7 +176,7 @@ export function prepareCarModel(scene: THREE.Object3D, definition: CarDefinition
   wheels.forEach((parts,index)=>{
     if(!parts.length)return;
     const bounds=new THREE.Box3(),tireBounds=new THREE.Box3();
-    for(const p of parts){p.geometry.computeBoundingBox();bounds.union(p.geometry.boundingBox!);if(/tire|tyre/i.test(p.name))tireBounds.union(p.geometry.boundingBox!);}
+    for(const p of parts){p.geometry.computeBoundingBox();bounds.union(p.geometry.boundingBox!);if(/tire|tyre|tread/i.test(p.name))tireBounds.union(p.geometry.boundingBox!);}
     const axleBounds=tireBounds.isEmpty()?bounds:tireBounds,center=axleBounds.getCenter(new THREE.Vector3());
     const radius=(axleBounds.max.y-axleBounds.min.y)/2;
     const pivot=new THREE.Group(),spin=new THREE.Group();pivot.name=`apex-wheel-${index}`;spin.name='apex-wheel-spin';
@@ -167,9 +191,12 @@ export function prepareCarModel(scene: THREE.Object3D, definition: CarDefinition
     let yy=0,yz=0;for(const p of steering){const positions=p.geometry.getAttribute('position');for(let i=0;i<positions.count;i++){const y=positions.getY(i)-center.y,z=positions.getZ(i)-center.z;yy+=y*y;yz+=y*z;}p.geometry.translate(-center.x,-center.y,-center.z);}
     pivot.userData.axis=new THREE.Vector3(0,-THREE.MathUtils.clamp(yz/Math.max(yy,1e-6),-.7,.7),1).normalize().toArray();
     batch(steering,pivot);prepared.add(pivot);prepared.userData.cockpitEye={x:center.x,y:center.y+.2,z:center.z-.38};
-    // RB19: helmet under the halo's front crossbar (y ~0 at z 0.3), wheel 0.37 m ahead and ~17 degrees below the eye line,
-    // as in an F1 onboard view. The procedural cockpit is in src/formula-cockpit.ts.
-    if(definition.id==='red-bull-rb19')prepared.userData.cockpitEye={x:center.x,y:center.y+.15,z:center.z-.37};
+    // The procedural formula cockpit around this eye is in src/formula-cockpit.ts.
+    const eye=formulaEyes[look];if(eye)prepared.userData.cockpitEye={x:center.x+eye[0],y:center.y+eye[1],z:center.z+eye[2]};
+  }else if(steeringPivots[look]){
+    const pivot=new THREE.Group(),center=new THREE.Vector3(...steeringPivots[look]!),eye=formulaEyes[look]??[0,.15,-.37];
+    pivot.name='apex-steering-wheel';pivot.position.copy(center);pivot.userData.axis=[0,0,1];prepared.add(pivot);
+    prepared.userData.cockpitEye={x:center.x+eye[0],y:center.y+eye[1],z:center.z+eye[2]};
   }
   // Clone only the actual rear-light materials. Headlights and body paint retain
   // their original materials, even where the exporter shared a texture atlas.

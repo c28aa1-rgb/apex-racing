@@ -37,9 +37,10 @@ try{
   await page.waitForFunction(()=>window.__apex.state.mode==='paused');
   await page.evaluate(()=>window.__apex.menu());
   await page.getByRole('button',{name:'Garage',exact:true}).click();
-  for(const id of ['nascar-camry','red-bull-rb19']){
+  for(const [id,livery] of [['nascar-camry'],['red-bull-rb19','red-bull-rb19'],['red-bull-rb19','mclaren-mcl35m'],['red-bull-rb19','mercedes-w14'],['red-bull-rb19','ferrari-sf23']]){
     await page.evaluate(id=>window.__apex.selectCar(id),id);
-    await page.waitForFunction(id=>window.__apex.state.car.id===id&&window.__apex.state.modelReady,id,{timeout:60000});
+    if(livery)await page.evaluate(livery=>window.__apex.selectLivery(livery),livery);
+    await page.waitForFunction(([id,livery])=>window.__apex.state.car.id===id&&(!livery||window.__apex.state.car.look===livery)&&window.__apex.state.modelReady,[id,livery],{timeout:90000});
     await page.waitForTimeout(250);
     assert.equal(await page.evaluate(()=>window.__apex.world.wheelGroups.length),4,`${id} has four animated wheels`);
     assert.ok(await page.evaluate(()=>!!window.__apex.world.car.getObjectByName('apex-steering-wheel')),`${id} has a steering wheel`);
@@ -50,9 +51,7 @@ try{
     });
     assert.notEqual(animation.spin,animation.before.spin,`${id} tires spin`);assert.equal(animation.front,.25,`${id} front tires steer`);assert.equal(animation.rear,0,`${id} rear tires stay straight`);assert.notDeepEqual(animation.steering,animation.before.steering,`${id} steering wheel turns`);
     console.log(id,await page.evaluate(()=>({wheels:window.__apex.world.wheelGroups.map(w=>({position:w.position.toArray(),radius:w.userData.radius})),model:window.__apex.world.car.children.map(o=>o.name)})));
-    await page.screenshot({path:`work/${id}-garage.png`});
-    // Cars are bought with REP now; own this one in the test career so it may race.
-    await page.evaluate(id=>{const c=window.__apex.career;if(!c.owned.includes(id))c.owned.push(id);},id);
+    await page.screenshot({path:`work/${livery??id}-garage.png`});
     await page.evaluate(()=>window.__apex.start());
     assert.equal(await page.evaluate(()=>window.__apex.state.mode),'countdown','unlocked vehicle starts race');
     await page.evaluate(()=>window.__apex.menu());

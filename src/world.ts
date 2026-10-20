@@ -7,7 +7,7 @@ import { direction, orientation, spawnGate, type Track, type Gate } from '../sha
 import { collisionGeometry, type Simulation, type Frame } from '../shared/physics';
 import { fittedGates, GATE_STEP, type FittedGate } from '../shared/gates';
 import { buildRoadMesh, interpolateRoad, type RoadPoint } from '../shared/road';
-import { carById, DEFAULT_CAR, type CarDefinition, type CarId } from '../shared/cars';
+import { carById, DEFAULT_CAR, isFormula, lookOf, withLivery, type CarDefinition, type CarId, type LookId } from '../shared/cars';
 import { CarRig, prepareCarModel } from './car-rig';
 import { CarDamage } from './car-damage';
 import { FinishConfetti, SkidMarks, StartLight } from './race-effects';
@@ -44,7 +44,7 @@ export type StartPlacement = { position: { x: number; y: number; z: number }; he
 /** Local-space adjustment from the model's detected driver-seat position. */
 export type CockpitOffset = { x: number; y: number; z: number; reference?: 'driver-seat' };
 export type EditorMode = 'spawn' | 'finish' | 'road';
-import type { CameraMode, CameraOptions } from './camera-modes';
+import { cameraModesFor, type CameraMode, type CameraOptions } from './camera-modes';
 export { CAMERA_LABELS, CAMERA_MODES, type CameraMode, type CameraOptions } from './camera-modes';
 export class RaceWorld {
   renderer: THREE.WebGLRenderer;
@@ -112,12 +112,14 @@ export class RaceWorld {
   private finishLookOffset = new THREE.Vector3();
   private finishFov = 60;
   private loader = new GLTFLoader();
-  private modelCache = new Map<CarId, Promise<THREE.Group>>();
+  /** Prepared models by look: a car's own model, or one of its liveries. */
+  private modelCache = new Map<LookId, Promise<THREE.Group>>();
   private carLoadToken = 0;
   private ghostLoadToken = 0;
   private venueLoadToken = 0;
   private garageLoad?: Promise<void>;
   private currentCarId: CarId = DEFAULT_CAR.id;
+  private currentLook: LookId = DEFAULT_CAR.id;
   private garageAngle = -2.8;
   /** Car unlock reveal: clock time it started (-1 when idle) and a livery-coloured flash light. */
   private visualCarPosition = new THREE.Vector3();
@@ -916,13 +918,12 @@ export class RaceWorld {
       group.add(wheel);if(!ghost)this.wheelGroups.push(wheel);
     }
   }
-  async partyModel(carId: CarId) {
-    return (await this.loadModel(carId)).clone(true);
+  async partyModel(carId: CarId, livery?: string) {
+    return (await this.loadModel(withLivery(carById(carId), livery))).clone(true);
   }
-  private loadModel(carId: CarId) {
-    const cached = this.modelCache.get(carId);
+  private loadModel(definition: CarDefinition) {
+    const look = lookOf(definition), cached = this.modelCache.get(look);
     if (cached) return cached;
-    const definition = carById(carId);
     // Runtime copies (design/build-car-runtime.ts) carry 2048 px WebP textures; fall back to the supplied file.
     const loading = this.loader.loadAsync(assetUrl(`models/cars/runtime/${definition.model}`)).catch(()=>this.loader.loadAsync(assetUrl(`models/cars/${definition.model}`))).then(gltf => {
       const materials=new Set<THREE.Material>();
@@ -935,8 +936,8 @@ export class RaceWorld {
         if(definition.id==='porsche-911-gt3'&&/INT_Glass/i.test(item.name)){item.transparent=true;item.opacity=.08;item.depthWrite=false;item.roughness=.12;item.metalness=0;}
       }
       return prepareCarModel(gltf.scene, definition, this.cinematicActors);
-    }).catch(error=>{this.modelCache.delete(carId);throw error;});
-    this.modelCache.set(carId, loading); return loading;
+    }).catch(error=>{this.modelCache.delete(look);throw error;});
+    this.modelCache.set(look, loading); return loading;
   }
   loadGarage() {
     if (this.garageLoad) return this.garageLoad;
@@ -953,25 +954,27 @@ export class RaceWorld {
   }
   /** Where the hood camera sits, in car space: the top of the bodywork ahead of the cockpit, measured per model. */
   private hoodMount = { y: 0, z: 1 };
-  async setCar(carId: CarId) {
-    const token = ++this.carLoadToken; this.currentCarId = carId; this.wheelGroups = [];this.cockpitEye=undefined;this.legacyCockpitEye=undefined;
+  /** Shows the player's car, dressed in `livery` when it has liveries (unknown or absent: its default). */
+  async setCar(carId: CarId, livery?: string) {
+    const definition = withLivery(carById(carId), livery);
+    const token = ++this.carLoadToken; this.currentCarId = carId; this.currentLook = lookOf(definition); this.wheelGroups = [];this.cockpitEye=undefined;this.legacyCockpitEye=undefined;
     this.carRig?.dispose();this.carRig=undefined;this.visualCarReady=false;
     this.car.clear();
     try {
-      const prepared = await this.loadModel(carId);
+      const prepared = await this.loadModel(definition);
       if (token !== this.carLoadToken) return false;
       const model=prepared.clone(true),eye=model.userData.cockpitEye;this.cockpitEye=eye?new THREE.Vector3(eye.x,eye.y,eye.z):undefined;
       this.tuneTextures(model);
       const legacy=model.userData.legacyCockpitEye;this.legacyCockpitEye=legacy?new THREE.Vector3(legacy.x,legacy.y,legacy.z):undefined;
       model.traverse(object=>{if(object instanceof THREE.Mesh){const materials=Array.isArray(object.material)?object.material:[object.material];object.castShadow=materials.some(m=>!m.transparent);object.receiveShadow=true;}});
-      this.hoodMount=measureHood(model,carById(carId));
-      this.car.clear();this.car.add(model);this.carRig=new CarRig(model,carById(carId));this.wheelGroups=this.carRig.wheels;this.carDamage.attach(model);
+      this.hoodMount=measureHood(model,definition);
+      this.car.clear();this.car.add(model);this.carRig=new CarRig(model,definition);this.wheelGroups=this.carRig.wheels;this.carDamage.attach(model);
       // Seat each model wheel where its physical tyre rests (hard point - 0.58 m rest length - radius): a few
       // models place a wheel a few centimetres off, which would otherwise float or sink that tyre.
       const physicalRadius=carById(carId).dimensions.wheelRadiusM;
       for(const wheel of this.carRig.wheels){wheel.userData.rest[1]=-.58-physicalRadius+wheel.userData.radius;wheel.position.y=wheel.userData.rest[1];}this.visualCarReady=false;this.prewarm([this.car]);return true;
     } catch (error) {
-      console.warn(`Could not load ${carById(carId).name}.`, error); return false;
+      console.warn(`Could not load ${definition.name}.`, error); return false;
     }
   }
   private ghostCarId?: CarId;
@@ -980,7 +983,7 @@ export class RaceWorld {
     if (this.ghostCarId === carId) { this.ghostLoadToken++; return true; }
     const token = ++this.ghostLoadToken; const wasVisible = this.ghost.visible;
     try {
-      const prepared = await this.loadModel(carId);
+      const prepared = await this.loadModel(carById(carId));
       if (token !== this.ghostLoadToken) return false;
       const ghostModel = prepared.clone(true);
       ghostModel.traverse(object => {
@@ -1092,8 +1095,8 @@ export class RaceWorld {
   }
   /** Positions the race camera for the current view. Exterior views use car-relative springs, so they never trail behind at speed. */
   private updateCamera(sim:Simulation,dt:number,snap:boolean) {
-    // A view the current car does not offer (the F1-only T-cam after switching cars) falls back to the chase view.
-    const mode=this.cameraMode==='tcam'&&this.currentCarId!=='red-bull-rb19'?'chase':this.cameraMode;
+    // A view the current car does not offer (the formula-only T-cam after switching cars) falls back to the chase view.
+    const mode=cameraModesFor(this.currentCarId).includes(this.cameraMode)?this.cameraMode:'chase';
     const rig=this.rig,options=this.cameraOptions,still=this.reducedMotion,now=performance.now();
     rig.time+=dt;
     // Motion cues shared by every view: smoothed velocity and acceleration of the car.
@@ -1142,10 +1145,10 @@ export class RaceWorld {
     const right=new THREE.Vector3(heading.z,0,-heading.x);
     if(mode==='hood'||mode==='tcam'){
       // Hood: just above the bonnet ahead of the windscreen (surface height measured when the car loads), looking over it.
-      // T-cam (F1 only): just above and ahead of the halo's rear mount (a 3 cm post to y 0.25 at z -0.5 to -0.4), behind the
-      // driver's helmet, looking down past it, as on F1 onboards.
-      const d=sim.carSpec.dimensions,hood=this.hoodMount;
-      const local=mode==='tcam'?new THREE.Vector3(0,.29,-.33):new THREE.Vector3(0,hood.y+.12,hood.z);
+      // T-cam (formula cars only): just above and ahead of the halo's rear mount, behind the driver's helmet, looking down
+      // past it, as on F1 onboards. See TCAM_MOUNTS.
+      const hood=this.hoodMount;
+      const local=mode==='tcam'?new THREE.Vector3(...TCAM_MOUNTS[this.currentLook]??TCAM_MOUNTS['red-bull-rb19']!):new THREE.Vector3(0,hood.y+.12,hood.z);
       const eye=local.applyQuaternion(this.car.quaternion).add(this.car.position);
       const yaw=this.lookYaw+(this.lookBack?Math.PI:0),pitch=this.lookPitch-(mode==='tcam'?.26:.05);
       const look=new THREE.Vector3(Math.sin(yaw)*Math.cos(pitch),Math.sin(pitch),Math.cos(yaw)*Math.cos(pitch)).applyQuaternion(rig.carQ);
@@ -1275,9 +1278,18 @@ export class RaceWorld {
   }
 }
 
+/**
+ * T-cam position in car space, measured on each model: the halo's rear mount (a 3 cm post) tops out at y 0.25 at z -0.5 to -0.4
+ * on the RB19, y 0.21 at z -0.4 to -0.3 on the McLaren, y 0.29 at z -0.55 to -0.4 on the W14 and y 0.15 at z -0.45 to -0.35 on
+ * the SF-23. The camera sits 4 cm above it and a little ahead.
+ */
+const TCAM_MOUNTS: Partial<Record<LookId, [number, number, number]>> = {
+  'red-bull-rb19': [0, .29, -.33], 'mclaren-mcl35m': [0, .25, -.25], 'mercedes-w14': [0, .33, -.355], 'ferrari-sf23': [0, .195, -.28],
+};
+
 /** The bonnet's top surface on the centreline, ahead of the cockpit, by casting a ray straight down onto the body. */
 function measureHood(model: THREE.Object3D, car: CarDefinition) {
-  const d = car.dimensions, z = d.wheelbaseM * (car.id === 'red-bull-rb19' ? .26 : .3), floor = -(.58 + d.wheelRadiusM);
+  const d = car.dimensions, z = d.wheelbaseM * (isFormula(car.id) ? .26 : .3), floor = -(.58 + d.wheelRadiusM);
   const bodies: THREE.Object3D[] = [];
   model.traverse(o => { if ((o as THREE.Mesh).isMesh && !/^apex-(wheel|steering|formula|glove|driver|tub|rim|seat|live|rear-lamp|front-lamp)/.test(o.name) && !o.parent?.name.startsWith('apex-wheel')) bodies.push(o); });
   model.updateMatrixWorld(true);

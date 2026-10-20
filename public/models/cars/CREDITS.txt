@@ -10,7 +10,24 @@ Author: Ddiaz Design — https://sketchfab.com/ddiaz-design
 Source: https://sketchfab.com/3d-models/2015-nascar-toyota-camry-8535641d8171496697fa4d3b7449f851
 License (embedded GLB metadata): CC BY-NC-SA 4.0 — https://creativecommons.org/licenses/by-nc-sa/4.0/
 
-These two files were supplied by the project owner and preserved unchanged.
+2021 McLaren MCL35M
+Author: Excalibur — https://sketchfab.com/excalibur
+Source: https://sketchfab.com/3d-models/f1-2021-mclaren-mcl35m-967ecec37468412083c40c62b3d7234d
+License (embedded GLB metadata): CC BY 4.0 — https://creativecommons.org/licenses/by/4.0/
+
+2023 Mercedes-AMG Petronas W14 (formula car livery)
+Author: Redgrund — https://sketchfab.com/redgrund
+Source: https://sketchfab.com/3d-models/mercedes-amg-petronas-w14-2023-f210e49637fd49bfa52860d2e17dcf50
+License (embedded GLB metadata): CC BY-NC-ND 4.0 — https://creativecommons.org/licenses/by-nc-nd/4.0/
+
+2023 Scuderia Ferrari SF-23 (formula car livery)
+Author: Redgrund — https://sketchfab.com/redgrund
+Source: https://sketchfab.com/3d-models/scuderia-ferrari-f1-sf23-2023-ecb0f812bc454331bbe721655b0780ec
+License (embedded GLB metadata): CC BY 4.0 — https://creativecommons.org/licenses/by/4.0/
+
+These five files were supplied by the project owner and preserved unchanged; the McLaren, Mercedes and Ferrari
+are liveries of the RB19's formula car. Runtime copies only resize textures and drop vertex data no material
+reads. The W14's NoDerivatives licence permits that format change, but not distributing a modified model.
 Animated wheel and steering groups are separated at runtime. Engine sounds
 are synthesized game audio, not recordings from these models.
 
