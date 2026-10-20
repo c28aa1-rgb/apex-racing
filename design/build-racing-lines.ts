@@ -263,29 +263,50 @@ async function bake(track: Track) {
   };
   const centre = (k: number): P => { const x = k % W, z = (k - x) / W; return { x: x0 + (x + .5) * CELL, y: 0, z: z0 + (z + .5) * CELL }; };
 
-  // One lap: from the finish, the cheapest way on along the road (never back past the line) to a point of the trace's
-  // opening stretch, choosing the one that leaves least of the trace unused. That cuts a trace that ran on past its
-  // start, bridges one that stopped short, and joins one that starts on a grid lane beside the circuit (Daytona's pit
-  // road) where it meets the circuit, instead of straight across the infield.
+  // One lap: from the finish, the cheapest way on along the road (never back past the line) to the end of the trace's
+  // opening stretch, then back along the trace only as far as it runs with that road. Where a trace starts on a grid
+  // lane beside the circuit (Daytona's pit road) the lap keeps to the circuit until the lane has merged, instead of
+  // bending over to it; a trace that ran on past its start is cut, and one that stopped short is bridged.
   const trace: P[] = [];
   {
     const n = sampled.length, ends = Math.floor(n * .15), end = sampled[n - 1], before = sampled[n - 3];
     const hx = end.x - before.x, hz = end.z - before.z, hl = Math.hypot(hx, hz) || 1, finish = cellOf(end);
     const behind = (k: number) => { const p = centre(k), dx = p.x - end.x, dz = p.z - end.z; return Math.hypot(dx, dz) * mpu < 25 && (dx * hx + dz * hz) / hl * mpu < -3; };
     // Off the road is dear here: the visible surface is known, and a lap never closes across an infield.
-    search(finish, boxAround([...sampled.slice(0, ends), ...sampled.slice(n - ends)], 60 / mpu), k => CLOSING_COST[cls[k]], -1, behind);
-    let best = Infinity, join = 0, unused = 0;
-    for (let i = 0; i < ends; i++) {
-      if (i) unused += Math.hypot(sampled[i].x - sampled[i - 1].x, sampled[i].z - sampled[i - 1].z);
-      // Unused trace counts half: dropping a grid lane beats driving back down it to its first point.
-      const score = dist[cellOf(sampled[i])] + unused / CELL * .5;
-      if (score < best) { best = score; join = i; }
+    const target = cellOf(sampled[ends]);
+    // Along the trace is cheapest, so the path keeps to it wherever it is on the circuit; away from it costs up to five
+    // times more, which still beats crossing an infield to a grid lane.
+    const drivenCells = new Uint8Array(W * H);
+    for (const p of sampled) { const k = cellOf(p); if (k >= 0 && k < W * H) drivenCells[k] = 1; }
+    const fromDriven = distanceTransform(drivenCells, W, H);
+    search(finish, boxAround([...sampled.slice(0, ends + 1), ...sampled.slice(n - ends)], 60 / mpu), k => CLOSING_COST[cls[k]] * (1 + Math.min(4, (fromDriven[k] * CELL * mpu / 8) ** 2)), target, behind);
+    const road = pathTo(finish, target);
+    if (!road) throw new Error(`${track.id}: no road from the finish to the trace's opening stretch`);
+    const roadPoints = road.map(centre), nearest = (p: P) => {
+      let best = Infinity, at = 0;
+      roadPoints.forEach((q, i) => { const d = Math.hypot(q.x - p.x, q.z - p.z); if (d < best) { best = d; at = i; } });
+      return { d: best * mpu, at };
+    };
+    let join = ends;
+    while (join > 0 && nearest(sampled[join - 1]).d < 6) join--;
+    let closing = roadPoints;
+    if (join > 5) {
+      // A grid lane. Its trace pulled the path over to it where it runs beside the circuit before merging, so close
+      // the lap along the plain cheapest road to well past the merge and join the trace only where it is on that road.
+      const past = Math.min(n - 1, join + Math.round(100 / 2)), goal = cellOf(sampled[past]);
+      search(finish, boxAround([...sampled.slice(0, past + 1), ...sampled.slice(n - ends)], 60 / mpu), k => CLOSING_COST[cls[k]], goal, behind);
+      const plain = pathTo(finish, goal);
+      if (plain) {
+        closing = plain.map(centre);
+        const near = (p: P) => Math.min(...closing.map(q => Math.hypot(q.x - p.x, q.z - p.z))) * mpu;
+        join = past;
+        while (join > 0 && near(sampled[join - 1]) < 2) join--;
+      }
     }
-    const bridge = Number.isFinite(best) ? pathTo(finish, cellOf(sampled[join])) : undefined;
-    if (!bridge) throw new Error(`${track.id}: no road from the finish back to the start of the trace`);
-    const loop = [...sampled.slice(join), ...bridge.slice(0, -1).map(centre)];
+    const at = (p: P) => { let best = Infinity, i = 0; closing.forEach((q, k) => { const d = Math.hypot(q.x - p.x, q.z - p.z); if (d < best) { best = d; i = k; } }); return i; };
+    const loop = [...sampled.slice(join), ...closing.slice(0, at(sampled[join]))];
     trace.push(...smooth(resample(loop, Math.round(lapLength(loop) * mpu / 2)), 1));
-    if (bridge.length * CELL * mpu > 40) console.warn(`  the trace's ends are ${(bridge.length * CELL * mpu).toFixed(0)} m of road apart: the lap closes along the road`);
+    if (join > 5) console.warn(`  the trace's first ${(join * 2).toFixed(0)} m leave the circuit (a grid lane): the lap closes along the road`);
   }
 
   // The trace runs wide into gravel traps and onto paved run-off in places (driving errors, not the circuit). The

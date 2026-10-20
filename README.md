@@ -39,6 +39,12 @@ The camera choice is remembered, and Settings lists every view. In the garage, d
 
 Pass the timing checkpoints in order and complete the lap. Each checkpoint is painted across the asphalt as a teal band and the finish as a checkered line. Each marking is measured from the venue's collision mesh and spans the racing surface from edge to edge. A gate only counts when the middle of the car crosses its paint, so cutting across grass, gravel or run-off beside a checkpoint does not pass it (`shared/gates.ts`). Finish times and best input replays are saved on this device, and the best one races alongside you as the personal ghost (G toggles it). Custom layouts recorded in `/dev` keep their own personal best and ghost, keyed to that exact start, checkpoint and finish layout. Choose a nickname to submit a run. Leaderboard ghost buttons let you race another driver's verified run. Losing browser storage loses the anonymous identity; there is no account recovery or cross-device sign-in.
 
+### Weather and slipstream
+
+Weather changes the physics as well as the look. Fog leaves the road slightly damp, and rain and snow are slippery. Grip, cornering and braking all fall with the weather: stopping from 100 km/h takes about 21 m dry, 23 m in fog, 27 m in rain and 34 m in snow. The weather is fixed when a run starts, so changing it in Settings takes effect on the next start or restart. Each run records its weather, so replays, ghosts and the server's replay check reproduce it exactly, and clear-weather physics are unchanged. Runs in every weather count on the same leaderboard, ranked by time. In party races the host's weather applies to everyone.
+
+In party races, running close behind another car puts you in its slipstream. Up to 35% of your aero drag disappears when you are a few car lengths back, fading to nothing about 45 m behind or a car's width to the side. The speedometer shows "Slipstream" while it is working. Solo runs have no other car to draft, so time trials are unaffected.
+
 ### Racing line
 
 Settings → Driving → Racing line paints a driving line on every circuit: Full line (the default), Braking zones, or Off. Its colour reacts to your car and speed. Green means full throttle stays within reach of the next corners, yellow means ease off, and red means brake. Arrive too fast and the red starts sooner. A faster-braking, higher-grip car gets later braking points. The line is purely visual, so times still count.

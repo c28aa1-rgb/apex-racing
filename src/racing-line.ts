@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import type { Simulation } from '../shared/physics';
 import type { Track } from '../shared/tracks';
-import { brakingEnvelope, nearestStation, predictZones, racingLine, Zone, type RacingLine } from '../shared/racing-line';
+import { brakingEnvelope, LINE_TUNING, nearestStation, predictZones, racingLine, Zone, type RacingLine } from '../shared/racing-line';
+import { WEATHER_GRIP } from '../shared/physics';
 
 export type RacingLineMode = 'off' | 'braking' | 'full';
 export const RACING_LINE_MODES: readonly RacingLineMode[] = ['off', 'braking', 'full'];
@@ -75,7 +76,9 @@ export class RacingLineGuide {
   update(sim: Simulation, mode: RacingLineMode, show: boolean) {
     const line = this.line;
     if (!line || mode === 'off' || !show || sim.track.id !== this.trackId) { this.mesh.visible = false; this.station = -1; return; }
-    if (!this.envelope || this.envelopeCar !== sim.carSpec.id) { this.envelope = brakingEnvelope(line, sim.carSpec); this.envelopeCar = sim.carSpec.id; }
+    // Wet or icy roads mean lower corner speeds and earlier braking.
+    const key = `${sim.carSpec.id}:${sim.weather}`, grip = WEATHER_GRIP[sim.weather];
+    if (!this.envelope || this.envelopeCar !== key) { this.envelope = brakingEnvelope(line, sim.carSpec, { grip: LINE_TUNING.grip * grip, brake: LINE_TUNING.brake * grip }); this.envelopeCar = key; }
     const { n, mpu } = line, p = sim.car.translation(), spacing = line.length / n;
     this.station = nearestStation(line, p.x, p.z, this.station);
     const behind = Math.ceil(BEHIND / spacing), ahead = Math.ceil(AHEAD / spacing), fade = FADE / spacing;

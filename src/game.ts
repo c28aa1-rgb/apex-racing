@@ -1,4 +1,4 @@
-import { DT, initPhysics, Input, MAX_TICKS, PHYSICS_VERSION, rotate, Simulation, type Frame, type RunOrigin } from '../shared/physics';
+import { DT, initPhysics, Input, MAX_TICKS, PHYSICS_VERSION, rotate, Simulation, type Frame, type RunOrigin, type Weather } from '../shared/physics';
 import { CONE_TRACK, TRACKS, TRAINING_GROUNDS, medalFor, type Track, type Vec3 } from '../shared/tracks';
 import { carById, DEFAULT_CAR, type CarDefinition, type CarId } from '../shared/cars';
 import { stepReplay, type Run } from '../shared/replay';
@@ -21,7 +21,7 @@ import type { PartyUpdates } from './party-network';
 
 export type Mode='menu'|'countdown'|'racing'|'paused'|'celebrating'|'finished'|'replay'|'party-loading'|'party-finished';
 const LIVE_KEYS=new Set<keyof GameState>(['time','speed','boost','drifting','driftCombo']);
-export type GameState={mode:Mode;track:Track;trackReady:boolean;trackLoading?:boolean;car:CarDefinition;modelReady:boolean;time:number;speed:number;checkpoint:number;countdown:number;boost:boolean;drifting:boolean;ghost:boolean;muted:boolean;steeringStrength:number;driftStrength:number;run?:Run;personalBest?:number;newBest:boolean;notice:string;fps:number;worstFrame:number;
+export type GameState={mode:Mode;track:Track;trackReady:boolean;trackLoading?:boolean;car:CarDefinition;modelReady:boolean;time:number;speed:number;checkpoint:number;countdown:number;boost:boolean;drifting:boolean;drafting?:boolean;ghost:boolean;muted:boolean;driftStrength:number;run?:Run;personalBest?:number;newBest:boolean;notice:string;fps:number;worstFrame:number;
   /** Training Grounds: cones touched this cone run, the live drift combo and the session's best combo. */
   penalties:number;driftCombo:number;driftBest:number;
   /** Free roam: the car is inside the Cone Attack start box, so Enter can start the run. */
@@ -51,6 +51,8 @@ export class Game {
   partyLoadStep='';
   /** Shift presses not yet sent to the gearbox: positive = upshifts, negative = downshifts. Taps during a shift wait instead of being lost. */
   private pendingShifts=0;private seenBlockedShifts=0;private runManual=false;
+  /** Weather the current run is driven in: fixed when it starts, so its replay can reproduce it. */
+  private runWeather:Weather='clear';
   /** performance.now() of the last refused downshift, for the tachometer warning. */
   shiftBlockedAt=-Infinity;
   listeners=new Set<()=>void>();inputs:number[]=[];ghostSim?:Simulation;ghostRun?:Run;
@@ -112,7 +114,8 @@ export class Game {
   private selectionToken=0; private carToken=0;
   // Keep the current preferred race feel as the baseline; the in-race tuner
   // remains available for temporary adjustment.
-  private steeringStrength=Math.max(.7,Math.min(2,Number(read('steeringStrength',1.5))||1.5));
+  /** Steering strength is no longer a setting: every driver steers at the old default. Replays still record it per tick. */
+  private readonly steeringStrength=1.5;
   private driftStrength=Math.max(0,Math.min(2,Number(read('driftStrength',1))));
   constructor(canvas:HTMLCanvasElement) {
     const selectedCar=carById(read<CarId>('car',DEFAULT_CAR.id));
@@ -121,7 +124,7 @@ export class Game {
     this.world.setCockpitOffset(loadCockpitOffsets()[selectedCar.id]);
     this.applySettings();
     this.sim.steeringStrength=this.steeringStrength;
-    this.state={mode:'menu',track:TRACKS[0],trackReady:location.pathname.startsWith('/dev'),car:selectedCar,modelReady:false,time:0,speed:0,checkpoint:0,countdown:3,boost:false,drifting:false,ghost:read('ghost',true),muted:read('muted',false),steeringStrength:this.steeringStrength,driftStrength:this.driftStrength,personalBest:bestRun(TRACKS[0])?.timeMs,newBest:false,notice:'',worstFrame:0,fps:60,penalties:0,driftCombo:0,driftBest:0,atStart:false};
+    this.state={mode:'menu',track:TRACKS[0],trackReady:location.pathname.startsWith('/dev'),car:selectedCar,modelReady:false,time:0,speed:0,checkpoint:0,countdown:3,boost:false,drifting:false,ghost:read('ghost',true),muted:read('muted',false),driftStrength:this.driftStrength,personalBest:bestRun(TRACKS[0])?.timeMs,newBest:false,notice:'',worstFrame:0,fps:60,penalties:0,driftCombo:0,driftBest:0,atStart:false};
     this.coarse=this.state;
     void this.world.setCar(selectedCar.id).then(modelReady=>{if(this.carToken!==0)return;this.modelError=modelReady?'':'Car could not load. Check your connection and retry.';this.emit({modelReady});});
     addEventListener('keydown',this.keyDown);addEventListener('keyup',event=>{this.keys.delete(event.code);if(this.settings.bindings.camera.includes(event.code))this.cameraKeyUp();});
@@ -284,7 +287,7 @@ export class Game {
       return;
     }
     this.world.applyPendingGraphics();
-    this.awaitingPedal=!countdown;this.bogUntil=0;this.goAt=-Infinity;this.finishRevealAt=0;this.world.endFinish();this.world.skidMarks.clear();this.world.carDamage.reset();this.pendingShifts=0;this.seenBlockedShifts=0;this.runManual=this.settings.advancedDriving;
+    this.awaitingPedal=!countdown;this.bogUntil=0;this.goAt=-Infinity;this.finishRevealAt=0;this.world.endFinish();this.world.skidMarks.clear();this.world.carDamage.reset();this.pendingShifts=0;this.seenBlockedShifts=0;this.runManual=this.settings.advancedDriving;this.runWeather=this.partyWeather??this.settings.weather;
     this.keys.clear();this.garageView=false;this.cockpitPreview=false;this.inputs=[];this.steeringInputs=[];this.driftInputs=[];this.accumulator=0;this.lastCheckpoint=0;this.lastRespawns=0;this.previousFrame=undefined;this.queuedRespawn=false;this.queuedFlip=false;this.replayInput=undefined;
     if(this.state.track.kind!=='cones')this.runOrigin=undefined;
     this.sim.dispose();this.sim=new Simulation(this.state.track,this.state.car.id,this.runOrigin);this.sim.steeringStrength=this.steeringStrength;this.sim.driftStrength=this.driftStrength;
@@ -295,7 +298,7 @@ export class Game {
     this.world.lookLocked=countdown&&!this.state.track.lot;this.lookUnlockAt=Infinity;
     this.world.lockMouse();
     this.world.chase(this.sim,0,true);this.world.ghostFrame(undefined);
-    this.sim.manual=this.runManual;
+    this.sim.manual=this.runManual;this.sim.weather=this.runWeather;
     this.finishDriver=new FinishDriver(this.state.track);
     this.countdownUntil=performance.now()+(countdown?6500:0);this.prepareAudio();
     this.lastPenalties=0;this.driftCalm=0;this.lastHits=this.sim.hitCount;
@@ -355,7 +358,6 @@ export class Game {
     }
   }
   toggleMute() {const muted=!this.state.muted;write('muted',muted);this.emit({muted});if(!muted)this.prepareAudio();}
-  setSteeringStrength(value:number) {this.steeringStrength=Math.max(.7,Math.min(2,value));this.sim.steeringStrength=this.steeringStrength;write('steeringStrength',this.steeringStrength);this.emit({steeringStrength:this.steeringStrength});}
   setDriftStrength(value:number) {this.driftStrength=Math.max(0,Math.min(2,value));this.sim.driftStrength=this.driftStrength;write('driftStrength',this.driftStrength);this.emit({driftStrength:this.driftStrength});}
   async watch(run:Run) {if(this.state.car.id!==run.carId)await this.selectCar(run.carId);this.runOrigin=run.origin;this.start(false,true);this.awaitingPedal=false;this.replayInput=run;this.ghostSim?.dispose();this.ghostSim=undefined;this.emit({mode:'replay'});}
   /** Free-roam drift combo: slip angle times speed while sliding; a pause banks it, a wall hit loses it. */
@@ -369,7 +371,7 @@ export class Game {
     if(Math.round(combo)!==Math.round(this.state.driftCombo)||best!==this.state.driftBest)this.emit({driftCombo:combo,driftBest:best});
   }
   private finish() {
-    const run:Run={trackId:this.state.track.id,trackVersion:this.state.track.version,physicsVersion:PHYSICS_VERSION,carId:this.state.car.id,timeMs:this.sim.timeMs,inputs:[...this.inputs],steering:[...this.steeringInputs],drift:[...this.driftInputs],...(this.runManual?{manual:true}:{}),...(this.runOrigin&&this.state.track.kind==='cones'?{origin:this.runOrigin}:{})};
+    const run:Run={trackId:this.state.track.id,trackVersion:this.state.track.version,physicsVersion:PHYSICS_VERSION,carId:this.state.car.id,timeMs:this.sim.timeMs,inputs:[...this.inputs],steering:[...this.steeringInputs],drift:[...this.driftInputs],...(this.runManual?{manual:true}:{}),...(this.runWeather!=='clear'?{weather:this.runWeather}:{}),...(this.runOrigin&&this.state.track.kind==='cones'?{origin:this.runOrigin}:{})};
     const custom=hasLocalStartPlacement(this.state.track);
     const best=bestRun(this.state.track);const newBest=!best||run.timeMs<best.timeMs;
     if(this.state.track.kind==='cones'){this.finishConeRun(run,newBest,best?.timeMs);return;}
@@ -395,7 +397,7 @@ export class Game {
     const forward=rotate(frame.q,{x:0,y:0,z:1});
     this.sim=new Simulation(TRAINING_GROUNDS,this.state.car.id,{x:frame.p.x,z:frame.p.z,heading:Math.atan2(forward.x,forward.z)});
     this.sim.car.setTranslation(frame.p,true);this.sim.car.setRotation(frame.q,true);this.sim.car.setLinvel(linear,true);this.sim.car.setAngvel(angular,true);
-    Object.assign(this.sim,{steering:old.steering,throttle:old.throttle,brake:old.brake,autoDrift:old.autoDrift,gear:old.gear,manual:old.manual});
+    Object.assign(this.sim,{steering:old.steering,throttle:old.throttle,brake:old.brake,autoDrift:old.autoDrift,gear:old.gear,manual:old.manual,weather:old.weather});
     this.sim.maxTicks=Infinity;this.sim.steeringStrength=this.steeringStrength;this.sim.driftStrength=this.driftStrength;
     old.dispose();
     this.runOrigin=undefined;this.previousFrame=undefined;this.inputs=[];this.steeringInputs=[];this.driftInputs=[];this.lastPenalties=0;this.lastHits=this.sim.hitCount;
@@ -423,7 +425,7 @@ export class Game {
     this.emit({mode:'party-loading',track,car:carById(me.carId),trackReady:false,modelReady:false,time:0,speed:0,checkpoint:0,run:undefined,newBest:false,notice:''});
     await initPhysics(track);
     if(this.partyRace?.id!==race.id)return;
-    this.sim.dispose();this.sim=new Simulation(track,me.carId);this.sim.maxTicks=60*3600;this.sim.steeringStrength=this.steeringStrength;this.sim.driftStrength=this.driftStrength;this.sim.manual=this.settings.advancedDriving;
+    this.sim.dispose();this.sim=new Simulation(track,me.carId);this.sim.weather=lobby.settings.weather;this.sim.maxTicks=60*3600;this.sim.steeringStrength=this.steeringStrength;this.sim.driftStrength=this.driftStrength;this.sim.manual=this.settings.advancedDriving;
     if(me.pose){this.sim.car.setTranslation(me.pose.p,true);this.sim.car.setRotation(me.pose.q,true);this.sim.car.setLinvel({x:0,y:0,z:0},true);this.sim.car.setAngvel({x:0,y:0,z:0},true);this.sim.checkpoint=me.pose.checkpoint;this.sim.ticks=Math.max(0,Math.round((this.serverTime()-(race.startAt??this.serverTime()))/1000/DT));this.sim.finished=this.partyRace.finished;}
     this.world.setCockpitOffset(loadCockpitOffsets()[me.carId]);
     this.partyLoadStep='Loading your car';this.emit();
@@ -672,7 +674,7 @@ export class Game {
     this.world.carDamage.reducedMotion=this.world.reducedMotion;
     this.world.carDamage.update(this.sim,this.world.car,this.state.mode==='paused'?0:elapsed,this.settings.carDamage&&['racing','replay','paused','celebrating','finished','party-finished'].includes(this.state.mode));
     this.world.startLight.update(this.world.camera,this.state.mode==='countdown'?this.state.countdown:0,this.state.mode==='racing'?(now-this.goAt)/1000:Infinity,now/1000,this.world.reducedMotion,this.state.mode==='countdown'?(now-(this.countdownUntil-6500))/1000:Infinity,(from,direction)=>this.sim.roadEdgeDistance(from,direction,120));
-    if(now-this.lastUI>65&&!['celebrating','finished'].includes(this.state.mode)){this.lastUI=now;const live:Partial<GameState>={time:this.partyRace?(this.state.mode==='party-finished'?this.state.time:this.partyRace.started?Math.max(0,Math.round(now-this.countdownUntil)):0):this.sim.timeMs,speed:Math.round(this.sim.speed*this.state.track.metersPerUnit*2.23694),checkpoint:this.sim.checkpoint,boost:this.sim.boosting,drifting:this.sim.drifting,...(this.noticeUntil&&now>this.noticeUntil&&this.state.mode==='racing'?{notice:''}:{})};
+    if(now-this.lastUI>65&&!['celebrating','finished'].includes(this.state.mode)){this.lastUI=now;const live:Partial<GameState>={time:this.partyRace?(this.state.mode==='party-finished'?this.state.time:this.partyRace.started?Math.max(0,Math.round(now-this.countdownUntil)):0):this.sim.timeMs,speed:Math.round(this.sim.speed*this.state.track.metersPerUnit*2.23694),checkpoint:this.sim.checkpoint,boost:this.sim.boosting,drifting:this.sim.drifting,drafting:this.sim.slipstream>.04,...(this.noticeUntil&&now>this.noticeUntil&&this.state.mode==='racing'?{notice:''}:{})};
       // Menus and pauses re-render the whole interface; only do it when a shown value moved. Live driving modes always refresh for the RPM gauge.
       if(['countdown','racing','replay'].includes(this.state.mode)||(Object.keys(live) as (keyof GameState)[]).some(key=>live[key]!==this.state[key]))this.emit(live);}
     const solid=this.partyRace?.ready&&['countdown','racing','party-finished'].includes(this.state.mode);

@@ -94,7 +94,7 @@ const MapBase=memo(function MapBase({line,start,finish}:{line:string;start:{x:nu
   </>;
 });
 /** Speedometer drawn on the same dial as the tachometer (RacePanels), scaled to the car's top speed. */
-function Speed({speed,boost,drifting,car}:{speed:number;boost:boolean;drifting:boolean;car:CarDefinition}) {
+function Speed({speed,boost,drifting,car,drafting}:{speed:number;boost:boolean;drifting:boolean;car:CarDefinition;drafting?:boolean}) {
   const max=Math.ceil(car.physics.topSpeedKph*KM_TO_MI*1.08/20)*20;
   const smooth=useSpring(0,{stiffness:200,damping:30});useEffect(()=>smooth.set(Math.min(speed/max,1)),[speed,max,smooth]);
   const fill=useTransform(smooth,t=>`${t*220} 220`);
@@ -108,7 +108,7 @@ function Speed({speed,boost,drifting,car}:{speed:number;boost:boolean;drifting:b
       {ticks.map(({v,major})=>{const t=v/max,a=arcPoint(t,major?37:39),b=arcPoint(t,42.5),l=arcPoint(t,31);return <g key={v}><line x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke="#e1f3ef" strokeWidth={major?1:.5} opacity=".8"/>{major&&<text x={l.x} y={l.y+1.8} textAnchor="middle" fontSize={max>200?4.2:5} fill="#d6e8e9">{v}</text>}</g>;})}
       <motion.line x1={inner.x} y1={inner.y} x2={outer.x} y2={outer.y} stroke="#fff" strokeWidth="1.6" strokeLinecap="round"/>
     </svg>
-    <strong>{speed.toString().padStart(3,'0')}</strong><span>mph</span><small>{car.shortName}<b>{drifting?'Drift active':boost?'Boost active':'\u00a0'}</b></small>
+    <strong>{speed.toString().padStart(3,'0')}</strong><span>mph</span><small>{car.shortName}<b>{drifting?'Drift active':boost?'Boost active':drafting?'Slipstream':'\u00a0'}</b></small>
   </div>;
 }
 function Garage({game,car,modelReady,onRace,onTraining,reduced}:{game:Game;car:CarDefinition;modelReady:boolean;onRace:()=>void;onTraining:()=>void;reduced:boolean}) {
@@ -147,7 +147,7 @@ function Garage({game,car,modelReady,onRace,onTraining,reduced}:{game:Game;car:C
 function LiveTime({game}:{game:Game}) { return <strong>{formatTime(useLive(game,s=>s.time))}</strong>; }
 function LiveMinimap({game,track}:{game:Game;track:Track}) { useLive(game,s=>s.speed);const car=game.sim.car.translation();return track.lot?<LotMap track={track} car={car}/>:<Minimap track={track} car={car}/>; }
 function LiveSpeed({game,car}:{game:Game;car:CarDefinition}) {
-  return <Speed speed={useLive(game,s=>s.speed)} boost={useLive(game,s=>s.boost)} drifting={useLive(game,s=>s.drifting)} car={car}/>;
+  return <Speed speed={useLive(game,s=>s.speed)} boost={useLive(game,s=>s.boost)} drifting={useLive(game,s=>s.drifting)} drafting={useLive(game,s=>!!s.drafting)} car={car}/>;
 }
 function LiveRpm({game}:{game:Game}) { useLive(game,s=>s.time);return <RpmGauge game={game}/>; }
 /** Optional readout: rendered frames last second, slowest frame, and current render resolution. */

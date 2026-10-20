@@ -3,22 +3,24 @@
 // brakingEnvelope). If the colours promise a speed a car cannot carry, the driver runs wide, leaves the road or
 // meets a wall here.
 //
-//   node --max-old-space-size=4096 --import tsx tests/racing-line-audit.ts [--track=id[,id]] [--cars=id,...]
+//   node --max-old-space-size=4096 --import tsx tests/racing-line-audit.ts [--track=id[,id]] [--cars=id,...] [--weather=rain]
 //
 // Per lap: time, whether every checkpoint and the finish were taken over their paint, wall contacts (chassis impulses against steep faces), share of ticks with two or more wheels
 // off the asphalt, widest the car ran from the line, recoveries. Exit code 1 when a lap is not completed, a gate is
 // missed, or any wall contact or recovery happens.
-import { DT, Simulation, initPhysics } from '../shared/physics';
+import { DT, Simulation, WEATHER_GRIP, WEATHERS, initPhysics, type Weather } from '../shared/physics';
 import { TRACKS, formatTime } from '../shared/tracks';
 import { CARS, carById } from '../shared/cars';
 import { RACING_LINES } from '../shared/racing-lines';
-import { brakingEnvelope, racingLine } from '../shared/racing-line';
+import { LINE_TUNING, brakingEnvelope, racingLine } from '../shared/racing-line';
 import { DEFAULT_CARS, RouteDriver, type Route } from './smooth-route';
 
 const arg = (name: string) => process.argv.find(a => a.startsWith(`--${name}=`))?.slice(name.length + 3);
 const tracks = TRACKS.filter(track => (arg('track')?.split(',') ?? Object.keys(RACING_LINES)).includes(track.id));
 const carIds = arg('cars')?.split(',') ?? DEFAULT_CARS;
 for (const id of carIds) if (!CARS.some(car => car.id === id)) throw new Error(`Unknown car ${id}`);
+const weather = (arg('weather') ?? 'clear') as Weather, grip = WEATHER_GRIP[weather];
+if (!WEATHERS.includes(weather)) throw new Error(`Unknown weather ${weather}`);
 
 await initPhysics(tracks);
 let failed = false;
@@ -30,7 +32,8 @@ for (const track of tracks) {
   for (let i = 1; i < line.n; i++) s.push(s[i - 1] + line.ds[i - 1] / mpu);
   const route: Route = { trackId: track.id, source: 'trace', closed: true, mpu, points, s, length: line.length / mpu, halfWidth: points.map(() => 4 / mpu) };
   for (const carId of carIds) {
-    const car = carById(carId), sim = new Simulation(track, car.id), driver = new RouteDriver(route, Array.from(brakingEnvelope(line, car)));
+    const car = carById(carId), sim = new Simulation(track, car.id), driver = new RouteDriver(route, Array.from(brakingEnvelope(line, car, { grip: LINE_TUNING.grip * grip, brake: LINE_TUNING.brake * grip })));
+    sim.weather = weather;
     sim.maxTicks = Infinity;
     driver.start(sim);
     const limit = Math.ceil((line.length / 15 + 60) / DT);

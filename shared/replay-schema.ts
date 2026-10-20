@@ -8,6 +8,8 @@ export const runSchema = z.object({
   timeMs: z.number().int().positive().max(Math.round(MAX_TICKS * DT * 1000)),
   inputs: z.array(z.number().int().min(0).max(511)).min(1).max(MAX_TICKS),
   manual:z.boolean().optional(),
+  /** Road conditions the run was driven in; absent means clear. */
+  weather: z.enum(['fog', 'rain', 'snow']).optional(),
   origin: z.object({ x: z.number().finite(), z: z.number().finite(), heading: z.number().min(-7).max(7) }).strict().optional(),
   steering: z.array(z.number().min(.7).max(2)).min(1).max(MAX_TICKS).optional(),
   drift: z.array(z.number().min(0).max(2)).min(1).max(MAX_TICKS).optional()

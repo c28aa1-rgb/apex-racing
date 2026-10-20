@@ -108,11 +108,27 @@ export function rearSlipDemand(speedMps:number,steeringLoad:number,throttle:numb
  * cornering stays capped at 28 m/s^2, so the gain is mostly at low and medium speed.
  */
 const STEER_BOOST = 1.1, STEER_GRIP = 14, CORNER_GRIP = 15;
+export const WEATHERS = ['clear', 'fog', 'rain', 'snow'] as const;
+export type Weather = typeof WEATHERS[number];
+/**
+ * Tyre grip in each weather, as a share of dry grip: cornering, braking and traction all scale with it. Fog leaves
+ * a little moisture on the surface; rain and snow are slippery. Clear is exactly 1, so dry runs are unchanged.
+ */
+export const WEATHER_GRIP: Record<Weather, number> = { clear: 1, fog: .94, rain: .78, snow: .6 };
+/**
+ * Slipstream: a car running close behind another (party races) loses up to this share of its aero drag. The wake
+ * reaches SLIPSTREAM_REACH metres behind the leading car and is about a car wide.
+ */
+const SLIPSTREAM_MAX = .35, SLIPSTREAM_REACH = 45, SLIPSTREAM_WIDTH = 2.4;
 export class Simulation {
   maxTicks = MAX_TICKS;
   world: RAPIER.World;
   car: RAPIER.RigidBody;
   vehicle: RAPIER.DynamicRayCastVehicleController;
+  /** Road conditions for this run: set before the first step, fixed for the run (replays record it). */
+  weather: Weather = 'clear';
+  /** Share of aero drag removed by the wake of a car ahead this tick (0 when running alone). */
+  slipstream = 0;
   ticks = 0; checkpoint = 0; finished = false; steering = 0; steeringStrength = 1; throttle = 0; reverse = 0; brake = 0; grounded = false; boosting = false; drifting = false; offRoad = false;
   autoDrift = 0;
   /**
@@ -458,7 +474,7 @@ export class Simulation {
     const before = { ...this.car.translation() };
     const velocityBefore={...this.car.linvel()},angularBefore={...this.car.angvel()};
     const speed = this.speed, forwardSpeed = this.forwardSpeed, speedMps=speed*this.track.metersPerUnit;
-    const tuning = this.carSpec.physics;
+    const tuning = this.carSpec.physics, weatherGrip = WEATHER_GRIP[this.weather];
     // Contacted material controls traction everywhere, including pit lanes and
     // paved runoff. Route traces are irrelevant to tire grip on imported venues.
     const wheelOffRoad = [0,1,2,3].map(i => {
@@ -519,7 +535,8 @@ export class Simulation {
     const highSpeedForce=(tuning.drag*topSpeed*topSpeed+tuning.massKg*.015*topSpeed)/drivenWheels;
     // Arcade brakes: half again stronger than the car's real-world stopping distance.
     const brakeDeceleration = 1.5 * 27.78 * 27.78 / (2 * tuning.brakeDistance) / this.track.metersPerUnit;
-    const brakeImpulse = tuning.massKg * brakeDeceleration * DT / 4;
+    // On a slippery road the tyres, not the brakes, set how hard the car can stop (ABS holds it below lock-up).
+    const brakeImpulse = tuning.massKg * brakeDeceleration * DT / 4 * weatherGrip;
     // Manual gearbox: lifting off drags the car through the driven wheels, harder at high revs, so a downshift slows it.
     // Total drag reaches about 25% of full braking at the red line; clutch-in during a shift releases it.
     const engineRev=this.manual&&!cruise&&this.forwardSpeed>.5&&this.shiftTicks<=3?Math.min(1.1,engineState(this.carSpec,Math.abs(this.forwardSpeed)*this.track.metersPerUnit,this.gear).load):0;
@@ -545,10 +562,10 @@ export class Simulation {
       const driftBrake=i>=2?tuning.driftBrake*this.autoDrift*(1-this.throttle)*Number(!!(input&Input.Drift)):0;
       this.vehicle.setWheelBrake(i, brakeImpulse * (this.brake + (parkingHold ? 2.5 : 0) + (driven ? engineBrakeShare * 4 / drivenWheels : 0)) + driftBrake);
       if (i >= 2) {
-        this.vehicle.setWheelFrictionSlip(i, (tuning.grip+(tuning.driftGrip-tuning.grip)*this.autoDrift) * (wheelOffRoad[i] ? .62 : 1));
+        this.vehicle.setWheelFrictionSlip(i, (tuning.grip+(tuning.driftGrip-tuning.grip)*this.autoDrift) * (wheelOffRoad[i] ? .62 : 1) * weatherGrip);
         this.vehicle.setWheelSideFrictionStiffness(i, tuning.sideGrip * .3 * Math.max(.035,1 - this.autoDrift * 1.45) * (wheelOffRoad[i] ? .58 : 1));
       } else {
-        this.vehicle.setWheelFrictionSlip(i, tuning.grip * (wheelOffRoad[i] ? .68 : 1));
+        this.vehicle.setWheelFrictionSlip(i, tuning.grip * (wheelOffRoad[i] ? .68 : 1) * weatherGrip);
         // Build a little more front-axle authority progressively at speed while
         // steering. The rear axle remains softer as its cornering load builds.
         const corneringAssist=1+Math.abs(steeringInput)*easedSpeed*.1;
@@ -566,7 +583,8 @@ export class Simulation {
     this.grounded = [0,1,2,3].some(i => this.vehicle.wheelIsInContact(i));
     const velocity = this.car.linvel(), planarSpeed = Math.hypot(velocity.x, velocity.z);
     if (this.grounded && planarSpeed > .1) {
-      const aerodynamicDrag = tuning.drag * planarSpeed * planarSpeed + tuning.massKg*.15/this.track.metersPerUnit;
+      this.slipstream = this.wake();
+      const aerodynamicDrag = tuning.drag * planarSpeed * planarSpeed * (1 - this.slipstream) + tuning.massKg*.15/this.track.metersPerUnit;
       // Use a per-tick impulse. Rapier's accumulated force API persists, which
       // would otherwise make drag grow every frame and eventually pull a car backward.
       this.car.applyImpulse({ x: -velocity.x / planarSpeed * aerodynamicDrag * DT, y: -tuning.downforce * planarSpeed * planarSpeed * DT, z: -velocity.z / planarSpeed * aerodynamicDrag * DT }, true);
@@ -606,12 +624,12 @@ export class Simulation {
       // walls and impacts are resolved afterward and retain their full response.
       const q=this.car.rotation(),up=rotate(q,{x:0,y:1,z:0});
       const turnAssist=1+Math.max(0,this.steeringStrength-1.35)*2*holdBoost;
-      const gripAcceleration=Math.min(28,(CORNER_GRIP+tuning.downforce*4+arcadeGrip)*turnAssist)*(this.offRoad?.48:1)/this.track.metersPerUnit;
+      const gripAcceleration=Math.min(28,(CORNER_GRIP+tuning.downforce*4+arcadeGrip)*turnAssist)*(this.offRoad?.48:1)*weatherGrip/this.track.metersPerUnit;
       // Acceleration, braking and cornering share one traction budget.
       const v=this.car.linvel(),dx=v.x-velocityBefore.x,dz=v.z-velocityBefore.z;
       // Hard braking gets extra grip on top of the cornering budget (more with downforce and speed),
       // capped at about 2.65 g so, with aero drag on top, the total stays under 3 g.
-      const brakeGrip=this.brake*(9+tuning.downforce*5)*(.6+.4*Math.min(1,speedMps/60));
+      const brakeGrip=this.brake*(9+tuning.downforce*5)*(.6+.4*Math.min(1,speedMps/60))*weatherGrip;
       // Above top speed the limiter already bleeds 6 m/s^2, so braking leaves room for it.
       const tractionBudget=Math.min((speed>topSpeed?20:26)/this.track.metersPerUnit,gripAcceleration+brakeGrip*(this.offRoad?.48:1)/this.track.metersPerUnit);
       const tractionScale=Math.min(1,tractionBudget*DT/Math.max(.0001,Math.hypot(dx,dz)));
@@ -775,6 +793,22 @@ export class Simulation {
     return true;
   }
   private obstacles=new Map<string,RAPIER.RigidBody>();
+  /** How deep in another car's wake this car runs, as a share of drag removed (0 with no car close ahead). */
+  private wake() {
+    if (!this.obstacles.size) return 0;
+    const mpu = this.track.metersPerUnit, p = this.car.translation(), v = this.car.linvel(), speed = Math.hypot(v.x, v.z);
+    if (speed * mpu < 15) return 0;
+    const fx = v.x / speed, fz = v.z / speed;
+    let best = 0;
+    for (const body of this.obstacles.values()) {
+      const q = body.translation(), w = body.linvel(), dx = q.x - p.x, dz = q.z - p.z;
+      const ahead = (dx * fx + dz * fz) * mpu, across = Math.abs(dx * fz - dz * fx) * mpu;
+      // Only a car going the same way, at speed, leaves a useful hole in the air.
+      if (ahead < 3 || ahead > SLIPSTREAM_REACH || across > SLIPSTREAM_WIDTH || (w.x * fx + w.z * fz) * mpu < 10) continue;
+      best = Math.max(best, Math.min(1, (SLIPSTREAM_REACH - ahead) / (SLIPSTREAM_REACH - 10)) * (1 - across / SLIPSTREAM_WIDTH));
+    }
+    return best * SLIPSTREAM_MAX;
+  }
   /**
    * Party racing: places another driver's car as a solid kinematic box. Call every frame with its displayed pose;
    * Rapier derives its velocity from the move, so contact pushes this car realistically. Pass undefined to remove it.
