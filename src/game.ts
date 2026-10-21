@@ -56,6 +56,8 @@ export class Game {
   /** performance.now() of the last refused downshift, for the tachometer warning. */
   shiftBlockedAt=-Infinity;
   listeners=new Set<()=>void>();inputs:number[]=[];ghostSim?:Simulation;ghostRun?:Run;
+  /** A leaderboard ghost picked to race. It replaces the personal-best ghost on its circuit through every restart, until the driver goes back to the menu or leaves the circuit. */
+  private chosenGhost?:Run;
   private steeringInputs:number[]=[];private driftInputs:number[]=[];
   private keys=new Set<string>();private lastRender=performance.now();private worstFrame=0;private previous=performance.now();private accumulator=0;private countdownUntil=0;private lastUI=0;private frameCount=0;private fpsTime=performance.now();private replayInput?:Run;
   private noticeUntil=0;private lastCheckpoint=0;private lastRespawns=0;private previousFrame?:Frame;private previousGhostFrame?:Frame;
@@ -200,7 +202,7 @@ export class Game {
   private held(action:Action){return this.settings.bindings[action].some(code=>this.keys.has(code));}
   keyHint(action:Action){return this.settings.bindings[action].map(keyLabel).join(' / ');}
   async select(track:Track,prepare=location.pathname.startsWith('/dev')) {
-    const token=++this.selectionToken;if(!track.lot)this.lastCircuit=track;this.keys.clear();this.garageView=false;this.world.setMouseLook(false);this.ghostSim?.dispose();this.ghostSim=undefined;
+    const token=++this.selectionToken;if(!track.lot)this.lastCircuit=track;this.keys.clear();this.chosenGhost=undefined;this.garageView=false;this.world.setMouseLook(false);this.ghostSim?.dispose();this.ghostSim=undefined;
     this.emit({mode:'menu',track,trackReady:false,trackLoading:prepare,time:0,speed:0,checkpoint:0,personalBest:bestRun(track)?.timeMs,run:undefined,newBest:false,notice:''});
     if(!prepare)return;
     this.world.setTrack(track);
@@ -300,7 +302,7 @@ export class Game {
     if(this.state.track.kind!=='cones')this.runOrigin=undefined;
     this.sim.dispose();this.sim=new Simulation(this.state.track,this.state.car.id,this.runOrigin);this.sim.steeringStrength=this.steeringStrength;this.sim.driftStrength=this.driftStrength;
     this.ghostSim?.dispose();this.ghostSim=undefined;
-    this.ghostRun=bestRun(this.state.track);this.previousGhostFrame=undefined;if(this.state.ghost&&this.ghostRun){this.ghostSim=new Simulation(this.state.track,this.ghostRun.carId,this.ghostRun.origin);void this.world.setGhostCar(this.ghostRun.carId);}
+    this.ghostRun=this.chosenGhost?.trackId===this.state.track.id?this.chosenGhost:bestRun(this.state.track);this.previousGhostFrame=undefined;if(this.state.ghost&&this.ghostRun){this.ghostSim=new Simulation(this.state.track,this.ghostRun.carId,this.ghostRun.origin);void this.world.setGhostCar(this.ghostRun.carId);}
     this.world.resetMouseLook();this.world.setMouseLook(true);
     // Locked for the countdown and a few seconds after the green light, so the opening framing is steady.
     this.world.lookLocked=countdown&&!this.state.track.lot;this.lookUnlockAt=Infinity;
@@ -319,6 +321,11 @@ export class Game {
     this.emit({mode:countdown?'countdown':'racing',countdown:6,time:0,speed:0,checkpoint:0,newBest:false,run:undefined,penalties:0,driftCombo:0,notice:countdown?'':`Press ${this.keyHint('throttle')} or ${this.keyHint('brake')} to start the clock`});
   }
   restart() {this.start(this.state.track.kind==='cones');}
+  /** Prepares a circuit and races a leaderboard run's ghost on it; restarts keep that ghost (see chosenGhost). */
+  async raceGhost(track:Track,run:Run) {
+    await this.select(track,true);
+    this.chosenGhost=run;this.emit({ghost:true});this.start();
+  }
   /** Opens the Training Grounds in free roam with the current car, locked or not. */
   async enterTraining() {
     if(this.partyView||this.partyRace)return;
@@ -346,7 +353,7 @@ export class Game {
     await initPhysics(CONE_TRACK);if(token!==this.selectionToken)return;
     this.emit({trackReady:true});this.start(true);
   }
-  menu() {this.closeCameraWheel();if(this.partyRace)return;
+  menu() {this.closeCameraWheel();if(this.partyRace)return;this.chosenGhost=undefined;
     // Leaving the Training Grounds goes back to the Garage, where it is opened from.
     if(this.state.track.lot){this.cockpitPreview=false;this.world.firstPerson=false;this.world.endFinish();this.world.setMouseLook(false);this.onLeaveTraining?.();void this.select(this.lastCircuit).then(()=>this.setGarage(true));return;}this.keys.clear();this.finishRevealAt=0;this.world.endFinish();this.cockpitPreview=false;this.world.firstPerson=false;this.world.setMouseLook(false);this.emit({mode:'menu',notice:''});this.world.ghostFrame(undefined);}
   pause() {this.closeCameraWheel();this.keys.clear();this.world.applyPendingGraphics();if(this.partyRace)return;if(['racing','countdown','replay'].includes(this.state.mode)){this.pausedMode=this.state.mode;this.pausedCountdown=Math.max(0,this.countdownUntil-performance.now());this.emit({mode:'paused'});this.world.setMouseLook(false);}}
@@ -386,7 +393,8 @@ export class Game {
     // Custom layouts keep their own personal best and ghost on this device.
     let notice=custom?'Custom layout — personal best and ghost saved here; online ranking unavailable.':'';
     if(newBest&&!saveBestRun(this.state.track,run))notice=custom?'Device storage is full; this ghost was not saved.':'Device storage is full. Submit this run before leaving.';
-    else if(newBest)void this.world.setGhostCar(run.carId);
+    // A chosen leaderboard ghost stays the opponent, so the ghost model only follows a new personal best without one.
+    else if(newBest&&!this.chosenGhost)void this.world.setGhostCar(run.carId);
     if(!location.pathname.startsWith('/dev')&&!this.state.track.lot){this.career=recordFinish(this.career,this.state.track,run.timeMs);if(!saveCareer(this.career))notice='Career could not be saved: device storage is full.';}
     this.keys.clear();this.finishRevealAt=performance.now()+(this.world.reducedMotion?1200:3200);this.world.beginFinish(this.sim);
     this.finishDriver??=new FinishDriver(this.state.track);this.finishDriver.begin(this.sim);this.accumulator=0;
@@ -427,7 +435,7 @@ export class Game {
     this.partySequence=me.pose?.sequence??0;this.lapStartTick=me.pose?-1:0;this.partyBestLap=me.pose?.best;this.partyView=false;this.keys.clear();this.garageView=false;this.awaitingPedal=false;
     this.inputs=[];this.steeringInputs=[];this.driftInputs=[];this.accumulator=0;this.previousFrame=undefined;
     this.lastCheckpoint=0;this.lastRespawns=0;this.queuedRespawn=false;this.queuedFlip=false;this.pendingShifts=0;this.seenBlockedShifts=0;
-    this.ghostSim?.dispose();this.ghostSim=undefined;this.ghostRun=undefined;this.world.ghostFrame(undefined);this.world.endFinish();
+    this.ghostSim?.dispose();this.ghostSim=undefined;this.ghostRun=undefined;this.chosenGhost=undefined;this.world.ghostFrame(undefined);this.world.endFinish();
     this.partyWeather=lobby.settings.weather;this.world.setTrack(track);this.world.setWeather(lobby.settings.weather);
     this.partyLoadStep='Loading circuit';
     const myCar=dressed(me.carId);this.sound.look=lookOf(myCar);

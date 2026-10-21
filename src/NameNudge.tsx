@@ -1,8 +1,8 @@
 import { motion } from 'framer-motion';
 
 /**
- * Pit board hung from the nickname button after a race: drivers with a few finishes but no
- * nickname are asked to set one so their times can go on the leaderboards.
+ * Pit board hung from the nickname button after a race: drivers with no nickname, after a few
+ * finishes or a new personal best, are asked to set one so their times can go on the leaderboards.
  */
 export function NameNudge({still,onChoose,onDismiss}:{still:boolean;onChoose:()=>void;onDismiss:()=>void}) {
   // Lowered on its cord, the board swings past centre twice and settles.

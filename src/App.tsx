@@ -4,7 +4,7 @@ import { memo, useEffect, useMemo, useRef, useState, useSyncExternalStore, type 
 import { AnimatePresence, motion, MotionConfig, useIsPresent, useReducedMotion, useSpring, useTransform } from 'framer-motion';
 import { CONE_TRACK, TRACKS, formatTime, medalFor, trackById, type Track } from '../shared/tracks';
 import { CARS, carById, lookOf, type CarDefinition, type CarId } from '../shared/cars';
-import { PHYSICS_VERSION, Simulation } from '../shared/physics';
+import { PHYSICS_VERSION } from '../shared/physics';
 import { runSchema, type Run } from '../shared/replay';
 import { Game, type GameState } from './game';
 import { api, read, write, bestRun, dressedCar, type Entry, type Player } from './storage';
@@ -274,14 +274,15 @@ export function App({game}:{game:Game}) {
   const submit=async()=>{
     if(!state.run)return;
     if(hasLocalStartPlacement(state.track)){setSubmission('This is a custom practice layout. Restore project defaults in /dev before submitting online.');return;}
-    if(!player){open('profile');setMessage('Choose a nickname, then submit your run.');return;}
+    if(!player)return;
     setBusy(true);setSubmission('Checking your run…');
     try{const result=await api<{improved:boolean;entries:Entry[];verified?:boolean}>('/runs',state.run);markPosted(state.run);setSubmission(result.verified===false?(result.improved?'Posted. Your unverified best is on the leaderboard.':'Your previous unverified best is faster.'):(result.improved?'Verified. Your best is on the leaderboard.':'Verified. Your previous best is faster.'));setEntries(result.entries);}
     catch(error){setSubmission(error instanceof Error?error.message:'Could not submit. Your best is saved locally.');}finally{setBusy(false);}
   };
   // Bests saved on this device reach the leaderboard: on load, as soon as a nickname is set, and after
   // failed posts (retried on the next sync). Covers times set before choosing a nickname.
-  useEffect(()=>{if(player)void syncBests();},[player?.id,player?.nickname]);
+  // A best waiting on the finish card when the nickname is set is posted by this sync; say so there.
+  useEffect(()=>{if(player)void syncBests().then(posted=>{if(posted&&game.state.mode==='finished')setSubmission('Posted. Your best is on the leaderboard.');});},[player?.id,player?.nickname]);
   // A new circuit personal best posts itself when a nickname is set, the same way Cone Attack results do.
   // Previously circuit times only reached the leaderboard if the player pressed Submit.
   useEffect(()=>{
@@ -295,16 +296,16 @@ export function App({game}:{game:Game}) {
       const run=runSchema.parse(await api<Run>(`/replays/${entry.id}`));
       if(run.physicsVersion!==PHYSICS_VERSION||run.trackVersion!==activeTrack.version)throw new Error('This ghost is from an older track.');
       if(hasLocalStartPlacement(activeTrack))throw new Error('Restore the project layout in /dev before racing an official ghost.');
-      await game.select(activeTrack,true);game.start();if(!['racing','countdown'].includes(game.state.mode))throw new Error(game.state.notice);game.ghostSim?.dispose();
-      game.ghostSim=new Simulation(activeTrack,run.carId,run.origin);game.ghostRun=run;void game.world.setGhostCar(run.carId);game.emit({ghost:true});setDialog(null);
+      await game.raceGhost(activeTrack,run);if(!['racing','countdown'].includes(game.state.mode))throw new Error(game.state.notice);setDialog(null);
     }catch(error){setMessage(error instanceof Error?error.message:'Ghost unavailable.');}finally{setBusy(false);}
   };
   const menu=state.mode==='menu';
   const notice=menu&&!dialog?removed[0]:undefined;
-  // After a few finished races, a driver with no nickname gets a pit board under the nickname button.
+  // A driver with no nickname gets a pit board under the nickname button after a few finished races or a new personal best.
   const [nudge,setNudge]=useState(false);const lastMode=useRef(state.mode);
   useEffect(()=>{const from=lastMode.current;lastMode.current=state.mode;
-    if(state.mode==='menu'&&from!=='menu'&&from!=='replay'&&!player&&game.career.finishes>=NAME_NUDGE_FINISHES)setNudge(true);},[state.mode,player,game]);
+    // Nudged after a few finishes, or straight away when a new personal best is waiting for a name to post under.
+    if(state.mode==='menu'&&from!=='menu'&&from!=='replay'&&!player&&(game.career.finishes>=NAME_NUDGE_FINISHES||state.newBest))setNudge(true);},[state.mode,player,game]);
   useEffect(()=>{if(player)setNudge(false);},[player]);
   // The paddock mounts only once the curtain covers the old page (its own 3D stage replaces the world view),
   // and leaves first when you switch away, so the two never pop over each other.
@@ -374,7 +375,7 @@ export function App({game}:{game:Game}) {
         {state.mode==='finished'&&<motion.div className="overlay finish-results" key="finish" initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}}><motion.section className="result-card" initial={{y:still?0:20,scale:still?1:.97}} animate={{y:0,scale:1}}>
           <span className="finish-medal"><Icon name="trophy" size={36}/></span><p className="result-eyebrow">{state.newBest?'New personal best':`${track.name} complete`}</p><h2>{medalFor(track,state.time)}{medalFor(track,state.time)!=='Finished'?' medal':''}</h2><strong className="finish-time">{formatTime(state.time)}</strong>
           <p className="finish-detail">{track.kind==='cones'?(state.penalties?`${state.penalties} ${state.penalties===1?'cone':'cones'} · +${state.penalties} s included`:'Clean run · no cones touched'):game.sim.respawns?`${game.sim.respawns} checkpoint recoveries`:'Clean run'}<span> / </span>{state.checkpoint} {track.kind==='cones'?'gates':'checkpoints'}</p>
-          <div className="result-actions"><button className="start-button" onClick={()=>game.restart()}><Icon name="restart"/>Race again<kbd>{game.keyHint('restart')}</kbd></button>{!hasLocalStartPlacement(track)&&<button className="secondary-button" onClick={submit} disabled={busy}><Icon name="trophy"/>{busy?'Verifying…':'Submit to leaderboard'}</button>}<button className="secondary-button" onClick={()=>state.run&&game.watch(state.run)}><Icon name="play"/>Watch replay</button></div>
+          <div className="result-actions"><button className="start-button" onClick={()=>game.restart()}><Icon name="restart"/>Race again<kbd>{game.keyHint('restart')}</kbd></button>{!player&&state.newBest&&track.kind!=='cones'&&!hasLocalStartPlacement(track)&&<button className="secondary-button" onClick={()=>open('profile')}><Icon name="user"/>Set nickname to post this time</button>}<button className="secondary-button" onClick={()=>state.run&&game.watch(state.run)}><Icon name="play"/>Watch replay</button></div>
           {submission&&<p className="form-message" role="status">{submission}</p>}{state.notice&&<p className="form-message">{state.notice}</p>}{track.kind==='cones'&&<button className="secondary-button" onClick={()=>void game.enterTraining()}>Back to free roam</button>}<button className="text-button" onClick={()=>game.menu()}>{track.lot?'Leave the Training Grounds':'Back to tracks'}</button>
         </motion.section></motion.div>}
       </AnimatePresence>
