@@ -26,7 +26,25 @@ const QUERY_GROUPS = 0xffffffff;
  * compress fully, and a low box would otherwise scrape and kick on perfectly smooth asphalt. A taller "safety"
  * box, well above the floor even at full compression, rests on the road when the car is rolled or upside down.
  */
-const GROUP = { floor: 0x0002, wall: 0x0004, chassis: 0x0008, safety: 0x0010 };
+const GROUP = { floor: 0x0002, wall: 0x0004, chassis: 0x0008, safety: 0x0010, opponent: 0x0020 };
+/**
+ * Party racing: other drivers' cars are stand-ins with their real mass, flown along their network path every tick and
+ * touching nothing but this car. Equal-mass contact shares a bump between the two cars as on track, and the other
+ * driver's own screen, which runs the same stand-in for this car, gives their car its half of it.
+ */
+type Opponent = { body: RAPIER.RigidBody; p: Vec3; q: Quat; v: Vec3; ticks: number };
+/** Seconds for a stand-in to close a gap to its network path; short, so it never drifts far from where the driver is. */
+const OPPONENT_RETURN = .12;
+/**
+ * Seconds over which a stand-in's velocity follows the network. A hit changes its velocity at once and it keeps that
+ * for about a network delay, as the real car (pushed on its own screen) does, instead of ramming on at its pre-contact
+ * speed: that would give both drivers the whole bump, and an unbounded pull back onto the path would fling this car.
+ */
+const OPPONENT_FOLLOW = .1;
+/** Fastest a stand-in moves back onto its path, in m/s, on top of the driver's own velocity. */
+const OPPONENT_PULL_MS = 4;
+/** Further than this (metres) from its path, a stand-in jumps: a respawn or a network catch-up, never a hit. */
+const OPPONENT_SNAP_M = 4;
 const groups = (member: number, filter: number) => ((member << 16) | filter) >>> 0;
 /** Ride: suspension spring and damping per wheel, and how much vertical/tilt chatter the chassis filter removes on the road. */
 const RIDE = { stiffness: 19, compression: 11.5, relaxation: 13, vertical: .82, tilt: .82 };
@@ -688,6 +706,7 @@ export class Simulation {
           z:up.z*limitedYaw+restore.z*gain+(angular.z-up.z*yaw)*.025},true);
       }else this.car.setAngvel({x:angular.x+up.x*(limitedYaw-yaw),y:angular.y+up.y*(limitedYaw-yaw),z:angular.z+up.z*(limitedYaw-yaw)},true);
     }
+    this.driveObstacles();
     this.world.step();
     // A car never goes faster than its rated top speed: not down a hill, off a boost pad or in a draft.
     // Only on the ground; a car in the air keeps its fall.
@@ -792,7 +811,8 @@ export class Simulation {
     this.car.setAngvel({ x: 0, y: 0, z: 0 }, true);
     return true;
   }
-  private obstacles=new Map<string,RAPIER.RigidBody>();
+  private obstacles=new Map<string,Opponent>();
+  private obstacleBodies=new Set<number>();
   /** How deep in another car's wake this car runs, as a share of drag removed (0 with no car close ahead). */
   private wake() {
     if (!this.obstacles.size) return 0;
@@ -800,8 +820,8 @@ export class Simulation {
     if (speed * mpu < 15) return 0;
     const fx = v.x / speed, fz = v.z / speed;
     let best = 0;
-    for (const body of this.obstacles.values()) {
-      const q = body.translation(), w = body.linvel(), dx = q.x - p.x, dz = q.z - p.z;
+    for (const { body, v: w } of this.obstacles.values()) {
+      const q = body.translation(), dx = q.x - p.x, dz = q.z - p.z;
       const ahead = (dx * fx + dz * fz) * mpu, across = Math.abs(dx * fz - dz * fx) * mpu;
       // Only a car going the same way, at speed, leaves a useful hole in the air.
       if (ahead < 3 || ahead > SLIPSTREAM_REACH || across > SLIPSTREAM_WIDTH || (w.x * fx + w.z * fz) * mpu < 10) continue;
@@ -810,31 +830,49 @@ export class Simulation {
     return best * SLIPSTREAM_MAX;
   }
   /**
-   * Party racing: places another driver's car as a solid kinematic box. Call every frame with its displayed pose;
-   * Rapier derives its velocity from the move, so contact pushes this car realistically. Pass undefined to remove it.
-   * The other car is never pushed here; each client is authoritative for its own car.
+   * Party racing: another driver's car, at where it is now (`pose`, with its velocity `v` in units/s when known; otherwise
+   * derived from the last call `dt` seconds ago). Call every frame; pass undefined to remove it. The stand-in is flown
+   * along this path each tick (see Opponent), so a frame-rate hitch never turns into a speed spike, and a jump of more
+   * than OPPONENT_SNAP_M is a teleport rather than a hit. Only this driver's car is moved by contact; each client is
+   * authoritative for its own car.
    */
-  setObstacle(id:string,carId:CarId,pose?:{p:Vec3;q:Quat},dt=DT) {
-    let body=this.obstacles.get(id);
-    if(!pose){if(body){this.world.removeRigidBody(body);this.obstacles.delete(id);}return;}
-    if(!body){
-      const d=carById(carId).dimensions;
-      body=this.world.createRigidBody(RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(pose.p.x,pose.p.y,pose.p.z).setRotation(pose.q));
-      this.world.createCollider(RAPIER.ColliderDesc.cuboid(d.bodyWidthM*.45,Math.max(.3,d.heightM*.32),d.lengthM*.46).setTranslation(0,-.1,0).setFriction(.08).setRestitution(.15),body);
-      this.obstacles.set(id,body);return;
+  setObstacle(id:string,carId:CarId,pose?:{p:Vec3;q:Quat;v?:Vec3},dt=DT) {
+    const known=this.obstacles.get(id);
+    if(!pose){if(known){this.obstacleBodies.delete(known.body.handle);this.world.removeRigidBody(known.body);this.obstacles.delete(id);}return;}
+    const p={x:pose.p.x,y:pose.p.y,z:pose.p.z},q={x:pose.q.x,y:pose.q.y,z:pose.q.z,w:pose.q.w};
+    if(!known){
+      const car=carById(carId),d=car.dimensions;
+      const body=this.world.createRigidBody(RAPIER.RigidBodyDesc.dynamic().setTranslation(p.x,p.y,p.z).setRotation(q).setGravityScale(0).setCanSleep(false));
+      this.world.createCollider(RAPIER.ColliderDesc.cuboid(d.bodyWidthM*.45,Math.max(.3,d.heightM*.32),d.lengthM*.46).setTranslation(0,-.1,0)
+        .setMass(car.physics.massKg).setFriction(.08).setRestitution(.15).setCollisionGroups(groups(GROUP.opponent,GROUP.chassis|GROUP.safety)),body);
+      const v=pose.v?{...pose.v}:{x:0,y:0,z:0};body.setLinvel(v,true);
+      this.obstacles.set(id,{body,p,q,v,ticks:0});this.obstacleBodies.add(body.handle);return;
     }
-    const now=body.translation();
-    // A respawn or network jump teleports instead of sweeping through everything in between:
-    // anything faster than 95 m/s (212 mph) is not a real car's motion and must not hit with that speed.
-    if(Math.hypot(pose.p.x-now.x,pose.p.y-now.y,pose.p.z-now.z)>95/this.track.metersPerUnit*Math.max(dt,DT)){body.setTranslation(pose.p,true);body.setRotation(pose.q,true);}
-    else{body.setNextKinematicTranslation(pose.p);body.setNextKinematicRotation(pose.q);}
+    const step=Math.max(dt,DT),v=pose.v?{...pose.v}:{x:(p.x-known.p.x)/step,y:(p.y-known.p.y)/step,z:(p.z-known.p.z)/step};
+    Object.assign(known,{p,q,v,ticks:0});
+  }
+  /** Flies each stand-in toward where its driver is this tick: their velocity plus a pull back onto the path. */
+  private driveObstacles() {
+    const mpu=this.track.metersPerUnit;
+    for(const opponent of this.obstacles.values()){
+      const {body,v,q}=opponent,t=opponent.ticks++*DT,at=body.translation();
+      const goal={x:opponent.p.x+v.x*t,y:opponent.p.y+v.y*t,z:opponent.p.z+v.z*t};
+      const gap={x:goal.x-at.x,y:goal.y-at.y,z:goal.z-at.z};
+      if(Math.hypot(gap.x,gap.y,gap.z)*mpu>OPPONENT_SNAP_M){body.setTranslation(goal,true);body.setRotation(q,true);body.setLinvel(v,true);body.setAngvel({x:0,y:0,z:0},true);continue;}
+      const pull=Math.min(1,OPPONENT_PULL_MS/mpu/(Math.hypot(gap.x,gap.y,gap.z)/OPPONENT_RETURN||1))/OPPONENT_RETURN,now=body.linvel(),follow=1-Math.exp(-DT/OPPONENT_FOLLOW);
+      body.setLinvel({x:now.x+(v.x+gap.x*pull-now.x)*follow,y:now.y+(v.y+gap.y*pull-now.y)*follow,z:now.z+(v.z+gap.z*pull-now.z)*follow},true);
+      // Turn toward the network heading: the rotation from here to there, as an angular velocity.
+      const r=body.rotation(),dx=q.w*-r.x+q.x*r.w+q.y*-r.z-q.z*-r.y,dy=q.w*-r.y+q.y*r.w+q.z*-r.x-q.x*-r.z,dz=q.w*-r.z+q.z*r.w+q.x*-r.y-q.y*-r.x,dw=q.w*r.w-(q.x*-r.x+q.y*-r.y+q.z*-r.z);
+      const sign=dw<0?-1:1,s2=Math.hypot(dx,dy,dz),angle=2*Math.atan2(s2,Math.abs(dw)),k=s2>1e-6?sign*angle/s2/OPPONENT_RETURN:0;
+      body.setAngvel({x:dx*k,y:dy*k,z:dz*k},true);
+    }
   }
   /** Reads chassis contacts and suspension travel after a step, for sound only. */
   private readAudioSignals() {
     let impulse = 0, withCar = false, touching = false, nx = 0, ny = 0, nz = 0;
     const chassis = this.car.collider(0);
     this.world.contactPairsWith(chassis, other => {
-      const kinematic = other.parent()?.isKinematic() ?? false;
+      const kinematic = this.obstacleBodies.has(other.parent()?.handle ?? -1);
       this.world.contactPair(chassis, other, (manifold, flipped) => {
         const upright = Math.abs(manifold.normal().y);
         // Floor and road contacts are ignored; only sideways and frontal contacts count as hits.

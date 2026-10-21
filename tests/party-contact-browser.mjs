@@ -60,6 +60,12 @@ try {
   await a.evaluate(() => window.__apex.keys.delete('KeyW'));
   console.log('remote motion on Bravo', motion);
   assert.ok(motion.movingFrames > 10 && motion.spikes <= 1, 'remote car moves smoothly every frame (no per-packet stutter)');
+  // Alpha may have run into Bravo during the smoothness drive, and contact moves both cars: stop both and let the
+  // network catch up, so only the teleport below could set Bravo moving.
+  console.log('Bravo speed after the smoothness drive (pushed by Alpha)', await b.evaluate(() => window.__apex.state.speed));
+  const park = page => page.evaluate(() => { const g = window.__apex; g.keys.clear(); g.sim.car.setLinvel({ x: 0, y: 0, z: 0 }, true); g.sim.car.setAngvel({ x: 0, y: 0, z: 0 }, true); });
+  await park(a); await park(b); await a.evaluate(() => { const g = window.__apex, r = [...g.remoteCars.values()][0].group.position, p = g.sim.car.translation(), d = Math.hypot(p.x - r.x, p.z - r.z) || 1; g.sim.car.setTranslation({ x: p.x + (p.x - r.x) / d * 8, y: p.y + .2, z: p.z + (p.z - r.z) / d * 8 }, true); });
+  await a.waitForTimeout(800); await park(b); await b.waitForTimeout(300);
   // Finish: Alpha crosses the line; it keeps rolling, and Bravo sees it fade out.
   // Move clear ahead of Bravo first, as a driver crossing the line would be.
   await a.evaluate(() => { const g = window.__apex, remote = [...g.remoteCars.values()][0], t = remote.group.position, q = remote.group.quaternion; const f = { x: 2 * (q.x * q.z + q.w * q.y), z: 1 - 2 * (q.x * q.x + q.y * q.y) }; g.sim.car.setTranslation({ x: t.x + f.x * 25, y: t.y + .3, z: t.z + f.z * 25 }, true); g.sim.car.setLinvel({ x: 0, y: 0, z: 0 }, true); });

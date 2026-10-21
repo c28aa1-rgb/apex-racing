@@ -58,6 +58,8 @@ export class Game {
   listeners=new Set<()=>void>();inputs:number[]=[];ghostSim?:Simulation;ghostRun?:Run;
   /** A leaderboard ghost picked to race. It replaces the personal-best ghost on its circuit through every restart, until the driver goes back to the menu or leaves the circuit. */
   private chosenGhost?:Run;
+  /** The player's own car while a leaderboard replay borrows another; restored on the way back to the menu. */
+  private carBeforeReplay?:CarId;
   private steeringInputs:number[]=[];private driftInputs:number[]=[];
   private keys=new Set<string>();private lastRender=performance.now();private worstFrame=0;private previous=performance.now();private accumulator=0;private countdownUntil=0;private lastUI=0;private frameCount=0;private fpsTime=performance.now();private replayInput?:Run;
   private noticeUntil=0;private lastCheckpoint=0;private lastRespawns=0;private previousFrame?:Frame;private previousGhostFrame?:Frame;
@@ -354,6 +356,7 @@ export class Game {
     this.emit({trackReady:true});this.start(true);
   }
   menu() {this.closeCameraWheel();if(this.partyRace)return;this.chosenGhost=undefined;
+    if(this.carBeforeReplay){const own=this.carBeforeReplay;this.carBeforeReplay=undefined;void this.selectCar(own);}
     // Leaving the Training Grounds goes back to the Garage, where it is opened from.
     if(this.state.track.lot){this.cockpitPreview=false;this.world.firstPerson=false;this.world.endFinish();this.world.setMouseLook(false);this.onLeaveTraining?.();void this.select(this.lastCircuit).then(()=>this.setGarage(true));return;}this.keys.clear();this.finishRevealAt=0;this.world.endFinish();this.cockpitPreview=false;this.world.firstPerson=false;this.world.setMouseLook(false);this.emit({mode:'menu',notice:''});this.world.ghostFrame(undefined);}
   pause() {this.closeCameraWheel();this.keys.clear();this.world.applyPendingGraphics();if(this.partyRace)return;if(['racing','countdown','replay'].includes(this.state.mode)){this.pausedMode=this.state.mode;this.pausedCountdown=Math.max(0,this.countdownUntil-performance.now());this.emit({mode:'paused'});this.world.setMouseLook(false);}}
@@ -374,6 +377,13 @@ export class Game {
   }
   toggleMute() {const muted=!this.state.muted;write('muted',muted);this.emit({muted});if(!muted)this.prepareAudio();}
   setDriftStrength(value:number) {this.driftStrength=Math.max(0,Math.min(2,value));this.sim.driftStrength=this.driftStrength;write('driftStrength',this.driftStrength);this.emit({driftStrength:this.driftStrength});}
+  /** Plays a leaderboard run from the start in its own car; the player's car comes back when they return to the menu. */
+  async watchRecord(track:Track,run:Run) {
+    const own=this.carBeforeReplay??this.state.car.id;
+    await this.select(track,true);
+    this.carBeforeReplay=run.carId!==own?own:undefined;
+    await this.watch(run);
+  }
   async watch(run:Run) {if(this.state.car.id!==run.carId)await this.selectCar(run.carId);this.runOrigin=run.origin;this.start(false,true);this.awaitingPedal=false;this.replayInput=run;this.ghostSim?.dispose();this.ghostSim=undefined;this.emit({mode:'replay'});}
   /** Free-roam drift combo: slip angle times speed while sliding; a pause banks it, a wall hit loses it. */
   private trackDrift() {
@@ -697,8 +707,8 @@ export class Game {
     const solid=this.partyRace?.ready&&['countdown','racing','party-finished'].includes(this.state.mode);
     for(const [id,remote] of this.remoteCars){
       const {group,target}=remote;
-      const pose=target&&remote.motion.sample(this.serverTime(now));
-      // The buffered curve already smooths motion; a second chase filter adds avoidable delay.
+      // Drawn and solid where the driver is now (see RemoteMotion.present), so both screens see the same contact.
+      const pose=target&&remote.motion.present(this.serverTime(now));
       if(pose){
         group.position.copy(pose.p);group.quaternion.copy(pose.q);
       }
@@ -712,7 +722,7 @@ export class Game {
         }
         if(opacity<=0)group.visible=false;
       }
-      this.sim.setObstacle(id,remote.carId,solid&&group.visible&&remote.finishedAt===undefined&&target?{p:group.position,q:group.quaternion}:undefined,elapsed);
+      this.sim.setObstacle(id,remote.carId,solid&&group.visible&&remote.finishedAt===undefined&&pose?{p:group.position,q:group.quaternion,v:pose.v}:undefined,elapsed);
     }
     const watched=this.state.mode==='party-finished'?this.spectatedCar():undefined;
     if(watched){this.world.follow(watched.group,elapsed,this.spectateSnap);this.spectateSnap=false;}

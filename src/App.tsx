@@ -291,13 +291,23 @@ export function App({game}:{game:Game}) {
     if(!player){setSubmission('Set a nickname to post your times to the leaderboard.');return;}
     void submit();
   },[state.run]);
+  /** Fetches a leaderboard run that still matches this circuit and layout, for racing as a ghost or watching. */
+  const loadRecord=async(entry:Entry)=>{
+    const run=runSchema.parse(await api<Run>(`/replays/${entry.id}`));
+    if(run.physicsVersion!==PHYSICS_VERSION||run.trackVersion!==activeTrack.version)throw new Error('This run is from an older track.');
+    if(hasLocalStartPlacement(activeTrack))throw new Error('Restore the project layout in /dev before using an official run.');
+    return run;
+  };
   const raceGhost=async(entry:Entry)=>{
     setBusy(true);setMessage('Loading ghost…');try{
-      const run=runSchema.parse(await api<Run>(`/replays/${entry.id}`));
-      if(run.physicsVersion!==PHYSICS_VERSION||run.trackVersion!==activeTrack.version)throw new Error('This ghost is from an older track.');
-      if(hasLocalStartPlacement(activeTrack))throw new Error('Restore the project layout in /dev before racing an official ghost.');
-      await game.raceGhost(activeTrack,run);if(!['racing','countdown'].includes(game.state.mode))throw new Error(game.state.notice);setDialog(null);
+      await game.raceGhost(activeTrack,await loadRecord(entry));if(!['racing','countdown'].includes(game.state.mode))throw new Error(game.state.notice);setDialog(null);
     }catch(error){setMessage(error instanceof Error?error.message:'Ghost unavailable.');}finally{setBusy(false);}
+  };
+  const watchRecord=async(entry:Entry)=>{
+    setBusy(true);setMessage('Loading replay…');try{
+      setView('tracks');game.partyView=false;game.setGarage(false);
+      await game.watchRecord(activeTrack,await loadRecord(entry));if(game.state.mode!=='replay')throw new Error(game.state.notice||'Replay unavailable.');setDialog(null);
+    }catch(error){setMessage(error instanceof Error?error.message:'Replay unavailable.');}finally{setBusy(false);}
   };
   const menu=state.mode==='menu';
   const notice=menu&&!dialog?removed[0]:undefined;
@@ -389,7 +399,7 @@ export function App({game}:{game:Game}) {
       {dialog==='profile'&&<Modal key="profile" title="Your driver name" reduced={still} onClose={()=>setDialog(null)}><p>No account needed. Your driver identity stays in this browser.</p><form onSubmit={e=>{e.preventDefault();void savePlayer();}}><label htmlFor="nickname">Nickname</label><input id="nickname" autoFocus value={nickname} onChange={e=>setNickname(e.target.value)} minLength={2} maxLength={18} required autoComplete="nickname"/><p className="muted-text">2–18 letters, numbers, spaces, underscores or hyphens.</p>{message&&<p className="form-message" role="status">{message}</p>}<button className="start-button" type="submit" disabled={busy}>{busy?'Saving…':'Save nickname'}<Icon name="check"/></button></form></Modal>}
       {dialog==='leaderboard'&&<Modal key="leaderboard" title="Leaderboards" reduced={still} onClose={()=>setDialog(null)}><div className="board-selector"><label htmlFor="board-circuit">Circuit</label><select id="board-circuit" value={boardTrack} onChange={e=>{setBoardTrack(e.target.value);setMessage('');}}>{boardTracks.map(t=><option key={t.id} value={t.id}>{t.name}</option>)}</select><button className="text-button" onClick={()=>void refresh()}>Refresh</button></div><div className="board-summary"><strong>{entries.length?formatTime(entries[0].timeMs):'—'}</strong><span>{entries.length?`${entries[0].nickname} · fastest ${MULTIPLAYER_BACKEND==='cloudflare'?'unverified':'verified'} lap`:'The starting grid is open'}</span></div><p className="board-intro">Top 50 · best time per driver, all cars · {MULTIPLAYER_BACKEND==='cloudflare'?'casual times · unverified':'replay-verified'}</p>{MULTIPLAYER_BACKEND==='cloudflare'&&<p className="board-intro">Times are recorded by drivers. Saved ghosts are available, but server physics verification is not enabled.</p>}
         {boardStatus&&<div className="board-empty" role="status"><Icon name="trophy" size={32}/><p>{boardStatus}</p><button className="text-button" onClick={()=>void refresh()}>Refresh leaderboard</button></div>}
-        {entries.length>0&&<div className="table-scroll"><table><thead><tr><th>Rank</th><th>Driver</th><th>Lap / gap</th><th>Ghost</th></tr></thead><tbody>{entries.map(entry=><tr key={entry.id} className={entry.playerId===player?.id?'is-you':''}><td>{String(entry.rank).padStart(2,'0')}</td><td>{entry.nickname}{entry.playerId===player?.id&&<small> you</small>}<small className="entry-car">{(entry.playerId===player?.id?dressedCar(entry.carId):carById(entry.carId)).shortName} · {entry.manual?'Manual':'Auto'}</small></td><td className="lap-time">{formatTime(entry.timeMs)}<small>{entry.rank===1?'Leader':`+${((entry.timeMs-entries[0].timeMs)/1000).toFixed(3)}`}</small></td><td><button className="icon-button" aria-label={`Race ${entry.nickname}'s ghost`} disabled={busy} onClick={()=>void raceGhost(entry)}><Icon name="ghost" size={18}/></button></td></tr>)}</tbody></table></div>}
+        {entries.length>0&&<div className="table-scroll"><table><thead><tr><th>Rank</th><th>Driver</th><th>Lap / gap</th><th>Ghost</th><th>Replay</th></tr></thead><tbody>{entries.map(entry=><tr key={entry.id} className={entry.playerId===player?.id?'is-you':''}><td>{String(entry.rank).padStart(2,'0')}</td><td>{entry.nickname}{entry.playerId===player?.id&&<small> you</small>}<small className="entry-car">{(entry.playerId===player?.id?dressedCar(entry.carId):carById(entry.carId)).shortName} · {entry.manual?'Manual':'Auto'}</small></td><td className="lap-time">{formatTime(entry.timeMs)}<small>{entry.rank===1?'Leader':`+${((entry.timeMs-entries[0].timeMs)/1000).toFixed(3)}`}</small></td><td><button className="icon-button" aria-label={`Race ${entry.nickname}'s ghost`} disabled={busy} onClick={()=>void raceGhost(entry)}><Icon name="ghost" size={18}/></button></td><td><button className="icon-button" aria-label={`Watch ${entry.nickname}'s replay`} disabled={busy} onClick={()=>void watchRecord(entry)}><Icon name="play" size={18}/></button></td></tr>)}</tbody></table></div>}
         {message&&<p className="form-message" role="status">{message}</p>}<button className="secondary-button" disabled={busy} onClick={async()=>{setBusy(true);setView('tracks');game.partyView=false;game.setGarage(false);if(activeTrack.lot)await game.enterTraining();else{await game.select(activeTrack,true);game.start();}setBusy(false);setDialog(null);}}>{activeTrack.lot?'Go to the Training Grounds':`Race ${activeTrack.name}`}<Icon name="play"/></button>
       </Modal>}
       </AnimatePresence>
