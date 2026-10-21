@@ -43,6 +43,8 @@ const OPPONENT_RETURN = .12;
 const OPPONENT_FOLLOW = .1;
 /** Fastest a stand-in moves back onto its path, in m/s, on top of the driver's own velocity. */
 const OPPONENT_PULL_MS = 4;
+/** One second between flips (see Simulation.canFlip). */
+const FLIP_COOLDOWN_TICKS = 60;
 /** Further than this (metres) from its path, a stand-in jumps: a respawn or a network catch-up, never a hit. */
 const OPPONENT_SNAP_M = 4;
 const groups = (member: number, filter: number) => ((member << 16) | filter) >>> 0;
@@ -800,8 +802,19 @@ export class Simulation {
     this.vehicle = this.createVehicle();
     this.steering = 0; this.steerHold = 0; this.throttle = 0; this.reverse = 0; this.brake = 0; this.autoDrift = 0; this.slideHold = 0; this.slideDir = 0; this.drifting = false; this.respawns++;
   }
+  /** Tick of the last flip: another waits FLIP_COOLDOWN_TICKS, long enough for the lifted car to land. */
+  private lastFlip = -Infinity;
+  /**
+   * A flip rights a car that has come to rest on its side or roof: slow, with ground just beneath it, and not straight
+   * after another. In the air it is refused, so repeated presses cannot lift the car a metre at a time into the sky.
+   */
+  canFlip() {
+    if (this.speed * this.track.metersPerUnit * 3.6 > 25 || this.ticks - this.lastFlip < FLIP_COOLDOWN_TICKS) return false;
+    return this.visibleGroundAt(this.car.translation()) !== undefined;
+  }
   flipCar() {
-    if (this.speed * this.track.metersPerUnit * 3.6 > 25) return false;
+    if (!this.canFlip()) return false;
+    this.lastFlip = this.ticks;
     const q = this.car.rotation();
     const yaw = Math.atan2(2*(q.w*q.y + q.x*q.z), 1 - 2*(q.x*q.x + q.y*q.y));
     const p = this.car.translation(), velocity = this.car.linvel();

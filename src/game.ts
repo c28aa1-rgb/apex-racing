@@ -365,6 +365,7 @@ export class Game {
   flip() {
     if(this.state.mode!=='racing')return;
     if(this.sim.speed*this.state.track.metersPerUnit*2.23694>15.5){this.emit({notice:'Slow below 15 mph to flip'});this.noticeUntil=performance.now()+1300;return;}
+    if(!this.sim.canFlip()){this.emit({notice:'Flip once the car is down'});this.noticeUntil=performance.now()+1100;return;}
     this.queuedFlip=true;this.emit({notice:'Righting the car'});this.noticeUntil=performance.now()+1000;
   }
   toggleGhost() {

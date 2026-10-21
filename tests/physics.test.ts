@@ -93,6 +93,18 @@ test('brake transitions into reverse, high-speed steering adds progressive rear 
     assert.equal(sim.flipCar(),true);assert.ok(Math.abs(sim.car.rotation().x)<1e-5&&Math.abs(sim.car.rotation().z)<1e-5);
   }finally{sim.dispose();}
 });
+test('spamming flip cannot lift the car into the air',()=>{
+  const sim=new Simulation(TRACKS[0]);try{
+    for(let i=0;i<60;i++)sim.step(0);const ground=sim.car.translation().y;
+    sim.car.setRotation({x:.7071,y:0,z:0,w:.7071},true);for(let i=0;i<30;i++)sim.step(0);
+    let highest=0;
+    // The flip key pressed and released every other tick for three seconds.
+    for(let i=0;i<180;i++){sim.step(i%2?0:Input.Flip);highest=Math.max(highest,sim.car.translation().y-ground);}
+    assert.ok(highest<1.6,`climbed ${highest.toFixed(2)} m`);
+    assert.ok(Math.abs(sim.car.rotation().x)<.1&&Math.abs(sim.car.rotation().z)<.1,'still righted the car');
+    for(let i=0;i<60;i++)sim.step(0);assert.ok(sim.car.translation().y-ground<.3,'back on the road');
+  }finally{sim.dispose();}
+});
 test('respawning keeps elapsed time and clears velocity without granting checkpoints',()=>{
   const sim=new Simulation(TRACKS[0]);try{for(let i=0;i<60;i++)sim.step(Input.Throttle);const time=sim.timeMs;
     sim.step(Input.Respawn);assert.ok(sim.timeMs>time);assert.equal(sim.respawns,1);assert.equal(sim.checkpoint,0);assert.ok(sim.speed<2);
