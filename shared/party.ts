@@ -24,5 +24,6 @@ export type PartyLobby = {
   members: PartyMember[];
   race?: PartyRace;
 };
-export type PartyResponse = { lobby: PartyLobby | null };
+/** removed: this player was just removed from their lobby by its host (said once, when their lobby disappears). */
+export type PartyResponse = { lobby: PartyLobby | null; removed?: boolean };
 export const DEFAULT_PARTY_SETTINGS: PartySettings = { trackId: 'bugatti', weather: 'clear', laps: 3, maxPlayers: 4 };

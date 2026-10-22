@@ -49,7 +49,7 @@ export function useParty(player: Player | null, active: boolean) {
       try {
         if (!mutating.current) {
           const result = await requestParty('/current', player.token);
-          if (!disposed && version === generation.current) { accept(result.lobby); setConnected(true); }
+          if (!disposed && version === generation.current) { accept(result.lobby); setConnected(true); if (result.removed) setError('The host removed you from the lobby.'); }
         }
       } catch (cause) {
         if (!disposed && version === generation.current) {
@@ -85,6 +85,7 @@ export function useParty(player: Player | null, active: boolean) {
     configure: (settings: Partial<PartySettings>) => mutate('/settings', 'PATCH', settings),
     start: () => mutate('/start', 'POST'),
     reopen: () => mutate('/reopen', 'POST'),
+    kick: (id: string) => mutate('/kick', 'POST', { id }),
     leave: () => mutate('/me', 'DELETE'),
   };
 }

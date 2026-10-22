@@ -128,3 +128,40 @@ test('party API validates payloads, authenticates players and synchronizes indep
     assert.equal((await app.inject({ method: 'PATCH', url: '/api/parties/settings', headers: headers[1], payload: { laps: 2 } })).statusCode, 200);
   } finally { await app.close(); await store.close(); }
 });
+
+test('the host can remove a driver between races; they are told once and cannot rejoin', async () => {
+  const parties = new Parties(), third = { id: 'third', nickname: 'Third Driver' };
+  const room = parties.create(host, 'porsche-911-gt3');
+  parties.join(guest, room.code, 'celica-gt4'); parties.join(third, room.code, 'mazda-787b');
+  assert.throws(() => parties.kick(guest, third.id), /Only the host/);
+  assert.throws(() => parties.kick(host, host.id), /Leave the lobby/);
+  const after = parties.kick(host, guest.id);
+  assert.deepEqual(after.members.map(member => member.id), [host.id, third.id]);
+  assert.equal(parties.current(guest), null);
+  assert.equal(parties.takeRemovedNotice(guest.id), true, 'told why their lobby went away');
+  assert.equal(parties.takeRemovedNotice(guest.id), false, 'only once');
+  assert.throws(() => parties.join(guest, room.code, 'celica-gt4'), /removed you/);
+  assert.throws(() => parties.kick(host, guest.id), /already left/);
+  // Never mid-race; and the ban survives the Cloudflare room's save and restore, without reaching any client snapshot.
+  parties.start(host, {});
+  assert.throws(() => parties.kick(host, third.id), /between races/);
+  const restored = new Parties(); restored.restoreState(structuredClone(parties.exportState()));
+  restored.reopen(host);
+  assert.throws(() => restored.join(guest, room.code, 'celica-gt4'), /removed you/);
+  assert.equal('kicked' in restored.current(host)!, false);
+
+  // Over HTTP: the removed driver's next poll says so.
+  const players = new Map([['a'.repeat(64), host], ['b'.repeat(64), guest]]);
+  const store = { player: async (token: string) => players.get(token), circuitConfig: async () => ({}) } as unknown as Store;
+  const app = await createApp(store, async () => { throw new Error('Not a replay test'); });
+  const [hostAuth, guestAuth] = ['a', 'b'].map(c => ({ authorization: `Bearer ${c.repeat(64)}` }));
+  try {
+    const created = (await app.inject({ method: 'POST', url: '/api/parties', headers: hostAuth, payload: { carId: 'celica-gt4' } })).json();
+    await app.inject({ method: 'POST', url: '/api/parties/join', headers: guestAuth, payload: { carId: 'celica-gt4', code: created.lobby.code } });
+    assert.equal((await app.inject({ method: 'POST', url: '/api/parties/kick', headers: guestAuth, payload: { id: host.id } })).statusCode, 403);
+    const kicked = await app.inject({ method: 'POST', url: '/api/parties/kick', headers: hostAuth, payload: { id: guest.id } });
+    assert.equal(kicked.statusCode, 200, kicked.body); assert.equal(kicked.json().lobby.members.length, 1);
+    assert.deepEqual((await app.inject({ method: 'GET', url: '/api/parties/current', headers: guestAuth })).json(), { lobby: null, removed: true });
+    assert.deepEqual((await app.inject({ method: 'GET', url: '/api/parties/current', headers: guestAuth })).json(), { lobby: null });
+  } finally { await app.close(); }
+});

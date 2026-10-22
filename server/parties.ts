@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import type { Store } from './store';
 import type { PartyMember } from '../shared/party';
-import { Parties, settingsSchema, carSchema, createSchema, joinSchema, updateSchema } from '../shared/party-room';
+import { Parties, settingsSchema, carSchema, createSchema, joinSchema, kickSchema, updateSchema } from '../shared/party-room';
 import { PARTY_MESSAGES_PER_SECOND } from '../shared/party-network';
 export { Parties, PARTY_PRESENCE_MS } from '../shared/party-room';
 type Identity = Pick<PartyMember, 'id' | 'nickname'>;
@@ -21,7 +21,10 @@ export async function registerParties(app: FastifyInstance, store: Store, partie
     });
     routes.decorateRequest('partyPlayer', null);
     const config = { rateLimit: { max: 90, timeWindow: '1 minute', keyGenerator: (request: { headers: { authorization?: string }; ip: string }) => request.headers.authorization ?? request.ip } };
-    routes.get('/api/parties/current', { config }, async request => ({ lobby: parties.current(request.partyPlayer!) }));
+    routes.get('/api/parties/current', { config }, async request => {
+      const lobby = parties.current(request.partyPlayer!);
+      return { lobby, ...(!lobby && parties.takeRemovedNotice(request.partyPlayer!.id) ? { removed: true } : {}) };
+    });
     routes.post('/api/parties', { config }, async (request, reply) => {
       const { carId, settings } = createSchema.parse(request.body);
       return reply.code(201).send({ lobby: parties.create(request.partyPlayer!, carId, settings) });
@@ -34,6 +37,7 @@ export async function registerParties(app: FastifyInstance, store: Store, partie
     routes.patch('/api/parties/settings', { config }, async request => ({ lobby: parties.settings(request.partyPlayer!, settingsSchema.partial().parse(request.body)) }));
     routes.delete('/api/parties/me', { config }, async request => { parties.leave(request.partyPlayer!); return { lobby: null }; });
     routes.post('/api/parties/start', { config }, async request => ({ lobby: parties.start(request.partyPlayer!, await store.circuitConfig() as CircuitConfig) }));
+    routes.post('/api/parties/kick', { config }, async request => ({ lobby: parties.kick(request.partyPlayer!, kickSchema.parse(request.body).id) }));
     routes.post('/api/parties/reopen', { config }, async request => ({ lobby: parties.reopen(request.partyPlayer!) }));
     routes.post('/api/parties/race', { config: { rateLimit: { ...config.rateLimit, max: PARTY_MESSAGES_PER_SECOND * 60 } }, bodyLimit: 2048 }, async request => {
       const update = updateSchema.parse(request.body);

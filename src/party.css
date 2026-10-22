@@ -58,3 +58,53 @@ body:has(.is-party){overflow:auto}#app:has(.is-party){height:auto;min-height:100
 @media(max-width:900px) and (min-width:621px){.party{height:calc(100dvh - 76px)}}
 
 .party-race-order li{display:grid;grid-template-columns:30px 1fr auto;align-items:baseline;column-gap:6px}.party-race-order li span{max-width:none}.party-race-order strong{float:none}.party-place{font-family:Shoulders,sans-serif;font-size:17px;color:#ff784c}.party-race-order .is-you .party-place{color:#84e1d4}.party-best{grid-column:2/4;font-size:10px;color:#a8c4c7;margin-top:2px}.party-best.fastest{color:#c9a6ff}
+
+/* Host's remove button on another driver's nameplate. */
+.party-kick{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;margin-left:2px;flex-shrink:0;border-radius:50%;color:#7b4636;background:#e7d8d1}
+.party-kick:hover{background:#b7582e;color:#fff}.party-kick:focus-visible{outline:2px solid #b7582e;outline-offset:2px}
+.party-nameplates strong .party-kick svg{color:inherit}
+
+/* Your place in the race, beside the lap counter. */
+.party-race-status{flex-direction:row;align-items:center;gap:12px;max-width:260px}
+.party-race-status>div{display:flex;flex-direction:column;min-width:0}
+.party-position{font-family:Shoulders,sans-serif;font-size:34px;line-height:1;color:#84e1d4;font-variant-numeric:tabular-nums;padding-right:12px;border-right:1px solid #a8dadc33}
+.party-position small{font-size:16px;color:#a8c4c7;margin-left:1px}
+
+/* End screen: every driver in finishing order. It replaces the corner standings while open. */
+.party-race.shows-results .party-race-order,.party-race.shows-results>.party-race-actions{display:none}
+.party-results{position:absolute;top:50%;left:50%;translate:-50% -50%;width:min(620px,calc(100% - 8px));max-height:calc(100% - 80px);overflow-y:auto;pointer-events:auto;background:#132b3bf2;color:#f1faee;border-inline:1px solid #a8dadc70;box-shadow:0 24px 80px #07192255;padding:26px 24px 18px;backdrop-filter:blur(6px)}
+/* The finish banner's chequered edge: the classification reads as the rest of crossing the line. */
+.party-results::before{content:"";position:absolute;top:0;left:0;right:0;height:8px;background:conic-gradient(#f1faee 25%,#132b3b 0 50%,#f1faee 0 75%,#132b3b 0) 0/16px 16px}
+.party-results header{padding-bottom:14px;border-bottom:1px solid #a8dadc26}
+.party-results header span{display:block;font-size:11px;color:#a8dadc;text-transform:uppercase;letter-spacing:.06em}
+.party-results h2{font-family:Shoulders,sans-serif;font-size:38px;line-height:1.05;margin:2px 0 0}
+.party-results ol{list-style:none;margin:6px 0 16px;padding:0}
+.party-results li{display:grid;grid-template-columns:44px minmax(0,1fr) auto 112px;align-items:center;column-gap:12px;padding:10px 6px;border-bottom:1px solid #a8dadc1a}
+.party-results li>b{font-family:Shoulders,sans-serif;font-size:24px;text-align:center;color:#ff784c;font-variant-numeric:tabular-nums}
+.party-results li.podium-1>b{color:#e7c177}.party-results li.podium-2>b{color:#c8d5da}.party-results li.podium-3>b{color:#d49a72}
+.party-results li.is-you{background:linear-gradient(90deg,#84e1d41f,transparent);box-shadow:inset 3px 0 #84e1d4}
+.party-results li>div{display:flex;flex-direction:column;min-width:0}
+.party-results li>div>strong{font-size:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.party-results li>div>strong small{font-size:10px;color:#84e1d4;font-weight:400}
+.party-results li>div>span{font-size:11px;color:#a8c4c7;margin-top:2px}
+.party-results-time{text-align:right;font-variant-numeric:tabular-nums}
+.party-results-time strong{font-family:Shoulders,sans-serif;font-size:20px;font-weight:700}
+.party-results-time .is-out{font-family:inherit;font-size:13px;font-weight:400;color:#a8c4c7}
+.party-results-best{text-align:right;font-variant-numeric:tabular-nums}
+.party-results-best span{font-size:10px;color:#a8c4c7}.party-results-best span.fastest{color:#c9a6ff}
+.party-results-best strong{font-size:13px;font-weight:400}
+.party-results footer{display:flex;flex-wrap:wrap;align-items:center;gap:10px}
+.party-results footer p{flex:1;margin:0;font-size:12px;color:#a8c4c7}
+.party-results footer button{display:inline-flex;align-items:center;gap:8px;background:#1d3640;color:#fff;border:1px solid #506567;border-radius:4px;padding:10px 14px;font-size:13px}
+.party-results footer button:hover:not(:disabled){background:#264652}
+.party-results footer .party-results-primary{flex:1;justify-content:center;background:#ff784c;border-color:#ff784c;color:#132b3b;font-weight:700}
+.party-results footer .party-results-primary:hover:not(:disabled){background:#ff8a62}
+.party-spectate button svg{vertical-align:-2px}
+@media(max-width:700px){
+  .party-results{padding:16px 14px 14px;top:auto;bottom:0;translate:-50% 0;max-height:calc(100% - 10px)}
+  .party-results h2{font-size:28px}
+  .party-results li{grid-template-columns:32px minmax(0,1fr) auto;column-gap:8px}
+  .party-results li>b{font-size:20px}
+  .party-results li>.party-results-best{grid-column:2/4;flex-direction:row;gap:6px;align-items:baseline;text-align:left}
+  .party-position{font-size:26px;padding-right:8px}.party-race-status{gap:8px}
+}
