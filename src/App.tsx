@@ -19,6 +19,7 @@ import { deletedRunNotices, dismissDeletedRun } from './deleted-runs';
 import { PartyPanel } from './PartyPanel';
 import { LotMap } from './LotMap';
 import { CityMap } from './CityMap';
+import { FreeRoam } from './FreeRoam';
 import { CAMERA_LABELS } from './camera-modes';
 import { CameraWheel } from './CameraWheel';
 import { PRESET_LABELS } from './graphics';
@@ -112,7 +113,7 @@ function Speed({speed,boost,drifting,car,drafting}:{speed:number;boost:boolean;d
     <strong>{speed.toString().padStart(3,'0')}</strong><span>mph</span><small>{car.shortName}<b>{drifting?'Drift active':boost?'Boost active':drafting?'Slipstream':'\u00a0'}</b></small>
   </div>;
 }
-function Garage({game,car,modelReady,onRace,onTraining,reduced}:{game:Game;car:CarDefinition;modelReady:boolean;onRace:()=>void;onTraining:(track?:Track)=>void;reduced:boolean}) {
+function Garage({game,car,modelReady,onRace,reduced}:{game:Game;car:CarDefinition;modelReady:boolean;onRace:()=>void;reduced:boolean}) {
   const details=[
     ['Acceleration',car.stats.acceleration,`≈ ${(car.physics.zeroToHundred*.94).toFixed(1)} s · 0–60 mph`],
     ['Top speed',car.stats.topSpeed,`${Math.round(car.physics.topSpeedKph*KM_TO_MI)} mph`],
@@ -135,16 +136,6 @@ function Garage({game,car,modelReady,onRace,onTraining,reduced}:{game:Game;car:C
       <dl className="car-facts"><div><dt>Drive</dt><dd>{car.physics.drivetrain}</dd></div><div><dt>Weight</dt><dd>{Math.round(car.physics.massKg*KG_TO_LB).toLocaleString()} lb</dd></div></dl>
       <div className="car-stats">{details.map(([label,value,detail])=><div key={label}><span>{label}<strong>{detail}</strong></span><i><motion.b style={{width:`${value}%`,transformOrigin:"left"}} initial={{scaleX:reduced?1:0}} animate={{scaleX:1}} transition={{duration:reduced?0:.4,delay:reduced?0:.08,ease}}/></i></div>)}</div>
       <button className="start-button" disabled={!modelReady} onClick={onRace}><Icon name="arrow"/><span>Race with {car.shortName}</span></button>
-      <button className="training-entry" disabled={!modelReady} onClick={()=>onTraining()}><span className="training-icon" aria-hidden="true"><svg viewBox="0 0 48 48" width="40" height="40">
-        <ellipse cx="24" cy="43" rx="17" ry="3" fill="#0006"/>
-        <path d="M21.2 5.5h5.6L36 37H12Z" fill="#ff6a1a"/><path d="M24 5.5h2.8L36 37h-6.5Z" fill="#d94a0c"/>
-        <path d="M18.3 15.5h11.4l1.9 6.5H16.4ZM14.7 27.5h18.6l1.8 6H12.9Z" fill="#f4f1ea"/>
-        <rect x="7" y="36" width="34" height="5" rx="1.5" fill="#22262a"/><rect x="7" y="36" width="34" height="1.6" rx=".8" fill="#3a4046"/>
-      </svg></span><span><strong>Training Grounds</strong><small>Free roam with {car.shortName} · no clock</small></span><Icon name="arrow" size={18}/></button>
-      <button className="training-entry city-entry" disabled={!modelReady} onClick={()=>onTraining(CITY)}><span className="training-icon" aria-hidden="true"><svg viewBox="0 0 48 48" width="40" height="40">
-        <rect x="6" y="20" width="9" height="20" fill="#3c5866"/><rect x="15" y="9" width="11" height="31" fill="#7fd1ff"/><rect x="26" y="16" width="8" height="24" fill="#4d7486"/><rect x="34" y="24" width="8" height="16" fill="#3c5866"/>
-        <path d="M18 13h5M18 18h5M18 23h5M18 28h5" stroke="#1d3440" strokeWidth="2"/><rect x="4" y="40" width="40" height="3" rx="1.5" fill="#22262a"/>
-      </svg></span><span><strong>{CITY.name}</strong><small>Open city with {car.shortName} · no clock</small></span><Icon name="arrow" size={18}/></button>
       <small className="garage-note">Vehicle ratings alter engine force, mass, aero, grip, steering and braking in the simulation.</small>
     </motion.aside></AnimatePresence>
     <footer className="garage-footer"><span>Rear grip breaks progressively under fast, loaded steering.</span><a href={assetUrl('models/garage/CREDITS.txt')} target="_blank" rel="noreferrer">Garage credit</a><a href={assetUrl('models/cars/CREDITS.txt')} target="_blank" rel="noreferrer">Vehicle credits</a></footer>
@@ -240,7 +231,7 @@ export function App({game}:{game:Game}) {
   const state=useSyncExternalStore(game.subscribe,game.coarseSnapshot),track=state.track;
   const reduced=useReducedMotion();
   const still=Boolean(reduced||game.settings.reducedMotion);
-  const [view,setView]=useState<'tracks'|'garage'|'party'>('tracks');
+  const [view,setView]=useState<'tracks'|'garage'|'roam'|'party'>('tracks');
   const [transitioning,setTransitioning]=useState(false);
   const [dialog,setDialog]=useState<'help'|'profile'|'leaderboard'|'settings'|null>(null);
   const [player,setPlayer]=useState<Player|null>(()=>read('player',null));
@@ -325,17 +316,18 @@ export function App({game}:{game:Game}) {
   // The paddock mounts only once the curtain covers the old page (its own 3D stage replaces the world view),
   // and leaves first when you switch away, so the two never pop over each other.
   const [partyShown,setPartyShown]=useState(false);
-  useEffect(()=>{game.onLeaveTraining=()=>{setPartyShown(false);setView('garage');};return()=>{game.onLeaveTraining=undefined;};},[game]);
-  const changeView=(next:'tracks'|'garage'|'party')=>{if(view===next)return;if(view==='party')setPartyShown(false);setTransitioning(true);setView(next);};
+  useEffect(()=>{game.onLeaveTraining=()=>{setPartyShown(false);setView('roam');};return()=>{game.onLeaveTraining=undefined;};},[game]);
+  const changeView=(next:'tracks'|'garage'|'roam'|'party')=>{if(view===next)return;if(view==='party')setPartyShown(false);setTransitioning(true);setView(next);};
   const showTracks=()=>changeView('tracks');
   const showGarage=()=>changeView('garage');
   return <MotionConfig reducedMotion={game.settings.reducedMotion?"always":"user"} transition={{duration:still?0:.26,ease}}>
-    <div className={`interface ${still?'reduce-motion':''} ${menu?'is-menu':'is-racing'} ${state.mode==='celebrating'?'is-celebrating':''} ${menu&&view==='garage'?'is-garage':''} ${menu&&view==='party'?'is-party':''}`}>
+    <div className={`interface ${still?'reduce-motion':''} ${menu?'is-menu':'is-racing'} ${state.mode==='celebrating'?'is-celebrating':''} ${menu&&(view==='garage'||view==='roam')?'is-garage':''} ${menu&&view==='party'?'is-party':''}`}>
       <header className="topbar">
         <button className="brand" disabled={!!game.partyRace} onClick={()=>{game.menu();showTracks();}} aria-label="APEX track selection">APEX<span> / </span></button>
         {menu?<nav aria-label="Main navigation">
           <button className={view==='tracks'&&dialog!=='leaderboard'?'nav-active':''} onClick={showTracks}>Time trials{view==='tracks'&&dialog!=='leaderboard'&&<motion.span className="nav-line" layoutId="primary-nav-line" transition={{duration:still?0:.26,ease}}/>}</button>
           <button className={view==='garage'&&dialog!=='leaderboard'?'nav-active':''} onClick={showGarage}>Garage{view==='garage'&&dialog!=='leaderboard'&&<motion.span className="nav-line" layoutId="primary-nav-line" transition={{duration:still?0:.26,ease}}/>}</button>
+          <button className={view==='roam'&&dialog!=='leaderboard'?'nav-active':''} onClick={()=>changeView('roam')}>Free roam{view==='roam'&&dialog!=='leaderboard'&&<motion.span className="nav-line" layoutId="primary-nav-line" transition={{duration:still?0:.26,ease}}/>}</button>
           <button className={view==='party'&&dialog!=='leaderboard'?'nav-active':''} onClick={()=>changeView('party')}>Party{view==='party'&&dialog!=='leaderboard'&&<motion.span className="nav-line" layoutId="primary-nav-line" transition={{duration:still?0:.26,ease}}/>}</button>
           <button className={dialog==='leaderboard'?'nav-active':''} onClick={()=>{setBoardTrack(track.kind==='lot'?TRACKS[0].id:track.id);open('leaderboard');}}>Leaderboards{dialog==='leaderboard'&&<motion.span className="nav-line" layoutId="primary-nav-line" transition={{duration:still?0:.26,ease}}/>}</button>
         </nav>:<span className="current-track">{track.lot?'TG':track.id===CITY.id?'CITY':String(TRACKS.findIndex(t=>t.id===track.id)+1).padStart(2,'0')} <span>/</span> {track.name} <small>{state.car.shortName}</small></span>}
@@ -354,8 +346,8 @@ export function App({game}:{game:Game}) {
       </header>
       <motion.div className="view-curtain" aria-hidden="true" initial={false} animate={{opacity:transitioning?1:0}} transition={{duration:still?0:transitioning?.18:.32,ease:transitioning?[.4,0,1,1]:ease}}/>
       <AnimatePresence>{menu&&view==='tracks'&&<motion.div key="track-backdrop" initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}} transition={{duration:still?0:.32}}><TrackPreview track={track} reduced={still}/></motion.div>}</AnimatePresence>
-      <AnimatePresence mode="wait" onExitComplete={()=>{if(transitioning){game.setGarage(view==='garage');setPartyShown(view==='party');setTransitioning(false);}}}>
-        {menu&&view==='party'?<motion.div key="party-view" exit={{opacity:0,transition:{duration:still?0:.2}}}/>:menu&&view==='garage'?<Garage game={game} car={state.car} modelReady={state.modelReady} onRace={showTracks} onTraining={target=>{game.partyView=false;game.setGarage(false);void game.enterTraining(target);}} reduced={still}/>:menu?<motion.main key="menu" className="menu" initial={{opacity:0,x:still?0:-24}} animate={{opacity:1,x:0}} exit={{opacity:0,x:still?0:-16,transition:{duration:still?0:.18,ease:[.4,0,1,1]}}} transition={{duration:still?0:.38,ease}}>
+      <AnimatePresence mode="wait" onExitComplete={()=>{if(transitioning){game.setGarage(view==='garage'||view==='roam');setPartyShown(view==='party');setTransitioning(false);}}}>
+        {menu&&view==='party'?<motion.div key="party-view" exit={{opacity:0,transition:{duration:still?0:.2}}}/>:menu&&view==='garage'?<Garage game={game} car={state.car} modelReady={state.modelReady} onRace={showTracks} reduced={still}/>:menu&&view==='roam'?<FreeRoam car={state.car} modelReady={state.modelReady} onChangeCar={showGarage} onDrive={target=>{game.partyView=false;game.setGarage(false);void game.enterTraining(target);}} reduced={still}/>:menu?<motion.main key="menu" className="menu" initial={{opacity:0,x:still?0:-24}} animate={{opacity:1,x:0}} exit={{opacity:0,x:still?0:-16,transition:{duration:still?0:.18,ease:[.4,0,1,1]}}} transition={{duration:still?0:.38,ease}}>
           <div className="world-label"><span className="live-mark"/>Circuit preview<span className="world-label-rule"/> {circuitMiles(track.length)}</div>
           <AnimatePresence mode="wait" initial={false}><motion.section className="track-info" key={track.id} initial={{opacity:0,x:still?0:16}} animate={{opacity:1,x:0}} exit={{opacity:0,x:still?0:-10,pointerEvents:"none",transition:{duration:still?0:.12,ease:[.4,0,1,1]}}} transition={{duration:still?0:.28,ease}}>
             <div className="track-kicker"><span className="course-number">{String(TRACKS.indexOf(track)+1).padStart(2,'0')}</span><span className="difficulty">{track.difficulty}</span></div>
