@@ -64,7 +64,7 @@ export class RaceWorld {
   camera = new THREE.PerspectiveCamera(46, innerWidth / innerHeight, 0.2, 10000);
   trackGroup = new THREE.Group();
   venueGroup = new THREE.Group();
-  private cullEntries:{mesh:THREE.Mesh,center:THREE.Vector3,radius:number,full:THREE.BufferGeometry,lod?:THREE.BufferGeometry}[]=[];
+  private cullEntries:{mesh:THREE.Mesh,center:THREE.Vector3,radius:number,full:THREE.BufferGeometry,lod?:THREE.BufferGeometry,maxDistance?:number}[]=[];
   private cullAt=new THREE.Vector3(Infinity,0,0);
   private cullFar=-1;
   garageGroup = new THREE.Group();
@@ -656,7 +656,8 @@ export class RaceWorld {
     // into spatial chunks. Attribute buffers stay shared, so this adds no
     // duplicate texture or vertex memory.
     const candidates: THREE.Mesh[]=[];
-    root.traverse(object=>{if(object instanceof THREE.Mesh)candidates.push(object);});
+    // Instanced batches are already split into map cells at build time (design/build-city.ts).
+    root.traverse(object=>{if(object instanceof THREE.Mesh&&!(object instanceof THREE.InstancedMesh))candidates.push(object);});
     for(const mesh of candidates){
       const source=mesh.geometry, position=source.getAttribute('position') as THREE.BufferAttribute|undefined;
       const index=source.getIndex(), triangleCount=(index?.count??position?.count??0)/3;
@@ -707,9 +708,13 @@ export class RaceWorld {
     this.cullEntries=[];
     root.traverse(object=>{
       if(!(object instanceof THREE.Mesh)||!object.visible)return;
-      if(!object.geometry.boundingSphere)object.geometry.computeBoundingSphere();
-      const sphere=object.geometry.boundingSphere!.clone().applyMatrix4(object.matrixWorld);
-      this.cullEntries.push({mesh:object,center:sphere.center,radius:sphere.radius,full:object.geometry,lod:object.userData.apexLod});
+      // An instanced batch's own sphere covers every instance; its geometry's covers only one.
+      if(object instanceof THREE.InstancedMesh){if(!object.boundingSphere)object.computeBoundingSphere();}
+      else if(!object.geometry.boundingSphere)object.geometry.computeBoundingSphere();
+      const sphere=(object instanceof THREE.InstancedMesh?object.boundingSphere!:object.geometry.boundingSphere!).clone().applyMatrix4(object.matrixWorld);
+      // A draw distance baked into the asset (design/build-city.ts) sits on the glTF node: the mesh or its group.
+      const maxDistance=object.userData.apexCull??object.parent?.userData.apexCull;
+      this.cullEntries.push({mesh:object,center:sphere.center,radius:sphere.radius,full:object.geometry,lod:object.userData.apexLod,maxDistance});
     });
     this.cullFar=-1;
   }
@@ -721,7 +726,7 @@ export class RaceWorld {
     const lodAt=(this.options?.lodDistance??0)*(this.fast?.6:1);
     // Small props vanish sooner: they are already hazy and cover few pixels, while big chunks (ground, stands) stay until fully fogged.
     for(const entry of this.cullEntries){
-      const reach=(entry.radius<30?far*(this.fast?.4:.6):entry.radius<80?far*(this.fast?.7:.85):far)+150;
+      const reach=entry.maxDistance!==undefined?Math.min(far+150,entry.maxDistance*(this.fast?.7:1)):(entry.radius<30?far*(this.fast?.4:.6):entry.radius<80?far*(this.fast?.7:.85):far)+150;
       const gap=position.distanceTo(entry.center)-entry.radius;
       entry.mesh.visible=gap<reach;
       // Hysteresis keeps a chunk at the LOD boundary from flipping geometry every pass.
@@ -801,7 +806,7 @@ export class RaceWorld {
   /** Per-frame Training Grounds animation: cones and the start-box pulse. */
   updateLot(sim: Simulation | undefined, dt: number, showStart: boolean) { this.lotScene?.update(sim, dt, showStart); }
   setTrack(track: Track) {
-    void this.racingLine.setTrack(track.lot ? undefined : track);
+    void this.racingLine.setTrack(track.lot || track.kind === 'lot' ? undefined : track);
     if (track.lot) { this.setLot(track); return; }
     this.lotScene = undefined;
     this.weatherMaterials.clear();

@@ -328,14 +328,14 @@ export class Game {
     await this.select(track,true);
     this.chosenGhost=run;this.emit({ghost:true});this.start();
   }
-  /** Opens the Training Grounds in free roam with the current car, locked or not. */
-  async enterTraining() {
+  /** Opens free roam (the Training Grounds, or the city) with the current car, locked or not. */
+  async enterTraining(track:Track=TRAINING_GROUNDS) {
     if(this.partyView||this.partyRace)return;
     const token=++this.selectionToken;this.keys.clear();this.garageView=false;this.runOrigin=undefined;
     this.ghostSim?.dispose();this.ghostSim=undefined;this.ghostRun=undefined;this.world.ghostFrame(undefined);
-    this.world.setTrack(TRAINING_GROUNDS);
-    this.emit({track:TRAINING_GROUNDS,trackReady:false,run:undefined,newBest:false,personalBest:undefined,penalties:0,atStart:false,coneResult:undefined,notice:''});
-    await initPhysics(TRAINING_GROUNDS);if(token!==this.selectionToken)return;
+    this.world.setTrack(track);
+    this.emit({track,trackReady:false,run:undefined,newBest:false,personalBest:undefined,penalties:0,atStart:false,coneResult:undefined,notice:''});
+    await initPhysics(track);if(token!==this.selectionToken)return;
     this.emit({trackReady:true});this.start(false);
   }
   /**
@@ -357,8 +357,8 @@ export class Game {
   }
   menu() {this.closeCameraWheel();if(this.partyRace)return;this.chosenGhost=undefined;
     if(this.carBeforeReplay){const own=this.carBeforeReplay;this.carBeforeReplay=undefined;void this.selectCar(own);}
-    // Leaving the Training Grounds goes back to the Garage, where it is opened from.
-    if(this.state.track.lot){this.cockpitPreview=false;this.world.firstPerson=false;this.world.endFinish();this.world.setMouseLook(false);this.onLeaveTraining?.();void this.select(this.lastCircuit).then(()=>this.setGarage(true));return;}this.keys.clear();this.finishRevealAt=0;this.world.endFinish();this.cockpitPreview=false;this.world.firstPerson=false;this.world.setMouseLook(false);this.emit({mode:'menu',notice:''});this.world.ghostFrame(undefined);}
+    // Leaving free roam goes back to the Garage, where it is opened from.
+    if(this.state.track.lot||this.freeRoam){this.cockpitPreview=false;this.world.firstPerson=false;this.world.endFinish();this.world.setMouseLook(false);this.onLeaveTraining?.();void this.select(this.lastCircuit).then(()=>this.setGarage(true));return;}this.keys.clear();this.finishRevealAt=0;this.world.endFinish();this.cockpitPreview=false;this.world.firstPerson=false;this.world.setMouseLook(false);this.emit({mode:'menu',notice:''});this.world.ghostFrame(undefined);}
   pause() {this.closeCameraWheel();this.keys.clear();this.world.applyPendingGraphics();if(this.partyRace)return;if(['racing','countdown','replay'].includes(this.state.mode)){this.pausedMode=this.state.mode;this.pausedCountdown=Math.max(0,this.countdownUntil-performance.now());this.emit({mode:'paused'});this.world.setMouseLook(false);}}
   resume() {this.keys.clear();this.accumulator=0;if(!this.freeRoam&&this.sim.ticks>=MAX_TICKS){this.restart();return;}if(this.pausedMode==='countdown')this.countdownUntil=performance.now()+this.pausedCountdown;this.emit({mode:this.pausedMode});this.world.setMouseLook(true);this.world.lockMouse();this.prepareAudio();}
   recover() {if(this.state.mode==='racing')this.queuedRespawn=true;}
@@ -671,8 +671,8 @@ export class Game {
       }
     }
     if(this.freeRoam&&this.state.mode==='racing'&&this.state.trackReady){
-      const zone=this.state.track.lot!.startZone,p=this.sim.car.translation();
-      const inside=Math.abs(p.x-zone.x)<zone.w/2&&Math.abs(p.z-zone.z)<zone.l/2;
+      const zone=this.state.track.lot?.startZone,p=this.sim.car.translation();
+      const inside=!!zone&&Math.abs(p.x-zone.x)<zone.w/2&&Math.abs(p.z-zone.z)<zone.l/2;
       if(inside!==this.state.atStart)this.emit({atStart:inside});
     }else if(this.state.atStart)this.emit({atStart:false});
     if(this.state.track.lot){this.world.updateLot(this.state.mode==='menu'?undefined:this.sim,elapsed,this.freeRoam);if(this.state.mode==='racing')this.world.updateConfetti(elapsed);}

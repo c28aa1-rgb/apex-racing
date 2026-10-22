@@ -118,6 +118,19 @@ export const CONE_TRACK: Track = {
   start: placed(lot.startZone.x, lot.startZone.z, 0, lot.startZone.w), finish: placed(cone.finish.x, cone.finish.z, Math.PI, 20),
   metersPerUnit: 1, length: 900,
 };
+/**
+ * Free-roam city (local `city` branch). Assets come from `npm run build:city`; the spawn sits at the foot of the
+ * acceleration strip, facing up it (+z). Untimed like the Training Grounds, and never ranked or raced in a party.
+ */
+export const CITY: Track = {
+  id: 'racing-city', version: 1, name: 'Racing City', subtitle: 'Open city', difficulty: 'Free roam',
+  description: 'Downtown loops, an industrial yard, a coastal expressway and a ridge road, all open. No clock, no limits.',
+  accent: '#7fd1ff', medals: [0, 0, 0], kind: 'lot', hidden: true,
+  model: 'racing-city.glb', runtimeModel: 'racing-city.runtime.glb', collision: 'collision/racing-city.bin',
+  segments: lotSegments('racing-city', [[-700, -285], [-700, 300]], 20), checkpoints: [],
+  start: placed(-700, -285, 0, 20), finish: placed(-700, 300, 0, 20),
+  metersPerUnit: 1, length: 1000,
+};
 /** Every track the simulation and leaderboard accept, including hidden ones. */
 export const ALL_TRACKS: Track[] = [...TRACKS, TRAINING_GROUNDS, CONE_TRACK];
 export const trackById = (id: string) => ALL_TRACKS.find(t => t.id === id);

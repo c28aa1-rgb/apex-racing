@@ -22,7 +22,8 @@
     "check:cloudflare": "tsc --noEmit -p cloudflare/tsconfig.json",
     "deploy:cloudflare": "npm run check:cloudflare && wrangler deploy",
     "test:multiplayer": "npm run build:server && node --import tsx --test tests/party.test.ts tests/party-race.test.ts tests/cloudflare.test.ts",
-    "build:pages": "tsc --noEmit && node --import tsx design/build-pages.ts"
+    "build:pages": "tsc --noEmit && node --import tsx design/build-pages.ts",
+    "build:city": "node --max-old-space-size=8192 --import tsx design/build-city.ts"
   },
   "dependencies": {
     "@dimforge/rapier3d-compat": "0.19.3",
