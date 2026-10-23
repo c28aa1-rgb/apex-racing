@@ -889,7 +889,7 @@ export class RaceWorld {
     try{
       const traffic=await CityTraffic.create(this.venueGroup,this.loader,player);
       if(token!==this.trafficToken){traffic.dispose();return;}
-      this.traffic=traffic;this.scene.add(traffic.group);
+      traffic.camera=this.camera;this.traffic=traffic;this.scene.add(traffic.group);
     }catch(error){console.warn('City traffic unavailable.',error);}
   }
   stopTraffic(sim?:Simulation) {this.traffic?.dispose(sim);this.traffic=undefined;}

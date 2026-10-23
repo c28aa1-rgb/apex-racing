@@ -1,1 +1,10 @@
-Traffic vehicles: "Car Kit" 3.1 by Kenney (www.kenney.nl), CC0 1.0. https://kenney.nl/assets/car-kit
+City traffic vehicles, modified (turned, recentred, textures re-encoded):
+- Ace '11 by DanielZhabotinsky, CC BY 4.0 - https://sketchfab.com/3d-models/055ff8a21b8d4d279debca089e2fafcd
+- Asti Stradale '89 by DanielZhabotinsky, CC BY 4.0 - https://sketchfab.com/3d-models/97b15b067111443ebe05840137b49c65
+- Fairheaven LT '80 by DanielZhabotinsky, CC BY 4.0 - https://sketchfab.com/3d-models/e2678da920cc4be68dbc193727919ffb
+- Fairheaven LT '80 Taxi by DanielZhabotinsky, CC BY 4.0 - https://sketchfab.com/3d-models/7da68ec2677f4abd8e31e9998b497a67
+- LCT 3000 '07 by DanielZhabotinsky, CC BY 4.0 - https://sketchfab.com/3d-models/3be03b6a43aa41898c9ca806b8787052
+- Lightbody '90 MD Utility by DanielZhabotinsky, CC BY 4.0 - https://sketchfab.com/3d-models/d3aca50a8f2b4917bb9f4ce2bf1ccfe5
+- Milano '95 by DanielZhabotinsky, CC BY 4.0 - https://sketchfab.com/3d-models/122a22d210234596ad23623588d0d166
+- Negotiator '80 by DanielZhabotinsky, CC BY 4.0 - https://sketchfab.com/3d-models/892b2684fb37442299bfad9222cf331c
+Licence: https://creativecommons.org/licenses/by/4.0/

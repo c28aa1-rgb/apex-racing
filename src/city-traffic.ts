@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import type { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { assetUrl } from '../shared/assets';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import type { ObstacleBody, Simulation } from '../shared/physics';
 
 /**
@@ -8,8 +9,9 @@ import type { ObstacleBody, Simulation } from '../shared/physics';
  * lights, take turns at unsignalised crossings and brake for the player. Cars never turn; each drives its road to the
  * end (or round a loop) and is placed again near the player when it ends or falls far behind.
  *
- * Everything is drawn as instanced batches: one per vehicle kind, one each for head lamps, tail lamps and lamp pools,
- * and one each for signal bulbs and their glows.
+ * Everything is drawn as instanced batches: per vehicle kind, one per body material, one each for its head and brake
+ * lamps (self-lit, brake lamps brightening per car) and one per wheel material for its front and rear wheels, which
+ * spin with the distance driven and steer with the lane's curve. Lamp pools, signal bulbs and glows are one batch each.
  */
 
 type RoadPath = { name: string; district: string; width: number; closed: boolean; points: number[][] };
@@ -26,13 +28,27 @@ type Lane = {
   points: Float32Array; s: Float64Array;
   stops: Stop[]; zones: ZoneEntry[]; cars: Car[];
 };
-type Kind = { name: string; mesh: THREE.InstancedMesh; body: ObstacleBody; front: number; rear: number; halfWidth: number; lampY: number };
+/** Where a wheel sits on its car, and whether it steers and which side it is on (right wheels are the left one turned round). */
+type WheelSlot = { at: THREE.Vector3; front: boolean; right: boolean };
+type Kind = {
+  name: string; weight: number; body: ObstacleBody; front: number; rear: number; halfWidth: number; wheelbase: number; radius: number;
+  /** Instanced batches: body parts, lamps (with a per-car colour) and front/rear wheels. */
+  parts: THREE.InstancedMesh[]; heads: THREE.InstancedMesh[]; tails: THREE.InstancedMesh[]; frontWheels: THREE.InstancedMesh[]; rearWheels: THREE.InstancedMesh[];
+  slots: WheelSlot[];
+};
 type Car = {
   id: number; kind: Kind; lane: Lane; s: number; v: number; cruise: number; index: number; braking: boolean;
   position: THREE.Vector3; heading: THREE.Vector3; zones: Set<Zone>; obstacle: boolean;
   /** Seconds spent held up by the player; and the sideways offset left over from a lane change, easing to zero. */
   blocked: number; drift: THREE.Vector3;
+  /** Wheel roll angle, front-wheel steer angle and last heading (for the turn rate). */
+  spin: number; steer: number; yaw: number;
 };
+/** How often each kind turns up, relative to an ordinary car. */
+const KIND_WEIGHT: Record<string, number> = { 'lct-3000-07': .45, 'lightbody-90-md-utility': .7 };
+const KIND_MASS: Record<string, number> = { 'lct-3000-07': 4200, 'lightbody-90-md-utility': 2400 };
+/** Cars further than this, or off screen, are not drawn. */
+const DRAW_WITHIN = 480;
 
 /** Signal cycle per intersection, in seconds: axis A green, yellow, all red, then axis B the same. */
 const GREEN = 14, YELLOW = 3, CLEAR = 1.5, CYCLE = 2 * (GREEN + YELLOW + CLEAR);
@@ -70,9 +86,10 @@ export class CityTraffic {
   private texture = glowTexture();
   private bulbs?: THREE.InstancedMesh;
   private bulbGlows?: THREE.InstancedMesh;
-  private heads?: THREE.InstancedMesh;
-  private tails?: THREE.InstancedMesh;
   private pools?: THREE.InstancedMesh;
+  /** The camera drawing the city: cars outside its view are skipped. */
+  camera?: THREE.Camera;
+  private frustum = new THREE.Frustum();
   private matrix = new THREE.Matrix4();
   private q = new THREE.Quaternion();
   private v3 = new THREE.Vector3();
@@ -205,30 +222,84 @@ export class CityTraffic {
 
   private buildKinds(scene: THREE.Object3D) {
     scene.updateMatrixWorld(true);
+    const roleOf = (object: THREE.Object3D) => { for (let o: THREE.Object3D | null = object; o; o = o.parent) if (o.userData.apexPart) return o.userData.apexPart as string; return 'body'; };
+    const clean = (geometry: THREE.BufferGeometry, matrix: THREE.Matrix4) => {
+      // Every part ends up with the same attributes (position, normal, uv) and an index, so parts can be merged.
+      const g = geometry.clone().applyMatrix4(matrix);
+      for (const name of Object.keys(g.attributes)) if (!['position', 'normal', 'uv'].includes(name)) g.deleteAttribute(name);
+      if (!g.attributes.normal) g.computeVertexNormals();
+      if (!g.attributes.uv) g.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(g.attributes.position.count * 2), 2));
+      if (!g.index) g.setIndex([...Array(g.attributes.position.count).keys()]);
+      return g;
+    };
     for (const vehicle of scene.children) {
-      let geometry: THREE.BufferGeometry | undefined, material: THREE.Material | undefined;
-      vehicle.traverse(object => { if (object instanceof THREE.Mesh && !geometry) { geometry = object.geometry.clone().applyMatrix4(object.matrixWorld); material = object.material as THREE.Material; } });
-      if (!geometry || !material) continue;
-      geometry.computeBoundingBox();
-      const box = geometry.boundingBox!, size = box.getSize(new THREE.Vector3());
-      const mesh = new THREE.InstancedMesh(geometry, material, CAR_COUNT);
-      mesh.name = `traffic-${vehicle.name}`; mesh.count = 0; mesh.frustumCulled = false; mesh.castShadow = false; mesh.receiveShadow = true;
-      this.group.add(mesh);
-      const heavy = /truck|delivery|van/.test(vehicle.name);
-      this.kinds.push({ name: vehicle.name, mesh, front: box.max.z, rear: box.min.z, halfWidth: size.x / 2, lampY: box.min.y + size.y * .38,
-        body: { widthM: size.x, heightM: size.y, lengthM: size.z, massKg: heavy ? 2600 : 1450 } });
+      if (!vehicle.userData.apexVehicle) continue;
+      const groups = new Map<string, { role: string; material: THREE.Material; geometries: THREE.BufferGeometry[] }>();
+      const wheels: { center: THREE.Vector3; meshes: THREE.Mesh[] }[] = [], box = new THREE.Box3();
+      vehicle.traverse(object => {
+        if (!(object instanceof THREE.Mesh)) return;
+        const role = roleOf(object);
+        if (role === 'wheel') {
+          // A wheel node may hold several meshes (tyre, rim); group them by the node that carries the role.
+          let owner: THREE.Object3D = object; while (owner.parent && !owner.userData.apexPart) owner = owner.parent;
+          const center = new THREE.Box3().setFromObject(owner).getCenter(new THREE.Vector3());
+          let wheel = wheels.find(w => w.center.distanceTo(center) < .05);
+          if (!wheel) { wheel = { center, meshes: [] }; wheels.push(wheel); }
+          wheel.meshes.push(object); return;
+        }
+        const material = object.material as THREE.Material, key = `${role}:${material.uuid}`;
+        const group = groups.get(key) ?? groups.set(key, { role, material, geometries: [] }).get(key)!;
+        const geometry = clean(object.geometry, object.matrixWorld); group.geometries.push(geometry);
+        geometry.computeBoundingBox(); box.union(geometry.boundingBox!);
+      });
+      if (wheels.length < 4) continue;
+      const kind: Kind = {
+        name: vehicle.name, weight: KIND_WEIGHT[vehicle.name] ?? 1, front: box.max.z, rear: box.min.z, halfWidth: (box.max.x - box.min.x) / 2, wheelbase: 0, radius: 0,
+        body: { widthM: box.max.x - box.min.x, heightM: box.max.y - box.min.y, lengthM: box.max.z - box.min.z, massKg: KIND_MASS[vehicle.name] ?? 1500 },
+        parts: [], heads: [], tails: [], frontWheels: [], rearWheels: [], slots: [],
+      };
+      const batch = (geometry: THREE.BufferGeometry, material: THREE.Material, count: number, perCarColour = false) => {
+        const mesh = new THREE.InstancedMesh(geometry, material, count);
+        mesh.count = 0; mesh.frustumCulled = false; mesh.castShadow = false; mesh.receiveShadow = true; mesh.name = `traffic-${vehicle.name}`;
+        if (perCarColour) mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(count * 3).fill(1), 3);
+        this.group.add(mesh); return mesh;
+      };
+      for (const { role, material, geometries } of groups.values()) {
+        const geometry = geometries.length > 1 ? mergeGeometries(geometries)! : geometries[0];
+        if (role === 'body') { kind.parts.push(batch(geometry, material, CAR_COUNT)); continue; }
+        // Lamps glow by themselves: an unlit copy of the lamp texture, tinted per car (brighter when braking).
+        const source = material as THREE.MeshStandardMaterial;
+        const lamp = new THREE.MeshBasicMaterial({ map: source.map, color: 0xffffff, toneMapped: false, transparent: source.transparent, opacity: source.opacity, side: source.side });
+        (role === 'head' ? kind.heads : kind.tails).push(batch(geometry, lamp, CAR_COUNT, true));
+      }
+      // Wheels: forward is +z and right is -x, so left wheels have x > 0. The left front and left rear wheels become
+      // the shapes; each is centred on its hub so it can turn about it.
+      const middle = wheels.reduce((sum, w) => sum + w.center.z, 0) / wheels.length;
+      for (const wheel of wheels) kind.slots.push({ at: wheel.center.clone(), front: wheel.center.z > middle, right: wheel.center.x < 0 });
+      const frontZ = Math.max(...wheels.map(w => w.center.z)), rearZ = Math.min(...wheels.map(w => w.center.z));
+      kind.wheelbase = frontZ - rearZ;
+      for (const front of [true, false]) {
+        const shape = wheels.filter(w => (w.center.z > middle) === front).sort((a, b) => b.center.x - a.center.x)[0];
+        const byMaterial = new Map<THREE.Material, THREE.BufferGeometry[]>();
+        for (const mesh of shape.meshes) {
+          const geometry = clean(mesh.geometry, mesh.matrixWorld).translate(-shape.center.x, -shape.center.y, -shape.center.z);
+          (byMaterial.get(mesh.material as THREE.Material) ?? byMaterial.set(mesh.material as THREE.Material, []).get(mesh.material as THREE.Material)!).push(geometry);
+        }
+        for (const [material, geometries] of byMaterial) {
+          const geometry = geometries.length > 1 ? mergeGeometries(geometries)! : geometries[0];
+          if (front) { geometry.computeBoundingBox(); kind.radius = Math.max(kind.radius, geometry.boundingBox!.max.y); }
+          (front ? kind.frontWheels : kind.rearWheels).push(batch(geometry, material, CAR_COUNT * 2));
+        }
+      }
+      this.kinds.push(kind);
     }
   }
 
   private buildLamps() {
-    const lampCount = CAR_COUNT * 2;
-    this.heads = new THREE.InstancedMesh(new THREE.PlaneGeometry(.5, .32), new THREE.MeshBasicMaterial({ color: 0xfff3dc, toneMapped: false }), lampCount);
-    this.tails = new THREE.InstancedMesh(new THREE.PlaneGeometry(.5, .26).rotateY(Math.PI), new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: false }), lampCount);
     const poolMaterial = glow(0xfff0d0, .32, this.texture);
     poolMaterial.polygonOffset = true; poolMaterial.polygonOffsetFactor = -2; poolMaterial.polygonOffsetUnits = -2;
     this.pools = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2), poolMaterial, CAR_COUNT);
-    for (const mesh of [this.heads, this.tails, this.pools]) { mesh.frustumCulled = false; mesh.count = 0; this.group.add(mesh); }
-    this.tails.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(lampCount * 3), 3);
+    this.pools.frustumCulled = false; this.pools.count = 0; this.group.add(this.pools);
     // Signal bulbs: red, yellow and green per head, lit or dim; one glow per head around the lit bulb.
     const count = this.signals.length;
     if (!count) return;
@@ -280,12 +351,20 @@ export class CityTraffic {
       if (distance < near || distance > far) continue;
       if (lane.cars.some(other => Math.abs(other.s - s) < 30)) continue;
       if (lane.stops.some(stop => Math.abs(stop.s - s) < 12) || lane.zones.some(zone => s > zone.enter - 4 && s < zone.leave)) continue;
-      const car: Car = { id, kind: kind ?? this.kinds[Math.floor(this.random() * this.kinds.length)], lane, s, v: lane.speed * .7, cruise: lane.speed * (.85 + this.random() * .25),
-        index, braking: false, position: at.clone(), heading: this.direction(lane, s), zones: new Set(), obstacle: false, blocked: 0, drift: new THREE.Vector3() };
+      const car: Car = { id, kind: kind ?? this.pickKind(), lane, s, v: lane.speed * .7, cruise: lane.speed * (.85 + this.random() * .25),
+        index, braking: false, position: at.clone(), heading: this.direction(lane, s), zones: new Set(), obstacle: false, blocked: 0, drift: new THREE.Vector3(),
+        spin: 0, steer: 0, yaw: 0 };
+      car.yaw = Math.atan2(car.heading.x, car.heading.z);
       lane.cars.push(car);
       return car;
     }
     return undefined;
+  }
+  private pickKind() {
+    const total = this.kinds.reduce((sum, kind) => sum + kind.weight, 0);
+    let pick = this.random() * total;
+    for (const kind of this.kinds) { pick -= kind.weight; if (pick <= 0) return kind; }
+    return this.kinds[0];
   }
   private remove(car: Car) {
     car.lane.cars.splice(car.lane.cars.indexOf(car), 1);
@@ -374,6 +453,12 @@ export class CityTraffic {
     const look = this.v3, ahead2 = car.lane; this.sample(ahead2, Math.min(ahead2.closed ? car.s + 3 : ahead2.length, car.s + 3), car.index, look);
     if (ahead2.closed && car.s + 3 >= ahead2.length) this.sample(ahead2, car.s + 3 - ahead2.length, 0, look);
     const heading = look.sub(car.position); if (heading.lengthSq() > 1e-4) car.heading.copy(heading.normalize());
+    // Wheels roll with the distance covered; the front ones steer to the angle that makes the turn the car is taking.
+    const yaw = Math.atan2(car.heading.x, car.heading.z), turn = Math.atan2(Math.sin(yaw - car.yaw), Math.cos(yaw - car.yaw)) / dt;
+    car.yaw = yaw;
+    car.spin = (car.spin + car.v * dt / Math.max(car.kind.radius, .2)) % (Math.PI * 2);
+    const steer = car.v > .5 ? THREE.MathUtils.clamp(Math.atan(car.kind.wheelbase * turn / car.v), -.6, .6) : car.steer;
+    car.steer += (steer - car.steer) * (1 - Math.exp(-dt / .15));
   }
 
   private changeLane(car: Car) {
@@ -413,26 +498,39 @@ export class CityTraffic {
 
   // ------------------------------------------------------------------ drawing
   private render() {
-    const counts = new Map<Kind, number>(), m = this.matrix, q = this.q, up = new THREE.Vector3(0, 1, 0);
-    let lamp = 0, pool = 0;
+    const m = this.matrix, q = this.q, up = new THREE.Vector3(0, 1, 0), counts = new Map<Kind, number>();
+    const local = new THREE.Matrix4(), spin = new THREE.Matrix4(), steer = new THREE.Matrix4(), flip = new THREE.Matrix4().makeRotationY(Math.PI);
+    if (this.camera) { this.camera.updateMatrixWorld(); this.frustum.setFromProjectionMatrix(new THREE.Matrix4().multiplyMatrices(this.camera.projectionMatrix, this.camera.matrixWorldInverse)); }
+    const sphere = new THREE.Sphere(), eye = this.camera ? new THREE.Vector3().setFromMatrixPosition(this.camera.matrixWorld) : undefined;
+    let pool = 0;
     for (const car of this.cars) {
-      const yaw = Math.atan2(car.heading.x, car.heading.z), pitch = -Math.asin(THREE.MathUtils.clamp(car.heading.y, -1, 1));
-      q.setFromEuler(new THREE.Euler(pitch, yaw, 0, 'YXZ'));
-      const n = counts.get(car.kind) ?? 0; counts.set(car.kind, n + 1);
-      car.kind.mesh.setMatrixAt(n, m.compose(car.position, q, this.scale.set(1, 1, 1)));
-      const k = car.kind, x = k.halfWidth * .62;
-      for (const side of [-1, 1]) {
-        this.heads!.setMatrixAt(lamp, m.compose(this.v3.set(side * x, k.lampY, k.front + .03).applyQuaternion(q).add(car.position), q, this.scale));
-        this.tails!.setMatrixAt(lamp, m.compose(this.v3.set(side * x, k.lampY + .1, k.rear - .03).applyQuaternion(q).add(car.position), q, this.scale));
-        this.tails!.setColorAt(lamp, this.color.setRGB(car.braking ? 4 : 1.1, car.braking ? .12 : .03, car.braking ? .08 : .02));
-        lamp++;
+      const k = car.kind;
+      sphere.set(car.position, k.body.lengthM * .6);
+      if (eye && (car.position.distanceTo(eye) > DRAW_WITHIN || !this.frustum.intersectsSphere(sphere))) continue;
+      const pitch = -Math.asin(THREE.MathUtils.clamp(car.heading.y, -1, 1));
+      q.setFromEuler(new THREE.Euler(pitch, car.yaw, 0, 'YXZ'));
+      const n = counts.get(k) ?? 0; counts.set(k, n + 1);
+      const carMatrix = new THREE.Matrix4().compose(car.position, q, this.scale.set(1, 1, 1));
+      for (const mesh of k.parts) mesh.setMatrixAt(n, carMatrix);
+      for (const mesh of k.heads) { mesh.setMatrixAt(n, carMatrix); mesh.setColorAt(n, this.color.setRGB(2.4, 2.3, 2.1)); }
+      for (const mesh of k.tails) { mesh.setMatrixAt(n, carMatrix); mesh.setColorAt(n, car.braking ? this.color.setRGB(4.5, 1.2, 1.1) : this.color.setRGB(1.6, .55, .5)); }
+      let front = 0, rear = 0;
+      for (const slot of k.slots) {
+        spin.makeRotationX(car.spin); steer.makeRotationY(slot.front ? car.steer : 0);
+        local.makeTranslation(slot.at.x, slot.at.y, slot.at.z).multiply(steer).multiply(spin);
+        if (slot.right) local.multiply(flip);
+        m.multiplyMatrices(carMatrix, local);
+        const index = n * 2 + (slot.front ? front++ : rear++);
+        for (const mesh of slot.front ? k.frontWheels : k.rearWheels) mesh.setMatrixAt(index, m);
       }
-      this.pools!.setMatrixAt(pool++, m.compose(this.v3.set(0, .06, k.front + 7).applyQuaternion(q).add(car.position), this.q.setFromAxisAngle(up, yaw), this.scale.set(5.5, 1, 12)));
+      this.pools!.setMatrixAt(pool++, m.compose(this.v3.set(0, .06, k.front + 7).applyQuaternion(q).add(car.position), this.q.setFromAxisAngle(up, car.yaw), this.scale.set(5.5, 1, 12)));
       this.scale.set(1, 1, 1);
     }
-    for (const kind of this.kinds) { kind.mesh.count = counts.get(kind) ?? 0; kind.mesh.instanceMatrix.needsUpdate = true; }
-    for (const mesh of [this.heads!, this.tails!]) { mesh.count = lamp; mesh.instanceMatrix.needsUpdate = true; }
-    this.tails!.instanceColor!.needsUpdate = true;
+    for (const kind of this.kinds) {
+      const n = counts.get(kind) ?? 0;
+      for (const mesh of [...kind.parts, ...kind.heads, ...kind.tails]) { mesh.count = n; mesh.instanceMatrix.needsUpdate = true; if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true; }
+      for (const mesh of [...kind.frontWheels, ...kind.rearWheels]) { mesh.count = n * 2; mesh.instanceMatrix.needsUpdate = true; }
+    }
     this.pools!.count = pool; this.pools!.instanceMatrix.needsUpdate = true;
     if (!this.bulbs || !this.bulbGlows) return;
     const colors = [new THREE.Color(4, .15, .1), new THREE.Color(4, 2.2, .1), new THREE.Color(.2, 3.5, 1.2)], dim = .06;
