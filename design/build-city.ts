@@ -12,12 +12,12 @@
  * each instance batch as one draw spanning the whole map, so nothing can be culled. This build simplifies
  * dense instanced meshes, splits every instance batch into map cells, and caps texture sizes.
  */
-import { NodeIO, type Node, type Primitive } from '@gltf-transform/core';
+import { NodeIO, type Mesh, type Node, type Primitive } from '@gltf-transform/core';
 import { ALL_EXTENSIONS, EXTMeshGPUInstancing } from '@gltf-transform/extensions';
-import { compactPrimitive, dedup, prune, simplifyPrimitive, textureCompress, weld } from '@gltf-transform/functions';
+import { compactPrimitive, dedup, joinPrimitives, prune, simplifyPrimitive, textureCompress, weld } from '@gltf-transform/functions';
 import { MeshoptSimplifier } from 'meshoptimizer';
 import sharp from 'sharp';
-import { Matrix4, Vector3 } from 'three';
+import { Matrix4, Quaternion, Vector3 } from 'three';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -33,7 +33,14 @@ const LEAVES: { match: RegExp; keep: number }[] = [{ match: /pine_tree/, keep: .
  * Per-instance triangle budget and draw distance (metres) by node name; first match wins. Draw distances are read
  * by the renderer's distance culling (world.ts, userData.apexCull), so small things stop drawing long before the fog.
  */
-const CLASSES: { match: RegExp; triangles: number; cull: number }[] = [
+const CLASSES: { match: RegExp; triangles: number; cull: number; error?: number; cell?: number }[] = [
+  // Buildings are the skyline: drawn to the fog, and simplified only within a tight error so facades keep their shape.
+  // Each building is up to 17 material parts, one draw each per cell, so they use large cells.
+  { match: /_(MM|PP)_(BrickTower|CornerShops|GlassCentre|Retail|ArcTower|CrownTower)/, triangles: 12000, cull: 4000, error: .015, cell: 300 },
+  // The expressway deck is drivable road; piers, rails and gantries frame it from a distance.
+  { match: /Highway_Deck/, triangles: 48, cull: 4000 },
+  { match: /Highway_|Training_Garage|Training_Gantry|IndustrialDetail_Crane|Wayfinding/, triangles: 500, cull: 1200 },
+  { match: /Industrial_Container|LampPoles|LampHeads/, triangles: 500, cull: 600 },
   { match: /pine_tree/, triangles: 1500, cull: 1100 },
   { match: /tree_small/, triangles: 1000, cull: 650 },
   { match: /shrub/, triangles: 600, cull: 260 },
@@ -85,6 +92,19 @@ const hasBuildings = root.listNodes().some(node => /build|tower|skyscraper/i.tes
 if (!hasBuildings) console.warn('warning: the export contains no building meshes; building collision blockers are left out so downtown has no invisible walls.');
 
 await doc.transform(weld());
+// Parts of one mesh that share a material and vertex layout draw as one.
+for (const mesh of root.listMeshes()) {
+  const sets = new Map<string, Primitive[]>();
+  for (const primitive of mesh.listPrimitives()) {
+    if (primitive.getMode() !== 4 || !primitive.getIndices()) continue;
+    const key = `${root.listMaterials().indexOf(primitive.getMaterial()!)}|${primitive.listSemantics().sort().join()}`;
+    (sets.get(key) ?? sets.set(key, []).get(key)!).push(primitive);
+  }
+  for (const parts of sets.values()) if (parts.length > 1) {
+    mesh.addPrimitive(joinPrimitives(parts));
+    for (const part of parts) { mesh.removePrimitive(part); part.dispose(); }
+  }
+}
 let before = 0, after = 0;
 const simplified = new Set<unknown>();
 for (const node of root.listNodes()) {
@@ -92,8 +112,8 @@ for (const node of root.listNodes()) {
   const mesh = node.getMesh(); if (!mesh || !instancing) continue;
   const count = instancing.getAttribute('TRANSLATION')?.getCount() ?? 1, tris = triangles(node);
   before += tris * count;
-  const { triangles: budget, cull } = classOf(node.getName());
-  node.setExtras({ ...node.getExtras(), apexCull: cull });
+  const { triangles: budget, cull, error = .08, cell = CELL } = classOf(node.getName());
+  node.setExtras({ ...node.getExtras(), apexCull: cull, apexCell: cell });
   if (tris > budget && !simplified.has(mesh)) {
     simplified.add(mesh);
     const ratio = budget / tris;
@@ -101,51 +121,56 @@ for (const node of root.listNodes()) {
     const leaves = LEAVES.find(entry => entry.match.test(node.getName()));
     for (const primitive of mesh.listPrimitives()) {
       if (leaves && /Foliage/.test(primitive.getMaterial()?.getName() ?? '')) thinFoliage(primitive, leaves.keep);
-      else simplifyPrimitive(primitive, { simplifier: MeshoptSimplifier, ratio, error: .08, lockBorder: false });
+      else simplifyPrimitive(primitive, { simplifier: MeshoptSimplifier, ratio, error, lockBorder: false });
     }
   }
   after += triangles(node) * count;
 }
 console.log(`instanced triangles: ${(before / 1e6).toFixed(1)}M -> ${(after / 1e6).toFixed(2)}M`);
 
-// Split each instance batch into map cells.
+// Re-batch instances by map cell. Batches that share a mesh and a draw distance are merged first (the export keeps one
+// batch per district and actor, e.g. twelve lane-paint batches of the same box), so each cell costs one draw per mesh.
 const instancingExt = doc.createExtension(EXTMeshGPUInstancing);
 const scene = root.getDefaultScene()!;
-let cells = 0;
+type Placement = { t: number[]; r: number[]; s: number[] };
+const groups = new Map<string, { name: string; mesh: Mesh; extras: Record<string, unknown>; placements: Placement[] }>();
+const local = new Matrix4(), world = new Matrix4(), at = new Vector3(), turn = new Quaternion(), size = new Vector3();
 for (const node of [...root.listNodes()]) {
-  const instancing = node.getExtension<any>('EXT_mesh_gpu_instancing'); if (!instancing) continue;
-  const attributes: Record<string, any> = Object.fromEntries(instancing.listSemantics().map((semantic: string) => [semantic, instancing.getAttribute(semantic)]));
-  const translation = attributes.TRANSLATION; if (!translation) continue;
-  const parentMatrix = new Matrix4().fromArray(node.getWorldMatrix()), p = new Vector3(), element: number[] = [];
-  const buckets = new Map<string, number[]>();
-  for (let i = 0; i < translation.getCount(); i++) {
-    p.fromArray(translation.getElement(i, element)).applyMatrix4(parentMatrix);
-    const key = `${Math.floor(p.x / CELL)}:${Math.floor(p.z / CELL)}`;
-    (buckets.get(key) ?? buckets.set(key, []).get(key)!).push(i);
-  }
-  if (buckets.size < 2) continue;
-  const parent = node.getParentNode();
-  for (const [key, ids] of buckets) {
-    const cell = doc.createNode(`${node.getName()}@${key}`).setMesh(node.getMesh()).setMatrix(node.getMatrix()).setExtras(node.getExtras());
-    const batch = instancingExt.createInstancedMesh();
-    for (const [semantic, accessor] of Object.entries(attributes)) {
-      const size = accessor.getElementSize(), values = new Float32Array(ids.length * size);
-      const item = new Array(size);
-      ids.forEach((id, i) => values.set(accessor.getElement(id, item), i * size));
-      batch.setAttribute(semantic, doc.createAccessor().setType(accessor.getType()).setArray(values).setBuffer(root.listBuffers()[0]));
-    }
-    cell.setExtension('EXT_mesh_gpu_instancing', batch);
-    if (parent) parent.addChild(cell); else scene.addChild(cell);
-    cells++;
+  const instancing = node.getExtension<any>('EXT_mesh_gpu_instancing'), mesh = node.getMesh();
+  if (!instancing || !mesh) continue;
+  const semantics: string[] = instancing.listSemantics();
+  if (semantics.some(semantic => !['TRANSLATION', 'ROTATION', 'SCALE'].includes(semantic))) continue;
+  const [T, R, S] = ['TRANSLATION', 'ROTATION', 'SCALE'].map(semantic => instancing.getAttribute(semantic));
+  const nodeMatrix = new Matrix4().fromArray(node.getWorldMatrix()), extras = node.getExtras();
+  for (let i = 0; i < T.getCount(); i++) {
+    at.fromArray(T.getElement(i, [0, 0, 0])); R ? turn.fromArray(R.getElement(i, [0, 0, 0, 1])) : turn.identity(); S ? size.fromArray(S.getElement(i, [0, 0, 0])) : size.set(1, 1, 1);
+    world.multiplyMatrices(nodeMatrix, local.compose(at, turn, size)).decompose(at, turn, size);
+    const cell = (extras.apexCell as number | undefined) ?? CELL, at2 = `${Math.floor(at.x / cell)}:${Math.floor(at.z / cell)}`;
+    const key = `${root.listMeshes().indexOf(mesh)}|${extras.apexCull}|${cell}|${at2}`;
+    const group = groups.get(key) ?? groups.set(key, { name: `${node.getName()}@${at2}`, mesh, extras, placements: [] }).get(key)!;
+    group.placements.push({ t: at.toArray(), r: turn.toArray(), s: size.toArray() });
   }
   node.dispose();
 }
+const buffer = root.listBuffers()[0];
+for (const { name, mesh, extras, placements } of groups.values()) {
+  const batch = instancingExt.createInstancedMesh();
+  for (const [semantic, type, width, field] of [['TRANSLATION', 'VEC3', 3, 't'], ['ROTATION', 'VEC4', 4, 'r'], ['SCALE', 'VEC3', 3, 's']] as const) {
+    const values = new Float32Array(placements.length * width);
+    placements.forEach((placement, i) => values.set(placement[field], i * width));
+    batch.setAttribute(semantic, doc.createAccessor().setType(type).setArray(values).setBuffer(buffer));
+  }
+  scene.addChild(doc.createNode(name).setMesh(mesh).setExtras(extras).setExtension('EXT_mesh_gpu_instancing', batch));
+}
+const cells = groups.size;
 console.log(`instance cells: ${cells}`);
 
-// Small props and trees are seen briefly; tiled ground and road keep more detail.
+// Small props and trees are seen briefly; tiled ground, road and building surfaces keep more detail, and the shared
+// building atlas keeps its full export resolution (2K).
+const DETAILED = /^(T_|asphalt|Clay|Concrete0|plastered_wall|roof|stone07|tile_mar|walpanel|wood-15)/;
 await doc.transform(
-  textureCompress({ encoder: sharp, resize: [1024, 1024], pattern: /^(T_|asphalt)/ }),
-  textureCompress({ encoder: sharp, resize: [512, 512], pattern: /^(?!T_|asphalt)/ }),
+  textureCompress({ encoder: sharp, resize: [1024, 1024], pattern: DETAILED }),
+  textureCompress({ encoder: sharp, resize: [512, 512], pattern: new RegExp(`^(?!Atlas)(?!${DETAILED.source.slice(1)})`) }),
   dedup(), prune(),
 );
 await writeFile(join(out, 'racing-city.runtime.glb'), await io.writeBinary(doc));

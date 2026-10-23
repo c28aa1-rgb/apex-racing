@@ -703,6 +703,40 @@ export class RaceWorld {
     }
   }
   /** Records each static venue piece's world-space bounds so far pieces can skip the draw. */
+  /**
+   * Far versions of large instanced meshes (the city's buildings), swapped in by cullVenue past the LOD distance.
+   * Positions are welded first: texture seams split vertices, and the simplifier treats every seam as a border it
+   * may not collapse. Far away a seam's UVs can come from either side, which is invisible at that size.
+   * Foliage is left alone: it is many separate leaves, which simplification deletes outright.
+   */
+  private instancedLods(root:THREE.Object3D,simplifier?:typeof import('meshoptimizer').MeshoptSimplifier) {
+    if(!simplifier)return;
+    const made=new Map<THREE.BufferGeometry,THREE.BufferGeometry|undefined>();
+    root.traverse(object=>{
+      if(!(object instanceof THREE.InstancedMesh)||/Nature/.test(object.name+(object.parent?.name??'')))return;
+      if(!made.has(object.geometry))made.set(object.geometry,this.weldedLod(object.geometry,simplifier));
+      const lod=made.get(object.geometry);if(lod)object.userData.apexLod=lod;
+    });
+  }
+  private weldedLod(source:THREE.BufferGeometry,simplifier:typeof import('meshoptimizer').MeshoptSimplifier) {
+    const index=source.getIndex(),position=source.getAttribute('position');
+    if(!index||!position||index.count<1000*3)return undefined;
+    const unique=new Map<string,number>(),remap=new Uint32Array(position.count),flat:number[]=[];
+    for(let i=0;i<position.count;i++){
+      const key=`${position.getX(i).toFixed(3)},${position.getY(i).toFixed(3)},${position.getZ(i).toFixed(3)}`;
+      let id=unique.get(key);if(id===undefined){id=unique.size;unique.set(key,id);flat.push(position.getX(i),position.getY(i),position.getZ(i));}
+      remap[i]=id;
+    }
+    const representative=new Uint32Array(unique.size);for(let i=position.count-1;i>=0;i--)representative[remap[i]]=i;
+    const welded=new Uint32Array(index.count);for(let i=0;i<index.count;i++)welded[i]=remap[index.getX(i)];
+    const [reduced]=simplifier.simplify(welded,new Float32Array(flat),3,Math.floor(index.count*.12/3)*3,.03);
+    if(reduced.length>index.count*.6)return undefined;
+    const lod=new THREE.BufferGeometry();
+    for(const [name,attribute] of Object.entries(source.attributes))lod.setAttribute(name,attribute);
+    lod.setIndex(new THREE.BufferAttribute(reduced.map(id=>representative[id]),1));
+    lod.boundingBox=source.boundingBox;lod.boundingSphere=source.boundingSphere;
+    return lod;
+  }
   private registerDistanceCulling(root:THREE.Object3D) {
     root.updateMatrixWorld(true);
     this.cullEntries=[];
@@ -749,6 +783,7 @@ export class RaceWorld {
       let simplifier;try{const {MeshoptSimplifier}=await import('meshoptimizer');await MeshoptSimplifier.ready;if(MeshoptSimplifier.supported)simplifier=MeshoptSimplifier;}catch(error){console.warn('Venue LOD unavailable.',error);}
       if(token!==this.venueLoadToken){this.disposeObject(model);return;}
       this.splitVenueForCulling(model,180,256,simplifier);
+      this.instancedLods(model,simplifier);
       const overlayOrder=new Map<THREE.Material,number>();
       model.traverse(object=>{if(!(object instanceof THREE.Mesh))return;object.castShadow=false;object.receiveShadow=true;const materials=Array.isArray(object.material)?object.material:[object.material];materials.forEach(item=>{
         for(const value of Object.values(item))if(value instanceof THREE.Texture){value.minFilter=THREE.LinearMipmapLinearFilter;value.generateMipmaps=true;value.needsUpdate=true;}
