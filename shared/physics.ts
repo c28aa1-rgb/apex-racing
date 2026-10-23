@@ -33,6 +33,8 @@ const GROUP = { floor: 0x0002, wall: 0x0004, chassis: 0x0008, safety: 0x0010, op
  * driver's own screen, which runs the same stand-in for this car, gives their car its half of it.
  */
 type Opponent = { body: RAPIER.RigidBody; p: Vec3; q: Quat; v: Vec3; ticks: number };
+/** A stand-in's box and mass when it is not one of the game's cars (city traffic). */
+export type ObstacleBody = { widthM: number; heightM: number; lengthM: number; massKg: number };
 /** Seconds for a stand-in to close a gap to its network path; short, so it never drifts far from where the driver is. */
 const OPPONENT_RETURN = .12;
 /**
@@ -849,15 +851,15 @@ export class Simulation {
    * than OPPONENT_SNAP_M is a teleport rather than a hit. Only this driver's car is moved by contact; each client is
    * authoritative for its own car.
    */
-  setObstacle(id:string,carId:CarId,pose?:{p:Vec3;q:Quat;v?:Vec3},dt=DT) {
+  setObstacle(id:string,carId:CarId|ObstacleBody,pose?:{p:Vec3;q:Quat;v?:Vec3},dt=DT) {
     const known=this.obstacles.get(id);
     if(!pose){if(known){this.obstacleBodies.delete(known.body.handle);this.world.removeRigidBody(known.body);this.obstacles.delete(id);}return;}
     const p={x:pose.p.x,y:pose.p.y,z:pose.p.z},q={x:pose.q.x,y:pose.q.y,z:pose.q.z,w:pose.q.w};
     if(!known){
-      const car=carById(carId),d=car.dimensions;
+      const size:ObstacleBody=typeof carId==='string'?(()=>{const car=carById(carId);return {widthM:car.dimensions.bodyWidthM,heightM:car.dimensions.heightM,lengthM:car.dimensions.lengthM,massKg:car.physics.massKg};})():carId;
       const body=this.world.createRigidBody(RAPIER.RigidBodyDesc.dynamic().setTranslation(p.x,p.y,p.z).setRotation(q).setGravityScale(0).setCanSleep(false));
-      this.world.createCollider(RAPIER.ColliderDesc.cuboid(d.bodyWidthM*.45,Math.max(.3,d.heightM*.32),d.lengthM*.46).setTranslation(0,-.1,0)
-        .setMass(car.physics.massKg).setFriction(.08).setRestitution(.15).setCollisionGroups(groups(GROUP.opponent,GROUP.chassis|GROUP.safety)),body);
+      this.world.createCollider(RAPIER.ColliderDesc.cuboid(size.widthM*.45,Math.max(.3,size.heightM*.32),size.lengthM*.46).setTranslation(0,-.1,0)
+        .setMass(size.massKg).setFriction(.08).setRestitution(.15).setCollisionGroups(groups(GROUP.opponent,GROUP.chassis|GROUP.safety)),body);
       const v=pose.v?{...pose.v}:{x:0,y:0,z:0};body.setLinvel(v,true);
       this.obstacles.set(id,{body,p,q,v,ticks:0});this.obstacleBodies.add(body.handle);return;
     }

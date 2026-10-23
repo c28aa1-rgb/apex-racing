@@ -342,6 +342,7 @@ export class Game {
     this.emit({track,mapOpen:false,trackReady:false,run:undefined,newBest:false,personalBest:undefined,penalties:0,atStart:false,coneResult:undefined,notice:''});
     await initPhysics(track);if(token!==this.selectionToken)return;
     this.emit({trackReady:true});this.start(false);
+    if(track.night){const p=this.sim.car.translation();void this.world.startTraffic(new Vector3(p.x,p.y,p.z));}
   }
   /**
    * Enter inside the orange box starts the hidden cone course from exactly where the car sits:
@@ -684,6 +685,11 @@ export class Game {
         }
         if(!this.partyRace&&!this.freeRoam&&this.sim.ticks>=MAX_TICKS){this.emit({mode:'paused',notice:'Five-minute limit reached. Restart to try again.'});break;}
       }
+    }
+    if(this.world.traffic){
+      // Traffic and signals run while driving; paused, on the map or in a menu they hold still but stay drawn.
+      const p=this.sim.car.translation(),v=this.sim.car.linvel(),live=this.state.mode==='racing'&&!this.state.mapOpen;
+      this.world.traffic.update(live?elapsed:0,this.sim,new Vector3(p.x,p.y,p.z),new Vector3(v.x,v.y,v.z));
     }
     if(this.freeRoam&&this.state.mode==='racing'&&this.state.trackReady){
       const zone=this.state.track.lot?.startZone,p=this.sim.car.translation();

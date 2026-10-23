@@ -10,6 +10,7 @@ import { buildRoadMesh, interpolateRoad, type RoadPoint } from '../shared/road';
 import { carById, DEFAULT_CAR, isFormula, lookOf, withLivery, type CarDefinition, type CarId, type LookId } from '../shared/cars';
 import { CarRig, prepareCarModel } from './car-rig';
 import { CityNight } from './city-night';
+import { CityTraffic } from './city-traffic';
 import { CarDamage } from './car-damage';
 import { FinishConfetti, SkidMarks, StartLight } from './race-effects';
 import { Sky } from 'three/addons/objects/Sky.js';
@@ -63,6 +64,9 @@ export class RaceWorld {
   /** Headlamp beams: two spot lights riding on the car, created on first use. */
   private beams?: THREE.Group;
   private lightsOn = false;
+  /** AI traffic and working signals, for venues that have them (the city). */
+  traffic?: CityTraffic;
+  private trafficToken = 0;
   private wideView=true;
   private weatherMaterials=new Map<THREE.MeshStandardMaterial,{roughness:number;color:THREE.Color}>();
   pointerLockEnabled = true;
@@ -353,7 +357,7 @@ export class RaceWorld {
       this.beams=new THREE.Group();this.beams.name='apex-headlamps';
       for(const side of [-1,1]){
         // Gentle falloff (decay 1.3) keeps the road near the bumper from burning out while the beam still reaches ~100 m.
-        const beam=new THREE.SpotLight(0xf2f6ff,850,150,.6,1,1.3);beam.position.set(side*.62,.7,1.9);beam.castShadow=false;
+        const beam=new THREE.SpotLight(0xf2f6ff,480,150,.6,1,1.3);beam.position.set(side*.62,.7,1.9);beam.castShadow=false;
         beam.target.position.set(side*2.5,-1.6,40);this.beams.add(beam,beam.target);
       }
     }
@@ -878,7 +882,19 @@ export class RaceWorld {
   }
   /** Per-frame Training Grounds animation: cones and the start-box pulse. */
   updateLot(sim: Simulation | undefined, dt: number, showStart: boolean) { this.lotScene?.update(sim, dt, showStart); }
+  /** Starts city traffic once the venue is loaded; a later track change cancels a start still in flight. */
+  async startTraffic(player:THREE.Vector3) {
+    const token=++this.trafficToken;this.stopTraffic();
+    await this.venueReady;if(token!==this.trafficToken||!this.currentTrack?.night)return;
+    try{
+      const traffic=await CityTraffic.create(this.venueGroup,this.loader,player);
+      if(token!==this.trafficToken){traffic.dispose();return;}
+      this.traffic=traffic;this.scene.add(traffic.group);
+    }catch(error){console.warn('City traffic unavailable.',error);}
+  }
+  stopTraffic(sim?:Simulation) {this.traffic?.dispose(sim);this.traffic=undefined;}
   setTrack(track: Track) {
+    ++this.trafficToken;this.stopTraffic();
     void this.racingLine.setTrack(track.lot || track.kind === 'lot' ? undefined : track);
     if (track.lot) { this.setLot(track); return; }
     this.lotScene = undefined;

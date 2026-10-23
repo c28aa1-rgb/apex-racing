@@ -242,6 +242,10 @@ const roads = mapData.roads.map((road: { name: string; district: string; width: 
   name: road.name, district: road.district, width: road.width, closed: road.closed,
   points: road.points.filter((_, index, all) => index % 4 === 0 || index === all.length - 1).map(([x, , z]) => [Math.round(x), Math.round(z)]),
 }));
-await writeFile(join(out, 'racing-city.map.json'), JSON.stringify({ spawn: mapData.spawnPoints[0], roads, buildings: footprints }));
+// Full-resolution centerlines with height, for traffic: cars follow the road's own elevation (the expressway).
+const paths = mapData.roads.map((road: { name: string; district: string; width: number; closed: boolean; points: number[][] }) => ({
+  name: road.name, district: road.district, width: road.width, closed: road.closed, points: road.points.map(point => point.map(value => Math.round(value * 100) / 100)),
+}));
+await writeFile(join(out, 'racing-city.map.json'), JSON.stringify({ spawn: mapData.spawnPoints[0], roads, buildings: footprints, paths }));
 console.log(`map: ${roads.length} roads, ${footprints.length} building footprints`);
 console.log('wrote racing-city.runtime.glb, collision/racing-city.bin, racing-city.map.json');
