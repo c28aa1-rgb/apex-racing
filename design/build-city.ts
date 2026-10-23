@@ -92,6 +92,9 @@ const triangles = (node: Node) => node.getMesh()?.listPrimitives().reduce((sum, 
 const hasBuildings = root.listNodes().some(node => /build|tower|skyscraper/i.test(node.getName()));
 if (!hasBuildings) console.warn('warning: the export contains no building meshes; building collision blockers are left out so downtown has no invisible walls.');
 
+// Taken out of the city: the start gantry and its sign over the test straight, right in front of the spawn.
+const REMOVED = /^RC_Training_Gantry|^RC_TrainingStart$/;
+for (const node of root.listNodes()) if (REMOVED.test(node.getName())) { node.traverse(child => child !== node && child.dispose()); node.dispose(); }
 await doc.transform(weld());
 
 // Buildings carry up to 17 materials each, one draw call apiece per map cell. Untextured opaque ones (trim, metal,
@@ -287,6 +290,7 @@ collision.getRoot().getDefaultScene()!.traverse(node => {
   const mesh = node.getMesh(); if (!mesh) return;
   const name = node.getName();
   if (!hasBuildings && /BuildingCollision|RealCity_Collision/.test(name)) return;
+  if (REMOVED.test(name)) return;
   // 1 = grass grip off the road: the rolling landscape around the city.
   const type = /Landscape/.test(name) ? 1 : 0;
   const matrix = new Matrix4().fromArray(node.getWorldMatrix());
@@ -309,6 +313,43 @@ collision.getRoot().getDefaultScene()!.traverse(node => {
     for (let i = 0; i < ids.length; i += 3) types.push(type);
   }
 });
+// The rolling landscape (grass) runs flush under the paved pads and roads in places. A wheel ray then hits grass and
+// pavement at random, so a car on the big training pad was "off road" most of the time and held to ~50 mph. Landscape
+// triangles lying under a paved floor (within 0.6 m of it) are counted as pavement.
+{
+  const CELL = 8, grid = new Map<string, number[]>(), paved: number[] = [];
+  const corner = (t: number, k: number) => indices[t * 3 + k] * 3;
+  for (let t = 0; t < types.length; t++) {
+    if (types[t] !== 0) continue;
+    const [a, b, c] = [0, 1, 2].map(k => corner(t, k));
+    const ux = vertices[b] - vertices[a], uy = vertices[b + 1] - vertices[a + 1], uz = vertices[b + 2] - vertices[a + 2];
+    const wx = vertices[c] - vertices[a], wy = vertices[c + 1] - vertices[a + 1], wz = vertices[c + 2] - vertices[a + 2];
+    const nx = uy * wz - uz * wy, ny = uz * wx - ux * wz, nz = ux * wy - uy * wx;
+    if (ny < .85 * Math.hypot(nx, ny, nz)) continue;
+    paved.push(t);
+    const xs = [vertices[a], vertices[b], vertices[c]], zs = [vertices[a + 2], vertices[b + 2], vertices[c + 2]];
+    for (let x = Math.floor(Math.min(...xs) / CELL); x <= Math.floor(Math.max(...xs) / CELL); x++)
+      for (let z = Math.floor(Math.min(...zs) / CELL); z <= Math.floor(Math.max(...zs) / CELL); z++) (grid.get(`${x},${z}`) ?? grid.set(`${x},${z}`, []).get(`${x},${z}`)!).push(t);
+  }
+  // Height of a paved triangle at (x, z), if (x, z) lies over it.
+  const heightOn = (t: number, x: number, z: number) => {
+    const [a, b, c] = [0, 1, 2].map(k => corner(t, k));
+    const x1 = vertices[a], z1 = vertices[a + 2], x2 = vertices[b], z2 = vertices[b + 2], x3 = vertices[c], z3 = vertices[c + 2];
+    const d = (z2 - z3) * (x1 - x3) + (x3 - x2) * (z1 - z3); if (Math.abs(d) < 1e-9) return undefined;
+    const l1 = ((z2 - z3) * (x - x3) + (x3 - x2) * (z - z3)) / d, l2 = ((z3 - z1) * (x - x3) + (x1 - x3) * (z - z3)) / d, l3 = 1 - l1 - l2;
+    return l1 < -1e-3 || l2 < -1e-3 || l3 < -1e-3 ? undefined : l1 * vertices[a + 1] + l2 * vertices[b + 1] + l3 * vertices[c + 1];
+  };
+  let repaved = 0;
+  for (let t = 0; t < types.length; t++) {
+    if (types[t] !== 1) continue;
+    const [a, b, c] = [0, 1, 2].map(k => corner(t, k));
+    const samples = [[vertices[a], vertices[a + 1], vertices[a + 2]], [vertices[b], vertices[b + 1], vertices[b + 2]], [vertices[c], vertices[c + 1], vertices[c + 2]],
+      [(vertices[a] + vertices[b] + vertices[c]) / 3, (vertices[a + 1] + vertices[b + 1] + vertices[c + 1]) / 3, (vertices[a + 2] + vertices[b + 2] + vertices[c + 2]) / 3]];
+    const under = samples.some(([x, y, z]) => (grid.get(`${Math.floor(x / CELL)},${Math.floor(z / CELL)}`) ?? []).some(p => { const h = heightOn(p, x, z); return h !== undefined && Math.abs(h - y) < .6; }));
+    if (under) { types[t] = 0; repaved++; }
+  }
+  console.log(`terrain: ${repaved} grass triangles under paving counted as pavement (${paved.length} paved floor triangles)`);
+}
 const flanges = sealCracks(vertices, indices, types, { reach: 1.25, drop: .02, tolerance: .1 });
 const walls = chassisWalls(vertices, indices, .15);
 const v = new Float32Array(vertices), i = new Uint32Array(indices), t = new Uint8Array(types);
