@@ -9,6 +9,7 @@ import { fittedGates, GATE_STEP, type FittedGate } from '../shared/gates';
 import { buildRoadMesh, interpolateRoad, type RoadPoint } from '../shared/road';
 import { carById, DEFAULT_CAR, isFormula, lookOf, withLivery, type CarDefinition, type CarId, type LookId } from '../shared/cars';
 import { CarRig, prepareCarModel } from './car-rig';
+import { CityNight } from './city-night';
 import { CarDamage } from './car-damage';
 import { FinishConfetti, SkidMarks, StartLight } from './race-effects';
 import { Sky } from 'three/addons/objects/Sky.js';
@@ -57,6 +58,11 @@ export class RaceWorld {
   startLight!: StartLight;
   finishConfetti = new FinishConfetti();
   weather = new Weather();
+  /** Street lamps and lit windows for venues driven at night (Track.night). */
+  private cityNight = new CityNight();
+  /** Headlamp beams: two spot lights riding on the car, created on first use. */
+  private beams?: THREE.Group;
+  private lightsOn = false;
   private wideView=true;
   private weatherMaterials=new Map<THREE.MeshStandardMaterial,{roughness:number;color:THREE.Color}>();
   pointerLockEnabled = true;
@@ -319,14 +325,45 @@ export class RaceWorld {
     // Warm the exact shader variant for the selected renderer settings.
     void this.compileInBackground(this.finishConfetti.mesh,this.scene);
   }
+  /**
+   * Night over the current weather: a dark blue sky and fog, a faint moon in place of the sun, and the day sky's
+   * reflections dimmed. Lamp glows and lit windows come from CityNight.
+   */
+  private applyNight() {
+    const sky=0x070d1a;
+    (this.scene.background as THREE.Color).setHex(sky);
+    (this.scene.fog as THREE.Fog).color.setHex(sky);
+    this.scene.getObjectByName('apex-sky')!.visible=false;
+    this.shadow.color.setHex(0x8ea6ff);this.shadow.intensity=.22;
+    this.scene.children.forEach(object=>{if(object instanceof THREE.HemisphereLight)object.intensity=.14;});
+    this.scene.environmentIntensity=.05;this.renderer.toneMappingExposure=1.15;
+    this.cityNight.apply(this.venueGroup);if(this.cityNight.group.parent!==this.scene)this.scene.add(this.cityNight.group);
+  }
   /** Fog range for a weather preset; clear weather follows the player's draw distance. */
   private fogRange(preset:WeatherPreset){
     const base=WEATHER[preset],distance=this.options?.drawDistance??GRAPHICS_PRESETS.balanced.drawDistance;
-    return preset==='clear'?{near:distance*.31,far:distance}:{near:base.near,far:base.far};
+    const range=preset==='clear'?{near:distance*.31,far:distance}:{near:base.near,far:base.far};
+    // Night haze closes in sooner: the dark fog hides the city's far edge and the lamp-less hills.
+    return this.currentTrack?.night?{near:Math.min(range.near,90),far:Math.min(range.far,1300)}:range;
   }
+  /** Headlamps: the model's lamp glass glows, the tail lamps brighten, and two spot lights light the road ahead. */
+  setHeadlights(on:boolean) {
+    this.lightsOn=on;this.carRig?.setHeadlights(on);
+    if(on&&!this.beams){
+      this.beams=new THREE.Group();this.beams.name='apex-headlamps';
+      for(const side of [-1,1]){
+        // Gentle falloff (decay 1.3) keeps the road near the bumper from burning out while the beam still reaches ~100 m.
+        const beam=new THREE.SpotLight(0xf2f6ff,850,150,.6,1,1.3);beam.position.set(side*.62,.7,1.9);beam.castShadow=false;
+        beam.target.position.set(side*2.5,-1.6,40);this.beams.add(beam,beam.target);
+      }
+    }
+    if(this.beams){if(on&&this.beams.parent!==this.car)this.car.add(this.beams);this.beams.visible=on;}
+  }
+  get headlightsOn(){return this.lightsOn;}
   setWeather(preset:WeatherPreset) {
     this.weather.preset=preset;
     const settings=WEATHER[preset];
+    this.shadow.color.setHex(0xfff2dc);this.scene.environmentIntensity=.45;this.renderer.toneMappingExposure=1.05;
     (this.scene.background as THREE.Color).setHex(settings.color);
     const fog=this.scene.fog as THREE.Fog;const range=this.fogRange(preset);fog.color.setHex(settings.color);fog.near=range.near;fog.far=range.far;
     this.scene.getObjectByName('apex-sky')!.visible=preset==='clear';
@@ -343,6 +380,7 @@ export class RaceWorld {
       material.roughness=preset==='rain'?Math.min(original.roughness,.38):original.roughness;
       material.color.copy(original.color);if(preset==='rain')material.color.multiplyScalar(.7);
     }
+    if(this.currentTrack?.night)this.applyNight();else if(this.cityNight.group.parent){this.cityNight.clear();this.scene.remove(this.cityNight.group);}
   }
   updateWeather(dt:number){this.weather.update(dt,this.camera,this.options?.weatherDensity??.6,this.reducedMotion,this.garageGroup.visible||this.wideView);}
   adaptResolution(fps:number) {
@@ -1008,7 +1046,7 @@ export class RaceWorld {
       const legacy=model.userData.legacyCockpitEye;this.legacyCockpitEye=legacy?new THREE.Vector3(legacy.x,legacy.y,legacy.z):undefined;
       model.traverse(object=>{if(object instanceof THREE.Mesh){const materials=Array.isArray(object.material)?object.material:[object.material];object.castShadow=materials.some(m=>!m.transparent);object.receiveShadow=true;}});
       this.hoodMount=measureHood(model,definition);
-      this.car.clear();this.car.add(model);this.carRig=new CarRig(model,definition);this.wheelGroups=this.carRig.wheels;this.carDamage.attach(model);
+      this.car.clear();this.car.add(model);this.carRig=new CarRig(model,definition);this.wheelGroups=this.carRig.wheels;this.carDamage.attach(model);this.setHeadlights(this.lightsOn);
       // Seat each model wheel where its physical tyre rests (hard point - 0.58 m rest length - radius): a few
       // models place a wheel a few centimetres off, which would otherwise float or sink that tyre.
       const physicalRadius=carById(carId).dimensions.wheelRadiusM;

@@ -176,8 +176,31 @@ await doc.transform(
 await writeFile(join(out, 'racing-city.runtime.glb'), await io.writeBinary(doc));
 
 // ---------------------------------------------------------------- collision
+/** Ground outlines of the boxes in a collision primitive: each connected part's convex hull in x/z. */
+function outlines(primitive: Primitive, matrix: Matrix4) {
+  const position = primitive.getAttribute('POSITION')!, ids = primitive.getIndices()!.getArray()!, parent = Int32Array.from({ length: position.getCount() }, (_, i) => i);
+  const find = (i: number): number => { while (parent[i] !== i) i = parent[i] = parent[parent[i]]; return i; };
+  const byPosition = new Map<string, number>(), element: number[] = [], world: number[][] = [];
+  for (let i = 0; i < position.getCount(); i++) {
+    const p = new Vector3().fromArray(position.getElement(i, element)).applyMatrix4(matrix); world.push([p.x, p.z]);
+    const key = `${p.x.toFixed(2)},${p.y.toFixed(2)},${p.z.toFixed(2)}`, other = byPosition.get(key);
+    if (other !== undefined) parent[find(i)] = find(other); else byPosition.set(key, i);
+  }
+  for (let i = 0; i < ids.length; i += 3) { const root = find(ids[i]); parent[find(ids[i + 1])] = root; parent[find(ids[i + 2])] = root; }
+  const parts = new Map<number, number[][]>();
+  for (let i = 0; i < world.length; i++) (parts.get(find(i)) ?? parts.set(find(i), []).get(find(i))!).push(world[i]);
+  return [...parts.values()].map(points => {
+    // Monotone-chain convex hull.
+    const sorted = [...new Map(points.map(p => [`${p[0].toFixed(1)},${p[1].toFixed(1)}`, p])).values()].sort((u, w) => u[0] - w[0] || u[1] - w[1]);
+    const cross = (o: number[], u: number[], w: number[]) => (u[0] - o[0]) * (w[1] - o[1]) - (u[1] - o[1]) * (w[0] - o[0]);
+    const half = (list: number[][]) => { const out: number[][] = []; for (const p of list) { while (out.length >= 2 && cross(out[out.length - 2], out[out.length - 1], p) <= 0) out.pop(); out.push(p); } out.pop(); return out; };
+    return [...half(sorted), ...half([...sorted].reverse())].map(([x, z]) => [Math.round(x), Math.round(z)]);
+  }).filter(hull => hull.length >= 3);
+}
 const collision = await io.read(join(source, 'RacingCity-collision.glb'));
 const vertices: number[] = [], indices: number[] = [], types: number[] = [];
+/** Building footprints for the city map: the ground outline of each collision box, as [x, z] corners. */
+const footprints: number[][][] = [];
 const a = new Vector3(), b = new Vector3(), c = new Vector3();
 collision.getRoot().getDefaultScene()!.traverse(node => {
   const mesh = node.getMesh(); if (!mesh) return;
@@ -186,6 +209,7 @@ collision.getRoot().getDefaultScene()!.traverse(node => {
   // 1 = grass grip off the road: the rolling landscape around the city.
   const type = /Landscape/.test(name) ? 1 : 0;
   const matrix = new Matrix4().fromArray(node.getWorldMatrix());
+  if (/BuildingCollision|RealCity_Collision/.test(name)) for (const primitive of mesh.listPrimitives()) footprints.push(...outlines(primitive, matrix));
   for (const primitive of mesh.listPrimitives()) {
     const position = primitive.getAttribute('POSITION')!, local: number[] = [], element: number[] = [], v = new Vector3();
     for (let i = 0; i < position.getCount(); i++) { v.fromArray(position.getElement(i, element)).applyMatrix4(matrix); local.push(v.x, v.y, v.z); }
@@ -214,9 +238,10 @@ console.log(`collision: ${t.length} triangles (+${flanges} crack flanges), ${wal
 
 // ---------------------------------------------------------------- minimap roads
 const mapData = JSON.parse(await readFile(join(source, 'map-data.json'), 'utf8'));
-const roads = mapData.roads.map((road: { name: string; width: number; closed: boolean; points: number[][] }) => ({
-  name: road.name, width: road.width, closed: road.closed,
+const roads = mapData.roads.map((road: { name: string; district: string; width: number; closed: boolean; points: number[][] }) => ({
+  name: road.name, district: road.district, width: road.width, closed: road.closed,
   points: road.points.filter((_, index, all) => index % 4 === 0 || index === all.length - 1).map(([x, , z]) => [Math.round(x), Math.round(z)]),
 }));
-await writeFile(join(out, 'racing-city.map.json'), JSON.stringify({ spawn: mapData.spawnPoints[0], roads }));
+await writeFile(join(out, 'racing-city.map.json'), JSON.stringify({ spawn: mapData.spawnPoints[0], roads, buildings: footprints }));
+console.log(`map: ${roads.length} roads, ${footprints.length} building footprints`);
 console.log('wrote racing-city.runtime.glb, collision/racing-city.bin, racing-city.map.json');

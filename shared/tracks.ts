@@ -22,6 +22,8 @@ export type Track = {
   lot?: LotLayout;
   /** Kept out of menus, party and the public track list; still accepted by the leaderboard. */
   hidden?: boolean;
+  /** Driven at night: dark sky, lit streets, headlights on from the start. */
+  night?: boolean;
 };
 const round = (n: number) => Math.round(n * 1e6) / 1e6 || 0;
 export const v = (x: number, y: number, z: number): Vec3 => ({ x, y, z });
@@ -125,7 +127,7 @@ export const CONE_TRACK: Track = {
 export const CITY: Track = {
   id: 'racing-city', version: 1, name: 'Racing City', subtitle: 'Open city', difficulty: 'Free roam',
   description: 'Downtown loops, an industrial yard, a coastal expressway and a ridge road, all open. No clock, no limits.',
-  accent: '#7fd1ff', medals: [0, 0, 0], kind: 'lot', hidden: true,
+  accent: '#7fd1ff', medals: [0, 0, 0], kind: 'lot', hidden: true, night: true,
   model: 'racing-city.glb', runtimeModel: 'racing-city.runtime.glb', collision: 'collision/racing-city.bin',
   segments: lotSegments('racing-city', [[-700, -285], [-700, 300]], 20), checkpoints: [],
   start: placed(-700, -285, 0, 20), finish: placed(-700, 300, 0, 20),

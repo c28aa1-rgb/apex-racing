@@ -1,7 +1,7 @@
-export const DEFAULT_BINDINGS={throttle:['KeyW','ArrowUp'],brake:['KeyS','ArrowDown'],left:['KeyA','ArrowLeft'],right:['KeyD','ArrowRight'],drift:['ShiftLeft'],shiftUp:['KeyE'],shiftDown:['KeyQ'],restart:['KeyR'],recover:['KeyF'],flip:['KeyX'],camera:['KeyC'],lookBack:['KeyB'],ghost:['KeyG'],mute:['KeyM'],pause:['Escape']};
+export const DEFAULT_BINDINGS={throttle:['KeyW','ArrowUp'],brake:['KeyS','ArrowDown'],left:['KeyA','ArrowLeft'],right:['KeyD','ArrowRight'],drift:['ShiftLeft'],shiftUp:['KeyE'],shiftDown:['KeyQ'],restart:['KeyR'],recover:['KeyF'],flip:['KeyX'],camera:['KeyC'],lookBack:['KeyB'],ghost:['KeyG'],lights:['KeyL'],map:['KeyM'],mute:['KeyK'],pause:['Escape']};
 export type Action=keyof typeof DEFAULT_BINDINGS;
 export type Bindings=Record<Action,string[]>;
-export const ACTION_LABELS:Record<Action,string>={throttle:'Accelerate',brake:'Brake / reverse',left:'Steer left',right:'Steer right',drift:'Drift',shiftUp:'Shift up',shiftDown:'Shift down',restart:'Restart run',recover:'Recover at checkpoint',flip:'Flip upright',camera:'Switch camera',lookBack:'Look behind (hold)',ghost:'Toggle ghost',mute:'Mute sound',pause:'Pause / resume'};
+export const ACTION_LABELS:Record<Action,string>={throttle:'Accelerate',brake:'Brake / reverse',left:'Steer left',right:'Steer right',drift:'Drift',shiftUp:'Shift up',shiftDown:'Shift down',restart:'Restart run',recover:'Recover at checkpoint',flip:'Flip upright',camera:'Switch camera',lookBack:'Look behind (hold)',ghost:'Toggle ghost',lights:'Headlights on / off',map:'City map',mute:'Mute sound',pause:'Pause / resume'};
 export const keyLabel=(code:string)=>({ArrowUp:'↑',ArrowDown:'↓',ArrowLeft:'←',ArrowRight:'→',ShiftLeft:'Left Shift',ShiftRight:'Right Shift',Escape:'Esc',Space:'Space',BracketLeft:'[',BracketRight:']',Comma:',',Period:'.',Slash:'/',Semicolon:';',Quote:"'",Minus:'−',Equal:'=',Backslash:'\\'}[code]??code.replace(/^Key|^Digit/,''));
 export const validKey=(code:string)=>/^(Key[A-Z]|Digit[0-9]|Arrow(Up|Down|Left|Right)|Shift(Left|Right)|Space|Bracket(Left|Right)|Comma|Period|Slash|Semicolon|Quote|Minus|Equal|Backslash)$/.test(code);
 /**
@@ -25,7 +25,7 @@ export function bindingConflicts(bindings:Bindings):Map<string,Action[]>{
  * Defaults that have since changed. A saved binding that still equals its old default was never chosen by the
  * player (every settings save stores the whole key map), so it follows the new default instead.
  */
-const FORMER_DEFAULTS:Partial<Record<Action,string[][]>>={camera:[['KeyV']],recover:[['KeyC']],flip:[['KeyF']]};
+const FORMER_DEFAULTS:Partial<Record<Action,string[][]>>={camera:[['KeyV']],recover:[['KeyC']],flip:[['KeyF']],mute:[['KeyM']]};
 export function loadBindings(value:unknown):Bindings{
   const result=structuredClone(DEFAULT_BINDINGS);
   if(!value||typeof value!=='object')return result;

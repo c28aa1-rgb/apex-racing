@@ -232,6 +232,8 @@ export class CarRig {
   steeringWheel?:THREE.Object3D;
   private steeringAxis=new THREE.Vector3(0,0,1);
   private lamps=new Set<THREE.MeshStandardMaterial>();
+  /** Tail-lamp glow with the brakes off: a faint sheen by day, lit with the headlamps. */
+  private tailGlow=.12;
   private headlights=new Map<THREE.MeshStandardMaterial,{color:THREE.Color;intensity:number}>();
   constructor(public root:THREE.Object3D,definition:CarDefinition){
     this.instruments=new CockpitInstruments(root,definition);
@@ -267,8 +269,8 @@ export class CarRig {
     }
     this.steeringWheel?.quaternion.setFromAxisAngle(this.steeringAxis,-steering*(this.steeringWheel.userData.steeringRatio??12));
     this.instruments.pose();
-    this.lamps.forEach(material=>{material.emissiveIntensity=.12+THREE.MathUtils.clamp(brake*4,0,1)*3.2;});
+    this.lamps.forEach(material=>{material.emissiveIntensity=this.tailGlow+THREE.MathUtils.clamp(brake*4,0,1)*3.2;});
   }
-  setHeadlights(enabled:boolean){this.headlights.forEach((original,material)=>{material.emissive.copy(enabled?new THREE.Color(0xdceeff):original.color);material.emissiveIntensity=enabled?2:original.intensity;});}
+  setHeadlights(enabled:boolean){this.tailGlow=enabled?.9:.12;this.headlights.forEach((original,material)=>{material.emissive.copy(enabled?new THREE.Color(0xdceeff):original.color);material.emissiveIntensity=enabled?2:original.intensity;});}
   dispose(){this.instruments.dispose();this.lamps.forEach(material=>material.dispose());this.headlights.forEach((_,material)=>material.dispose());}
 }

@@ -33,7 +33,9 @@ export type GameState={mode:Mode;track:Track;trackReady:boolean;trackLoading?:bo
   /** Party countdown with the throttle held (a jump start in the making); and the length of a jump-start penalty being served, in ms. */
   jumpWarning?:boolean;penalty?:number;
   /** The last finished Cone Attack run, shown while the driver keeps rolling in free roam. `at` makes repeat results distinct. */
-  coneResult?:{run:Run;timeMs:number;medal:string;newBest:boolean;previousBest?:number;penalties:number;offCourse:number;at:number}};
+  coneResult?:{run:Run;timeMs:number;medal:string;newBest:boolean;previousBest?:number;penalties:number;offCourse:number;at:number};
+  /** Whole-city map overlay (M); driving is frozen while it is open. */
+  mapOpen?:boolean};
 export class Game {
   world:RaceWorld;sim:Simulation;state:GameState;private coarse!:GameState;
   settings=loadSettings();career:Career=loadCareer();
@@ -180,6 +182,8 @@ export class Game {
     if(event.code==='Enter'&&(event.target as HTMLElement).closest('button')&&!(event.target as HTMLElement).closest('.topbar nav button,.track-card'))return;
     event.preventDefault();this.keys.add(event.code);if(event.repeat)return;
     if(has('mute'))this.toggleMute();
+    if(has('lights'))this.toggleLights();
+    if(has('map'))this.toggleMap();
     if(has('camera'))this.cameraKeyDown();
     if(has('ghost'))this.toggleGhost();
     if(has('recover'))this.recover();
@@ -187,7 +191,8 @@ export class Game {
     if(has('restart')&&this.state.mode!=='menu')this.restart();
     if(has('shiftUp')&&this.state.mode==='racing')this.pendingShifts=Math.min(8,Math.max(0,this.pendingShifts)+1);
     if(has('shiftDown')&&this.state.mode==='racing')this.pendingShifts=Math.max(-8,Math.min(0,this.pendingShifts)-1);
-    if(event.code==='Escape'||has('pause'))this.state.mode==='paused'?this.resume():this.pause();
+    if(event.code==='Escape'&&this.state.mapOpen)this.toggleMap();
+    else if(event.code==='Escape'||has('pause'))this.state.mode==='paused'?this.resume():this.pause();
     if(event.code==='Enter'){if(this.state.mode==='menu'||this.state.mode==='finished')this.start();else if(this.state.mode==='paused')this.resume();else this.requestConeRun();}
   };
   private input() {
@@ -333,8 +338,8 @@ export class Game {
     if(this.partyView||this.partyRace)return;
     const token=++this.selectionToken;this.keys.clear();this.garageView=false;this.runOrigin=undefined;
     this.ghostSim?.dispose();this.ghostSim=undefined;this.ghostRun=undefined;this.world.ghostFrame(undefined);
-    this.world.setTrack(track);
-    this.emit({track,trackReady:false,run:undefined,newBest:false,personalBest:undefined,penalties:0,atStart:false,coneResult:undefined,notice:''});
+    this.world.setTrack(track);this.world.setHeadlights(!!track.night);
+    this.emit({track,mapOpen:false,trackReady:false,run:undefined,newBest:false,personalBest:undefined,penalties:0,atStart:false,coneResult:undefined,notice:''});
     await initPhysics(track);if(token!==this.selectionToken)return;
     this.emit({trackReady:true});this.start(false);
   }
@@ -358,8 +363,8 @@ export class Game {
   menu() {this.closeCameraWheel();if(this.partyRace)return;this.chosenGhost=undefined;
     if(this.carBeforeReplay){const own=this.carBeforeReplay;this.carBeforeReplay=undefined;void this.selectCar(own);}
     // Leaving free roam goes back to the Garage, where it is opened from.
-    if(this.state.track.lot||this.freeRoam){this.cockpitPreview=false;this.world.firstPerson=false;this.world.endFinish();this.world.setMouseLook(false);this.onLeaveTraining?.();void this.select(this.lastCircuit).then(()=>this.setGarage(true));return;}this.keys.clear();this.finishRevealAt=0;this.world.endFinish();this.cockpitPreview=false;this.world.firstPerson=false;this.world.setMouseLook(false);this.emit({mode:'menu',notice:''});this.world.ghostFrame(undefined);}
-  pause() {this.closeCameraWheel();this.keys.clear();this.world.applyPendingGraphics();if(this.partyRace)return;if(['racing','countdown','replay'].includes(this.state.mode)){this.pausedMode=this.state.mode;this.pausedCountdown=Math.max(0,this.countdownUntil-performance.now());this.emit({mode:'paused'});this.world.setMouseLook(false);}}
+    if(this.state.track.lot||this.freeRoam){this.world.setHeadlights(false);this.emit({mapOpen:false});this.cockpitPreview=false;this.world.firstPerson=false;this.world.endFinish();this.world.setMouseLook(false);this.onLeaveTraining?.();void this.select(this.lastCircuit).then(()=>this.setGarage(true));return;}this.keys.clear();this.finishRevealAt=0;this.world.endFinish();this.cockpitPreview=false;this.world.firstPerson=false;this.world.setMouseLook(false);this.emit({mode:'menu',notice:''});this.world.ghostFrame(undefined);}
+  pause() {this.closeCameraWheel();if(this.state.mapOpen)this.emit({mapOpen:false});this.keys.clear();this.world.applyPendingGraphics();if(this.partyRace)return;if(['racing','countdown','replay'].includes(this.state.mode)){this.pausedMode=this.state.mode;this.pausedCountdown=Math.max(0,this.countdownUntil-performance.now());this.emit({mode:'paused'});this.world.setMouseLook(false);}}
   resume() {this.keys.clear();this.accumulator=0;if(!this.freeRoam&&this.sim.ticks>=MAX_TICKS){this.restart();return;}if(this.pausedMode==='countdown')this.countdownUntil=performance.now()+this.pausedCountdown;this.emit({mode:this.pausedMode});this.world.setMouseLook(true);this.world.lockMouse();this.prepareAudio();}
   recover() {if(this.state.mode==='racing')this.queuedRespawn=true;}
   flip() {
@@ -375,6 +380,16 @@ export class Game {
     else if(this.ghostRun&&this.state.mode!=='menu'&&this.state.mode!=='replay'){
       this.ghostSim=new Simulation(this.state.track,this.ghostRun.carId,this.ghostRun.origin);void this.world.setGhostCar(this.ghostRun.carId);for(let i=0;i<this.sim.ticks;i++)stepReplay(this.ghostSim,this.ghostRun);
     }
+  }
+  toggleLights() {
+    if(this.state.mode==='menu')return;
+    const on=!this.world.headlightsOn;this.world.setHeadlights(on);
+    this.emit({notice:on?'Headlights on':'Headlights off'});this.noticeUntil=performance.now()+1100;
+  }
+  /** Only venues with a road map (the city) have one to open. */
+  toggleMap() {
+    if(!this.state.mapOpen&&(!this.state.track.night||this.state.mode!=='racing'))return;
+    this.keys.clear();this.accumulator=0;this.emit({mapOpen:!this.state.mapOpen});
   }
   toggleMute() {const muted=!this.state.muted;write('muted',muted);this.emit({muted});if(!muted)this.prepareAudio();}
   setDriftStrength(value:number) {this.driftStrength=Math.max(0,Math.min(2,value));this.sim.driftStrength=this.driftStrength;write('driftStrength',this.driftStrength);this.emit({driftStrength:this.driftStrength});}
@@ -646,7 +661,7 @@ export class Game {
     if(this.state.mode==='celebrating'&&now>=this.finishRevealAt)this.emit({mode:'finished'});
     if(this.state.mode==='racing'||this.state.mode==='replay') {
       if(this.awaitingPedal&&(this.held('throttle')||this.held('brake'))){this.awaitingPedal=false;this.emit({notice:''});}
-      if(!this.awaitingPedal||this.state.mode==='replay')this.accumulator+=elapsed;
+      if((!this.awaitingPedal||this.state.mode==='replay')&&!this.state.mapOpen)this.accumulator+=elapsed;
       while(this.accumulator>=DT){
         this.previousFrame=this.sim.frame();const input=this.state.mode==='replay'?(this.replayInput?.inputs[this.sim.ticks]??0):this.input();
         if(!this.freeRoam)this.inputs.push(input);
