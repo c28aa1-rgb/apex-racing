@@ -4,7 +4,7 @@ Play live on [GitHub Pages](https://c28aa1-rgb.github.io/apex-racing/). Multipla
 
 The live site's casual leaderboard and saved ghosts use Cloudflare D1. Public times are marked unverified; the Node backend retains physics replay verification. Career progress and personal bests stay on your device.
 
-A playable browser racer with seven imported real-world circuits, eleven selectable cars (the formula car in four liveries), a Rapier physics vehicle, instant restarts, drifting, medals, personal and online ghosts, and a replay-verified leaderboard. See `VALIDATION.md` for current checks and known route-test limitations.
+A playable browser racer with seven imported real-world circuits, eleven selectable cars (the formula car in four liveries), a Rapier physics vehicle, instant restarts, drifting, personal and online ghosts, and a replay-verified leaderboard. See `VALIDATION.md` for current checks and known route-test limitations.
 
 ## Play locally
 
@@ -41,6 +41,8 @@ Pass the timing checkpoints in order and complete the lap. Each checkpoint is pa
 
 ### Weather and slipstream
 
+The circuit minimap marks your car with a coral heading arrow, your ghost with a cyan diamond, and the actual finish gate with a checkered flag; there is no separate start marker. Below it, the selected ghost's name and total time stay visible. Each checkpoint updates a signed cumulative gap against that same checkpoint in the ghost replay: negative means ahead, positive means behind. Ghost splits are replayed ahead in short yielding chunks, cached for restarts, and discarded when the selected run changes. Toggle G to hide or restore the ghost and comparison. Checks: `tests/ghost-hud.test.ts`, `tests/ghost-hud-browser.mjs`.
+
 Weather changes the physics as well as the look. Fog leaves the road slightly damp, and rain and snow are slippery. Grip, cornering and braking all fall with the weather: stopping from 100 km/h takes about 21 m dry, 23 m in fog, 27 m in rain and 34 m in snow. The weather is fixed when a run starts, so changing it in Settings takes effect on the next start or restart. Each run records its weather, so replays, ghosts and the server's replay check reproduce it exactly, and clear-weather physics are unchanged. Runs in every weather count on the same leaderboard, ranked by time. In party races the host's weather applies to everyone.
 
 In party races, running close behind another car puts you in its slipstream. Up to 35% of your aero drag disappears when you are a few car lengths back, fading to nothing about 45 m behind or a car's width to the side. The speedometer shows "Slipstream" while it is working. Solo runs have no other car to draft, so time trials are unaffected.
@@ -55,7 +57,11 @@ The line's path is baked offline from each circuit's drive trace and collision m
 
 Crashes are cosmetic only: wall and car hits dent the bodywork on the side that was struck, scuff the paint to bare metal, scratch the flank you scrape along a wall, throw sparks, and shake loose pieces of bodywork. A badly beaten car smokes from the bonnet, getting darker as damage builds. Damage resets on restart. It never touches the physics, so handling, ghosts, replays and leaderboard times are unaffected. Turn it off under Settings → Car damage; light graphics presets show half the smoke and debris. Implementation: `src/car-damage.ts`.
 
+Time-trial results also have a **Standings** button: it opens only that circuit's top 50 with your just-finished time above the table. **Back to results** closes it without restarting or leaving the run. Empty and offline leaderboards do not affect the saved finish.
+
 ## Parties
+
+After finishing, the car brakes toward a 40 mph cooldown pace and follows the baked driving line, slowing further for corners and rejoining. Scored times and replay inputs remain frozen. Open **Standings** to see only the current race, including total times, gaps, best laps and drivers still racing. Close standings to keep watching; reopen them after the final order without leaving the race. Medal targets and awards are retired; saved personal bests, ghosts and legacy career data remain intact.
 
 Two backends are available: the existing Node HTTP API (default), and Cloudflare Workers + one Durable Object per room with native WebSockets. See [multiplayer setup, testing, and deployment](docs/multiplayer.md) for exact commands and configuration.
 

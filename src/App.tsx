@@ -2,9 +2,9 @@ import { MULTIPLAYER_BACKEND } from './multiplayer-config';
 import { assetUrl } from '../shared/assets';
 import { memo, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { AnimatePresence, motion, MotionConfig, useIsPresent, useReducedMotion, useSpring, useTransform } from 'framer-motion';
-import { CONE_TRACK, TRACKS, formatTime, medalFor, trackById, type Track } from '../shared/tracks';
+import { CONE_TRACK, TRACKS, formatTime, trackById, type Track } from '../shared/tracks';
 import { CARS, carById, lookOf, type CarDefinition, type CarId } from '../shared/cars';
-import { PHYSICS_VERSION } from '../shared/physics';
+import { PHYSICS_VERSION, type Frame } from '../shared/physics';
 import { runSchema, type Run } from '../shared/replay';
 import { Game, type GameState } from './game';
 import { api, read, write, bestRun, dressedCar, type Entry, type Player } from './storage';
@@ -21,6 +21,9 @@ import { LotMap } from './LotMap';
 import { CAMERA_LABELS } from './camera-modes';
 import { CameraWheel } from './CameraWheel';
 import { PRESET_LABELS } from './graphics';
+import { ListOrdered } from 'lucide-react';
+import { minimapHeading, minimapLayout } from './minimap';
+import { formatGhostGap } from './ghost-timing';
 
 const ease=[.2,.8,.2,1] as const;
 const KM_TO_MI=.621371;
@@ -70,27 +73,25 @@ function Modal({title,children,onClose,reduced}:{title:string;children:ReactNode
 function useLive<T extends string|number|boolean>(game:Game,select:(state:GameState)=>T):T {
   return useSyncExternalStore(game.subscribe,()=>select(game.snapshot()));
 }
-function Minimap({track,car}:{track:Track;car?:{x:number;z:number}}) {
-  const map=useMemo(()=>{
-    const points=track.mapPath?.length ? track.mapPath : [track.segments[0].start,...track.segments.map(s=>s.end)];
-    const xs=points.map(p=>p.x),zs=points.map(p=>p.z),minX=Math.min(...xs),maxX=Math.max(...xs),minZ=Math.min(...zs),maxZ=Math.max(...zs);
-    const scale=130/Math.max(maxX-minX,maxZ-minZ);
-    // Top-down view of the right-handed scene: x runs right and z runs DOWN the screen, so left and right turns match the road.
-    const coords=(p:{x:number;z:number})=>({x:18+(p.x-minX)*scale,y:150-(maxZ-p.z)*scale});
-    return {points,line:points.map(p=>{const c=coords(p);return `${c.x},${c.y}`;}).join(' '),coords};
-  },[track]);
-  const c=car?map.coords(car):undefined,start=map.coords(map.points[0]),finish=map.coords(map.points.at(-1)!);
+function Minimap({track,car,ghost}:{track:Track;car?:Frame;ghost?:Frame}) {
+  const map=useMemo(()=>minimapLayout(track),[track]);
+  const c=car?map.project(car.p):undefined,g=ghost?map.project(ghost.p):undefined;
   return <svg className="minimap" viewBox="0 0 170 170" role="img" aria-label={`${track.name} track map`}>
-    <MapBase line={map.line} start={start} finish={finish}/>
-    {c&&<circle cx={c.x} cy={c.y} r="5" fill="#ff784c" stroke="#fff" strokeWidth="2"/>}
+    <MapBase line={map.line} finish={map.finish}/>
+    {g&&<g data-marker="ghost" transform={`translate(${g.x} ${g.y})`}><title>Ghost</title><path d="M0 -10 10 0 0 10 -10 0Z" fill="#132b3b99" stroke="#132b3b" strokeWidth="5"/><path d="M0 -10 10 0 0 10 -10 0Z" fill="none" stroke="#61e7e0" strokeWidth="2.5"/></g>}
+    {c&&<g data-marker="player" transform={`translate(${c.x} ${c.y}) rotate(${minimapHeading(car!.q)})`}><title>Your car</title><path d="M0 -8 6 6 0 3 -6 6Z" fill="#ff9b70" stroke="#132b3b" strokeWidth="5" strokeLinejoin="round"/><path d="M0 -8 6 6 0 3 -6 6Z" fill="#ff9b70" stroke="#fff" strokeWidth="1.5" strokeLinejoin="round"/></g>}
   </svg>;
 }
-const MapBase=memo(function MapBase({line,start,finish}:{line:string;start:{x:number;y:number};finish:{x:number;y:number}}) {
+const MapBase=memo(function MapBase({line,finish}:{line:string;finish:{x:number;y:number}}) {
   return <>
-    <polyline points={line} fill="none" stroke="rgba(255,255,255,.16)" strokeWidth="10" strokeLinejoin="round"/>
-    <polyline points={line} fill="none" stroke="#a8dadc" strokeWidth="3" strokeLinejoin="round"/>
-    <circle cx={start.x} cy={start.y} r="5" fill="#f1faee"/>
-    <circle cx={finish.x} cy={finish.y} r="5" fill="#ff784c"/>
+    <polyline points={line} fill="none" stroke="#a6bbc42e" strokeWidth="9" strokeLinejoin="round"/>
+    <polyline points={line} fill="none" stroke="#a6bbc4" strokeWidth="2.5" strokeLinejoin="round"/>
+    <g data-marker="finish" transform={`translate(${finish.x} ${finish.y})`}><title>Finish line</title>
+      <circle r="3" fill="#fff" stroke="#132b3b" strokeWidth="1.5"/>
+      <path d="M0 0V-19" stroke="#132b3b" strokeWidth="5"/><path d="M0 0V-19" stroke="#fff" strokeWidth="1.5"/>
+      <rect x="1" y="-19" width="15" height="12" rx="1" fill="#f1faee" stroke="#132b3b" strokeWidth="1.5"/>
+      <path d="M1 -19h5v4H1Zm10 0h5v4h-5Zm-5 4h5v4H6Zm-5 4h5v4H1Zm10 0h5v4h-5Z" fill="#132127"/>
+    </g>
   </>;
 });
 /** Speedometer drawn on the same dial as the tachometer (RacePanels), scaled to the car's top speed. */
@@ -146,7 +147,18 @@ function Garage({game,car,modelReady,onRace,onTraining,reduced}:{game:Game;car:C
   </motion.main>;
 }
 function LiveTime({game}:{game:Game}) { return <strong>{formatTime(useLive(game,s=>s.time))}</strong>; }
-function LiveMinimap({game,track}:{game:Game;track:Track}) { useLive(game,s=>s.speed);const car=game.sim.car.translation();return track.lot?<LotMap track={track} car={car}/>:<Minimap track={track} car={car}/>; }
+function LiveMinimap({game,track}:{game:Game;track:Track}) { useLive(game,s=>s.time);const car=game.sim.frame(),ghost=game.state.ghost&&!game.partyRace?game.ghostSim?.frame():undefined;return track.lot?<LotMap track={track} car={car.p}/>:<Minimap track={track} car={car} ghost={ghost}/>; }
+function GhostReadout({game,state,reduced}:{game:Game;state:GameState;reduced:boolean}) {
+  if(state.mode==='replay')return null;
+  if(!state.ghost||!game.ghostRun)return <p className="ghost-empty">{state.ghost?'No saved ghost':'Ghost off'}</p>;
+  const split=state.ghostSplit;
+  return <div className="ghost-readout">
+    <div className="ghost-target"><span title={game.ghostLabel}><Icon name="ghost" size={13}/><span>{game.ghostLabel}</span></span><strong>{formatTime(game.ghostRun.timeMs)}</strong></div>
+    {split?<motion.output key={split.checkpoint} className={`ghost-gap ${split.ms<0?'is-ahead':split.ms>0?'is-behind':'is-level'}`} aria-live="polite" initial={{opacity:0,y:reduced?0:5}} animate={{opacity:1,y:0}} transition={{duration:reduced?0:.2,ease:[.2,0,0,1]}}>
+      <span>Checkpoint {split.checkpoint}<small>{split.ms<0?'Ahead':split.ms>0?'Behind':'Level'}</small></span><strong>{formatGhostGap(split.ms)}<small>s</small></strong>
+    </motion.output>:<small className="ghost-timing-status">{state.ghostTiming==='loading'?'Preparing splits':state.ghostTiming==='unavailable'?'Ghost timing unavailable':'Checkpoint gap'}</small>}
+  </div>;
+}
 function LiveSpeed({game,car}:{game:Game;car:CarDefinition}) {
   return <Speed speed={useLive(game,s=>s.speed)} boost={useLive(game,s=>s.boost)} drifting={useLive(game,s=>s.drifting)} drafting={useLive(game,s=>!!s.drafting)} car={car}/>;
 }
@@ -193,14 +205,13 @@ function PartyFinishCallout({time,place,best,still}:{time:number;place?:number;b
 function ConeResultCard({result,status,reduced}:{result:NonNullable<GameState['coneResult']>;status:string;reduced:boolean}) {
   const [shown,setShown]=useState(true);
   useEffect(()=>{const timer=setTimeout(()=>setShown(false),5000);return()=>clearTimeout(timer);},[]);
-  const medal=result.medal==='Finished'?'':result.medal.toLowerCase();
-  return <AnimatePresence>{shown&&<motion.aside className={`cone-result ${medal?`is-${medal}`:''}`} role="status"
+  return <AnimatePresence>{shown&&<motion.aside className="cone-result" role="status"
     initial={{opacity:0,y:reduced?0:-20,scale:reduced?1:.94}} animate={{opacity:1,y:0,scale:1}} exit={{opacity:0,y:reduced?0:-12,transition:{duration:.2,ease:[.4,0,1,1]}}}
     transition={{type:'spring',stiffness:420,damping:32,mass:.8}}>
     <span className="cone-result-eyebrow">{result.newBest?'New personal best':'Cone Attack'}</span>
     <strong>{formatTime(result.timeMs)}</strong>
     <div className="cone-result-detail">
-      <span className="cone-result-medal">{medal?`${result.medal} medal`:'Finished'}</span>
+      <span className="cone-result-label">Run complete</span>
       <small>{result.penalties?`${result.penalties} s in penalties${result.offCourse?` · left the course ${result.offCourse}×`:''}`:'Clean run · no penalties'}</small>
       {status&&<small className="cone-result-status">{status}</small>}
       <small className="cone-result-hint">Drive into the orange box to go again</small>
@@ -216,12 +227,12 @@ function DriftPanel({game,best}:{game:Game;best:number}) {
     <small>{combo>0?'Hold the slide':best>0?`Best combo ${Math.round(best).toLocaleString()}`:'Slide to build a combo'}</small></div>;
 }
 /** Race HUD. Only the Live* parts follow per-tick readouts; the rest re-renders with the coarse state. */
-function RaceHud({game,state}:{game:Game;state:GameState}) {
+function RaceHud({game,state,reduced}:{game:Game;state:GameState;reduced:boolean}) {
   const track=state.track,free=track.kind==='lot';
   return <>{game.settings.showFps&&<FpsMeter game={game}/>}
           {free?<DriftPanel game={game} best={state.driftBest}/>:<div className={`timer-panel ${track.kind==='cones'?'is-cones':''}`}><span>{game.partyRace?'Party race':state.mode==='replay'?'Replay':track.kind==='cones'?'Cone Attack':'Time trial'}</span><LiveTime game={game}/><div>{track.checkpoints.map((_,i)=><i key={i} className={i<state.checkpoint?'passed':''}/>)}<small>{state.checkpoint} / {track.checkpoints.length}</small></div>
             <AnimatePresence>{state.penalties>0&&<motion.b key={state.penalties} className="cone-penalty" initial={{scale:.4,opacity:0,y:-6}} animate={{scale:1,opacity:1,y:0}} exit={{opacity:0}} transition={{type:'spring',stiffness:520,damping:18}}>+{state.penalties} s<small>{state.penalties===1?'1 cone':`${state.penalties} cones`}</small></motion.b>}</AnimatePresence></div>}
-          <div className="race-left"><div className="map-panel"><LiveMinimap game={game} track={track}/></div>{!game.partyRace&&!free&&<p><Icon name="ghost" size={15}/>{game.ghostRun&&state.ghost?formatTime(game.ghostRun.timeMs):'No ghost this run'}</p>}{free&&<p className="lot-hint">Any car · no clock</p>}</div>
+          <div className={`race-left ${track.lot?'':'circuit-overview'}`}><div className="map-panel"><LiveMinimap game={game} track={track}/>{!track.lot&&<div className="map-legend"><span><i className="map-key-player"/>You</span>{state.ghost&&game.ghostSim&&!game.partyRace&&<span><i className="map-key-ghost"/>Ghost</span>}<span><i className="map-key-finish"/>Finish</span></div>}</div>{!game.partyRace&&!free&&<GhostReadout game={game} state={state} reduced={reduced}/>} {free&&<p className="lot-hint">Any car · no clock</p>}</div>
           <LiveSpeed game={game} car={state.car}/><LiveRpm game={game}/>
           <button className="camera-toggle" onClick={()=>game.toggleCamera()} title="Tap to cycle camera views, hold to pick from a wheel"><kbd>{game.keyHint('camera')}</kbd> Camera · {CAMERA_LABELS[game.world.cameraMode]}</button>
           <span className="mouse-look-hint">{game.settings.pointerLock?'Mouse to look':'Drag to look'} · wheel zooms · hold {game.keyHint('lookBack')} to look behind</span>
@@ -300,7 +311,7 @@ export function App({game}:{game:Game}) {
   };
   const raceGhost=async(entry:Entry)=>{
     setBusy(true);setMessage('Loading ghost…');try{
-      await game.raceGhost(activeTrack,await loadRecord(entry));if(!['racing','countdown'].includes(game.state.mode))throw new Error(game.state.notice);setDialog(null);
+      await game.raceGhost(activeTrack,await loadRecord(entry),entry.nickname);if(!['racing','countdown'].includes(game.state.mode))throw new Error(game.state.notice);setDialog(null);
     }catch(error){setMessage(error instanceof Error?error.message:'Ghost unavailable.');}finally{setBusy(false);}
   };
   const watchRecord=async(entry:Entry)=>{
@@ -310,6 +321,7 @@ export function App({game}:{game:Game}) {
     }catch(error){setMessage(error instanceof Error?error.message:'Replay unavailable.');}finally{setBusy(false);}
   };
   const menu=state.mode==='menu';
+  const finishStandings=state.mode==='finished';
   const notice=menu&&!dialog?removed[0]:undefined;
   // A driver with no nickname gets a pit board under the nickname button after a few finished races or a new personal best.
   const [nudge,setNudge]=useState(false);const lastMode=useRef(state.mode);
@@ -356,7 +368,6 @@ export function App({game}:{game:Game}) {
             <div className="track-kicker"><span className="course-number">{String(TRACKS.indexOf(track)+1).padStart(2,'0')}</span><span className="difficulty">{track.difficulty}</span></div>
             <p className="track-subtitle">{track.subtitle}</p>
             <h1>{track.name}</h1><p className="description">{track.description}</p>
-            <div className="medals" aria-label="Medal target times">{track.medals.map((ms,i)=><div key={i}><span className={`medal medal-${i}`}><Icon name="trophy" size={17}/></span><span>{['Gold','Silver','Bronze'][i]}<strong>{formatTime(ms).slice(0,-1)}</strong></span></div>)}</div>
             <div className="personal-best"><span>{hasLocalStartPlacement(track)?'Personal best · custom layout':'Personal best'}</span><strong>{state.personalBest?formatTime(state.personalBest):'Set your first time'}</strong></div>
             <motion.button className="start-button" disabled={state.trackLoading||!state.modelReady} whileHover={{x:still?0:3}} whileTap={{scale:still?1:.98}} onClick={()=>game.start()}><Icon name="play" size={23}/><span>{!state.modelReady?'Loading car…':state.trackLoading?'Preparing circuit…':'Race this track'}</span><kbd>Enter</kbd></motion.button>
             {state.notice&&<p className="form-message" role="status">{state.notice}</p>}
@@ -370,7 +381,7 @@ export function App({game}:{game:Game}) {
           </motion.section>
           <footer className="menu-footer"><span><kbd>{['throttle','left','brake','right'].map(a=>game.keyHint(a as Action).split(' / ')[0]).join(' ')}</kbd> Drive <i/> <kbd>{game.keyHint('recover')}</kbd> Checkpoint <i/> <kbd>{game.keyHint('camera')}</kbd> Camera</span><button onClick={()=>open('help')}>All controls <Icon name="arrow" size={15}/></button><small><a href={assetUrl('art/tracks/CREDITS.txt')} target="_blank" rel="noreferrer">Circuit model credits</a> · {state.car.shortName}</small></footer>
         </motion.main>:<motion.div key="hud" className="hud" initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}}>
-          <RaceHud game={game} state={state}/>
+          <RaceHud game={game} state={state} reduced={still}/>
           <AnimatePresence>{state.perfTip&&<PerfTip key="perf" game={game} tip={state.perfTip} reduced={still}/>}</AnimatePresence>
           <AnimatePresence>{state.coneResult&&track.kind==='lot'&&<ConeResultCard key={state.coneResult.at} result={state.coneResult} status={coneStatus} reduced={still}/>}</AnimatePresence>
         </motion.div>}
@@ -380,12 +391,12 @@ export function App({game}:{game:Game}) {
           <AnimatePresence>{state.jumpWarning&&<motion.p key="jump-warning" className="jump-warning" role="alert" initial={{opacity:0,y:-6}} animate={{opacity:1,y:0}} exit={{opacity:0}}>Lift off! Holding {game.keyHint('throttle').split(' / ')[0]} now will jump the start</motion.p>}</AnimatePresence></motion.div>}
         <AnimatePresence>{state.mode==='racing'&&state.penalty&&<JumpStartPenalty key="jump-start" duration={state.penalty} still={still}/>}</AnimatePresence>
         {state.mode==='party-finished'&&game.partyFinishedAt>0&&<PartyFinishCallout key={game.partyFinishedAt} time={state.time} place={game.partyPlace} best={game.partyBestLap} still={still}/>}
-        {state.mode==='celebrating'&&<motion.div className="finish-callout" key="finish-callout" role="status" initial={{opacity:0,x:'-50%',y:still?0:-28,scale:still?1:.88}} animate={{opacity:1,x:'-50%',y:still?0:[-28,8,0],scale:still?1:[.88,1.06,1]}} exit={{opacity:0,x:'-50%',y:still?0:-10,scale:still?1:.97}} transition={still?{duration:.18}:{duration:.68,ease:[.05,.7,.1,1],times:[0,.62,1]}}><span>Finish</span><strong>{formatTime(state.time)}</strong></motion.div>}
+        {state.mode==='celebrating'&&<motion.div className="finish-callout" key="finish-callout" role="status" initial={{opacity:0,x:'-50%',y:still?0:-28,scale:still?1:.88}} animate={{opacity:1,x:'-50%',y:still?0:[-28,8,0],scale:still?1:[.88,1.06,1]}} exit={{opacity:0,transition:{duration:0}}} transition={still?{duration:.18}:{duration:.68,ease:[.05,.7,.1,1],times:[0,.62,1]}}><span>Finish</span><strong>{formatTime(state.time)}</strong></motion.div>}
         {state.mode==='paused'&&<motion.div className="overlay" key="pause" initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}}><motion.section className="result-card" initial={{y:still?0:18,scale:still?1:.97}} animate={{y:0,scale:1}} exit={{y:still?0:8,scale:still?1:.99}} transition={{duration:still?0:.3,ease}}><p className="result-eyebrow">{track.kind==='lot'?'Training Grounds':track.kind==='cones'?'Cone Attack':'Take a breath'}</p><h2>Paused</h2>{state.notice&&<p>{state.notice}</p>}<button className="start-button" onClick={()=>game.resume()}><Icon name="play"/>{track.kind==='lot'?'Keep driving':'Resume race'}<kbd>Esc</kbd></button><button className="secondary-button" onClick={()=>game.restart()}><Icon name="restart"/>{track.kind==='lot'?'Reset car':'Restart run'}</button>{track.kind==='cones'&&<button className="secondary-button" onClick={()=>void game.enterTraining()}>Back to free roam</button>}<button className="secondary-button" onClick={()=>open('settings')}>Settings & controls</button><button className="text-button" onClick={()=>game.menu()}>{track.lot?'Leave the Training Grounds':'Back to tracks'}</button></motion.section></motion.div>}
         {state.mode==='finished'&&<motion.div className="overlay finish-results" key="finish" initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}}><motion.section className="result-card" initial={{y:still?0:20,scale:still?1:.97}} animate={{y:0,scale:1}}>
-          <span className="finish-medal"><Icon name="trophy" size={36}/></span><p className="result-eyebrow">{state.newBest?'New personal best':`${track.name} complete`}</p><h2>{medalFor(track,state.time)}{medalFor(track,state.time)!=='Finished'?' medal':''}</h2><strong className="finish-time">{formatTime(state.time)}</strong>
+          <p className="result-eyebrow">{track.name}</p><h2>{state.newBest?'New personal best':'Race complete'}</h2><strong className="finish-time">{formatTime(state.time)}</strong>
           <p className="finish-detail">{track.kind==='cones'?(state.penalties?`${state.penalties} ${state.penalties===1?'cone':'cones'} · +${state.penalties} s included`:'Clean run · no cones touched'):game.sim.respawns?`${game.sim.respawns} checkpoint recoveries`:'Clean run'}<span> / </span>{state.checkpoint} {track.kind==='cones'?'gates':'checkpoints'}</p>
-          <div className="result-actions"><button className="start-button" onClick={()=>game.restart()}><Icon name="restart"/>Race again<kbd>{game.keyHint('restart')}</kbd></button>{!player&&state.newBest&&track.kind!=='cones'&&!hasLocalStartPlacement(track)&&<button className="secondary-button" onClick={()=>open('profile')}><Icon name="user"/>Set nickname to post this time</button>}<button className="secondary-button" onClick={()=>state.run&&game.watch(state.run)}><Icon name="play"/>Watch replay</button></div>
+          <div className="result-actions"><button className="start-button" onClick={()=>game.restart()}><Icon name="restart"/>Race again<kbd>{game.keyHint('restart')}</kbd></button><button className="secondary-button" onClick={()=>{setBoardTrack(track.id);setEntries([]);open('leaderboard');}}><ListOrdered size={20} aria-hidden="true"/>Standings</button>{!player&&state.newBest&&track.kind!=='cones'&&!hasLocalStartPlacement(track)&&<button className="secondary-button" onClick={()=>open('profile')}><Icon name="user"/>Set nickname to post this time</button>}<button className="secondary-button" onClick={()=>state.run&&game.watch(state.run)}><Icon name="play"/>Watch replay</button></div>
           {submission&&<p className="form-message" role="status">{submission}</p>}{state.notice&&<p className="form-message">{state.notice}</p>}{track.kind==='cones'&&<button className="secondary-button" onClick={()=>void game.enterTraining()}>Back to free roam</button>}<button className="text-button" onClick={()=>game.menu()}>{track.lot?'Leave the Training Grounds':'Back to tracks'}</button>
         </motion.section></motion.div>}
       </AnimatePresence>
@@ -395,12 +406,12 @@ export function App({game}:{game:Game}) {
       <AnimatePresence mode="wait">
       {notice&&<Modal key={notice.key} title={notice.title} reduced={still} onClose={dismissRemoved}><p>{notice.summary}</p><p><strong>Why:</strong> {notice.reason} Checkpoints now only count when you drive over them, so the run no longer completes the lap.</p><p className="muted-text">Your other times are unchanged. Set a new time on this circuit any time.</p><button className="start-button" onClick={dismissRemoved}>Got it</button></Modal>}
       {dialog==='settings'&&<Modal key="settings" title="Race setup" reduced={still} onClose={()=>setDialog(null)}><SettingsPanel game={game}/></Modal>}
-      {dialog==='help'&&<Modal key="help" title="Find your line" reduced={still} onClose={()=>setDialog(null)}><p>Hit every checkpoint in order, then cross the invisible finish line. Chase medals, race your best ghost, and put your time on the board.</p><div className="controls-list">{(Object.keys(ACTION_LABELS) as Action[]).map(action=><div key={action}><kbd>{game.keyHint(action)}</kbd><span>{ACTION_LABELS[action]}</span></div>)}</div><p className="muted-text">At speed, sustained steering lets the tail swing outward. Hold your drift key for a deeper slide: faster, harder turns create more drift. Release the drift key, lift off, brake or countersteer to regain grip. The drift key has no effect while parked or driving straight.</p></Modal>}
+      {dialog==='help'&&<Modal key="help" title="Find your line" reduced={still} onClose={()=>setDialog(null)}><p>Hit every checkpoint in order, then cross the invisible finish line. Beat your personal best, race your ghost, and put your time on the board.</p><div className="controls-list">{(Object.keys(ACTION_LABELS) as Action[]).map(action=><div key={action}><kbd>{game.keyHint(action)}</kbd><span>{ACTION_LABELS[action]}</span></div>)}</div><p className="muted-text">At speed, sustained steering lets the tail swing outward. Hold your drift key for a deeper slide: faster, harder turns create more drift. Release the drift key, lift off, brake or countersteer to regain grip. The drift key has no effect while parked or driving straight.</p></Modal>}
       {dialog==='profile'&&<Modal key="profile" title="Your driver name" reduced={still} onClose={()=>setDialog(null)}><p>No account needed. Your driver identity stays in this browser.</p><form onSubmit={e=>{e.preventDefault();void savePlayer();}}><label htmlFor="nickname">Nickname</label><input id="nickname" autoFocus value={nickname} onChange={e=>setNickname(e.target.value)} minLength={2} maxLength={18} required autoComplete="nickname"/><p className="muted-text">2–18 letters, numbers, spaces, underscores or hyphens.</p>{message&&<p className="form-message" role="status">{message}</p>}<button className="start-button" type="submit" disabled={busy}>{busy?'Saving…':'Save nickname'}<Icon name="check"/></button></form></Modal>}
-      {dialog==='leaderboard'&&<Modal key="leaderboard" title="Leaderboards" reduced={still} onClose={()=>setDialog(null)}><div className="board-selector"><label htmlFor="board-circuit">Circuit</label><select id="board-circuit" value={boardTrack} onChange={e=>{setBoardTrack(e.target.value);setMessage('');}}>{boardTracks.map(t=><option key={t.id} value={t.id}>{t.name}</option>)}</select><button className="text-button" onClick={()=>void refresh()}>Refresh</button></div><div className="board-summary"><strong>{entries.length?formatTime(entries[0].timeMs):'—'}</strong><span>{entries.length?`${entries[0].nickname} · fastest ${MULTIPLAYER_BACKEND==='cloudflare'?'unverified':'verified'} lap`:'The starting grid is open'}</span></div><p className="board-intro">Top 50 · best time per driver, all cars · {MULTIPLAYER_BACKEND==='cloudflare'?'casual times · unverified':'replay-verified'}</p>{MULTIPLAYER_BACKEND==='cloudflare'&&<p className="board-intro">Times are recorded by drivers. Saved ghosts are available, but server physics verification is not enabled.</p>}
+      {dialog==='leaderboard'&&<Modal key="leaderboard" title={finishStandings?'Standings':'Leaderboards'} reduced={still} onClose={()=>setDialog(null)}><div className="board-selector">{finishStandings?<strong>{activeTrack.name}</strong>:<><label htmlFor="board-circuit">Circuit</label><select id="board-circuit" value={boardTrack} onChange={e=>{setBoardTrack(e.target.value);setMessage('');}}>{boardTracks.map(t=><option key={t.id} value={t.id}>{t.name}</option>)}</select></>}<button className="text-button" onClick={()=>void refresh()}>Refresh</button></div><div className="board-summary"><strong>{finishStandings?formatTime(state.time):entries.length?formatTime(entries[0].timeMs):'—'}</strong><span>{finishStandings?'Your run':entries.length?`${entries[0].nickname} · fastest ${MULTIPLAYER_BACKEND==='cloudflare'?'unverified':'verified'} lap`:'The starting grid is open'}</span></div><p className="board-intro">Top 50 · best time per driver, all cars · {MULTIPLAYER_BACKEND==='cloudflare'?'casual times · unverified':'replay-verified'}</p>{finishStandings&&hasLocalStartPlacement(track)&&<p className="board-intro">Custom layout: your run is saved locally and is not ranked on this circuit's online leaderboard.</p>}{MULTIPLAYER_BACKEND==='cloudflare'&&<p className="board-intro">Times are recorded by drivers. Saved ghosts are available, but server physics verification is not enabled.</p>}
         {boardStatus&&<div className="board-empty" role="status"><Icon name="trophy" size={32}/><p>{boardStatus}</p><button className="text-button" onClick={()=>void refresh()}>Refresh leaderboard</button></div>}
         {entries.length>0&&<div className="table-scroll"><table><thead><tr><th>Rank</th><th>Driver</th><th>Lap / gap</th><th>Ghost</th><th>Replay</th></tr></thead><tbody>{entries.map(entry=><tr key={entry.id} className={entry.playerId===player?.id?'is-you':''}><td>{String(entry.rank).padStart(2,'0')}</td><td>{entry.nickname}{entry.playerId===player?.id&&<small> you</small>}<small className="entry-car">{(entry.playerId===player?.id?dressedCar(entry.carId):carById(entry.carId)).shortName} · {entry.manual?'Manual':'Auto'}</small></td><td className="lap-time">{formatTime(entry.timeMs)}<small>{entry.rank===1?'Leader':`+${((entry.timeMs-entries[0].timeMs)/1000).toFixed(3)}`}</small></td><td><button className="icon-button" aria-label={`Race ${entry.nickname}'s ghost`} disabled={busy} onClick={()=>void raceGhost(entry)}><Icon name="ghost" size={18}/></button></td><td><button className="icon-button" aria-label={`Watch ${entry.nickname}'s replay`} disabled={busy} onClick={()=>void watchRecord(entry)}><Icon name="play" size={18}/></button></td></tr>)}</tbody></table></div>}
-        {message&&<p className="form-message" role="status">{message}</p>}<button className="secondary-button" disabled={busy} onClick={async()=>{setBusy(true);setView('tracks');game.partyView=false;game.setGarage(false);if(activeTrack.lot)await game.enterTraining();else{await game.select(activeTrack,true);game.start();}setBusy(false);setDialog(null);}}>{activeTrack.lot?'Go to the Training Grounds':`Race ${activeTrack.name}`}<Icon name="play"/></button>
+        {message&&<p className="form-message" role="status">{message}</p>}{finishStandings?<button className="secondary-button" onClick={()=>setDialog(null)}>Back to results</button>:<button className="secondary-button" disabled={busy} onClick={async()=>{setBusy(true);setView('tracks');game.partyView=false;game.setGarage(false);if(activeTrack.lot)await game.enterTraining();else{await game.select(activeTrack,true);game.start();}setBusy(false);setDialog(null);}}>{activeTrack.lot?'Go to the Training Grounds':`Race ${activeTrack.name}`}<Icon name="play"/></button>}
       </Modal>}
       </AnimatePresence>
     </div>

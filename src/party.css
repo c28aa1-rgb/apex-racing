@@ -72,16 +72,17 @@ body:has(.is-party){overflow:auto}#app:has(.is-party){height:auto;min-height:100
 
 /* End screen: every driver in finishing order. It replaces the corner standings while open. */
 .party-race.shows-results .party-race-order,.party-race.shows-results>.party-race-actions{display:none}
-.party-results{position:absolute;top:50%;left:50%;translate:-50% -50%;width:min(620px,calc(100% - 8px));max-height:calc(100% - 80px);overflow-y:auto;pointer-events:auto;background:#132b3bf2;color:#f1faee;border-inline:1px solid #a8dadc70;box-shadow:0 24px 80px #07192255;padding:26px 24px 18px;backdrop-filter:blur(6px)}
+.party-results{position:fixed;inset:auto;top:50%;left:50%;translate:-50% -50%;margin:0;width:min(660px,calc(100% - 32px));max-width:none;max-height:calc(100dvh - 48px);overflow-y:auto;pointer-events:auto;background:#132b3bf2;color:#f1faee;border:1px solid #a8dadc70;border-radius:6px;box-shadow:0 24px 80px #07192255;padding:26px 24px 18px;backdrop-filter:blur(6px)}
+.party-results::backdrop{background:#0b151b70;backdrop-filter:blur(2px)}
 /* The finish banner's chequered edge: the classification reads as the rest of crossing the line. */
 .party-results::before{content:"";position:absolute;top:0;left:0;right:0;height:8px;background:conic-gradient(#f1faee 25%,#132b3b 0 50%,#f1faee 0 75%,#132b3b 0) 0/16px 16px}
-.party-results header{padding-bottom:14px;border-bottom:1px solid #a8dadc26}
-.party-results header span{display:block;font-size:11px;color:#a8dadc;text-transform:uppercase;letter-spacing:.06em}
+.party-results header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding-bottom:14px;border-bottom:1px solid #a8dadc26}
+.party-results header>div{min-width:0}
+.party-results header span{display:block;font-size:12px;color:#a8dadc;letter-spacing:0}
 .party-results h2{font-family:Shoulders,sans-serif;font-size:38px;line-height:1.05;margin:2px 0 0}
 .party-results ol{list-style:none;margin:6px 0 16px;padding:0}
 .party-results li{display:grid;grid-template-columns:44px minmax(0,1fr) auto 112px;align-items:center;column-gap:12px;padding:10px 6px;border-bottom:1px solid #a8dadc1a}
 .party-results li>b{font-family:Shoulders,sans-serif;font-size:24px;text-align:center;color:#ff784c;font-variant-numeric:tabular-nums}
-.party-results li.podium-1>b{color:#e7c177}.party-results li.podium-2>b{color:#c8d5da}.party-results li.podium-3>b{color:#d49a72}
 .party-results li.is-you{background:linear-gradient(90deg,#84e1d41f,transparent);box-shadow:inset 3px 0 #84e1d4}
 .party-results li>div{display:flex;flex-direction:column;min-width:0}
 .party-results li>div>strong{font-size:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -100,6 +101,8 @@ body:has(.is-party){overflow:auto}#app:has(.is-party){height:auto;min-height:100
 .party-results footer .party-results-primary{flex:1;justify-content:center;background:#ff784c;border-color:#ff784c;color:#132b3b;font-weight:700}
 .party-results footer .party-results-primary:hover:not(:disabled){background:#ff8a62}
 .party-spectate button svg{vertical-align:-2px}
+.party-spectate{width:max-content;max-width:calc(100vw - 32px);flex-wrap:wrap;white-space:normal}
+.interface:has(.party-results[open]) .party-finish-callout{visibility:hidden}
 @media(max-width:700px){
   .party-results{padding:16px 14px 14px;top:auto;bottom:0;translate:-50% 0;max-height:calc(100% - 10px)}
   .party-results h2{font-size:28px}

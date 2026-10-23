@@ -1,7 +1,7 @@
 import { assetUrl } from '../shared/assets';
 import { MULTIPLAYER_BACKEND } from './multiplayer-config';
 import { partyEvents } from './cloudflare-party';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion, type Variants } from 'framer-motion';
 
 // Paddock entrance: the page settles in, then heading, lineup and settings arrive in a short cascade.
@@ -12,7 +12,7 @@ const settle: Variants = { hidden: { opacity: 0, scale: .965 }, shown: { opacity
 const fromRight: Variants = { hidden: { opacity: 0, x: 32 }, shown: { opacity: 1, x: 0, transition: SPRING } };
 const fade: Variants = { hidden: { opacity: 0 }, shown: { opacity: 1, transition: { duration: .3 } } };
 const still: Variants = { hidden: { opacity: 0 }, shown: { opacity: 1, transition: { duration: 0 } }, exit: { opacity: 0, transition: { duration: 0 } } };
-import { ArrowRight, Check, Copy, Crown, DoorOpen, Eye, Flag, Hash, ListOrdered, Minus, Plus, Sun, CloudRain, Snowflake, CloudFog, UsersRound, Wifi, WifiOff } from 'lucide-react';
+import { ArrowRight, Check, Copy, Crown, DoorOpen, Eye, Flag, Hash, ListOrdered, Minus, Plus, Sun, CloudRain, Snowflake, CloudFog, UsersRound, Wifi, WifiOff, X } from 'lucide-react';
 import { CARS, DEFAULT_CAR, carById } from '../shared/cars';
 import { TRACKS, formatTime } from '../shared/tracks';
 import { DEFAULT_PARTY_SETTINGS, PARTY_WEATHER, type PartyWeather, type PartyRace } from '../shared/party';
@@ -47,19 +47,21 @@ type Racer = PartyRace['racers'][number];
  * The party end screen: every driver in finishing order with their car, total time, gap to the winner and best lap.
  * Before everyone is home it is provisional, with the drivers still racing shown on their current lap.
  */
-function PartyResults({ race, racers, selfId, bestLap, laps, host, hostName, busy, onWatch, onLobby, onLeave }: {
+function PartyResults({ race, racers, selfId, bestLap, laps, host, hostName, busy, reduced, onClose, onLobby, onLeave }: {
   race: PartyRace; racers: Racer[]; selfId?: string; bestLap: (racer: Racer) => number | undefined; laps: number;
-  host: boolean; hostName?: string; busy: boolean; onWatch?: () => void; onLobby: () => void; onLeave: () => void;
+  host: boolean; hostName?: string; busy: boolean; reduced: boolean; onClose: () => void; onLobby: () => void; onLeave: () => void;
 }) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  useEffect(() => { const node = dialog.current!; node.showModal(); return () => { if (node.open) node.close(); }; }, []);
   const time = (racer: Racer) => racer.finishedAt !== undefined ? racer.finishedAt - race.startAt! : undefined;
   const winner = racers.map(time).find(t => t !== undefined), fastest = Math.min(...racers.map(r => bestLap(r) ?? Infinity));
   const mine = racers.find(r => r.id === selfId), myPlace = mine && time(mine) !== undefined ? racers.indexOf(mine) + 1 : undefined;
-  return <motion.div className="party-results" role="dialog" aria-label="Race results" initial={{ opacity: 0, y: 16, scale: .97 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ type: 'spring', stiffness: 380, damping: 32 }}>
-    <header><span>{race.ended ? 'Final classification' : 'Provisional classification'} · {laps} {laps === 1 ? 'lap' : 'laps'}</span><h2>{myPlace ? `You finished ${ordinal(myPlace)}` : race.ended ? 'Race over' : 'Race in progress'}</h2></header>
+  return <motion.dialog ref={dialog} className="party-results" aria-label="Race standings" onCancel={event => { event.preventDefault(); onClose(); }} initial={{ opacity: 0, y: reduced ? 0 : 12, scale: reduced ? 1 : .99 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ duration: reduced ? 0 : .24, ease: [.2, 0, 0, 1] }}>
+    <header><div><span>{race.ended ? 'Final standings' : 'Live standings'} · {laps} {laps === 1 ? 'lap' : 'laps'}</span><h2>{myPlace ? `You finished ${ordinal(myPlace)}` : race.ended ? 'Race over' : 'Race in progress'}</h2></div><button className="icon-button" aria-label="Close standings" title="Close standings" onClick={onClose}><X size={20}/></button></header>
     <ol>{racers.map((racer, i) => {
       const total = time(racer), best = bestLap(racer), dnf = total === undefined && (racer.disconnected || race.ended);
       const car = racer.id === selfId ? dressedCar(racer.carId) : carById(racer.carId);
-      return <li key={racer.id} className={`${racer.id === selfId ? 'is-you' : ''} ${total !== undefined && i < 3 ? `podium-${i + 1}` : ''}`}>
+      return <li key={racer.id} className={racer.id === selfId ? 'is-you' : ''}>
         <b>{dnf ? 'DNF' : total === undefined ? '–' : i + 1}</b>
         <div><strong>{racer.nickname}{racer.id === selfId && <small> you</small>}</strong><span>{car.shortName}</span></div>
         <div className="party-results-time">{total !== undefined ? <><strong>{formatTime(total)}</strong><span>{total === winner ? 'Winner' : `+${((total - winner!) / 1000).toFixed(3)}`}</span></> : dnf ? <strong className="is-out">Did not finish</strong> : <><strong className="is-out">Racing</strong><span>Lap {racer.pose?.lap ?? 1} / {laps}</span></>}</div>
@@ -68,10 +70,10 @@ function PartyResults({ race, racers, selfId, bestLap, laps, host, hostName, bus
     })}</ol>
     <footer>
       {host ? <button className="party-results-primary" disabled={busy} onClick={onLobby}><Flag size={17}/>Back to lobby</button> : <p>{race.ended ? `Waiting for ${hostName ?? 'the host'} to reopen the lobby` : 'The order is final once everyone finishes'}</p>}
-      {onWatch && <button onClick={onWatch}><Eye size={17}/>Watch the race</button>}
+      <button onClick={onClose}><Eye size={17}/>{race.ended ? 'Back to track' : 'Watch the race'}</button>
       <button disabled={busy} onClick={onLeave}><DoorOpen size={17}/>Leave race</button>
     </footer>
-  </motion.div>;
+  </motion.dialog>;
 }
 
 export function PartyPanel({ game, active, player, onPlayer, reduced }: {
@@ -116,6 +118,8 @@ export function PartyPanel({ game, active, player, onPlayer, reduced }: {
   // You can close provisional results to spectate; they come back for the final order.
   const finishedHere = game.state.mode === 'party-finished';
   const [resultsDue, setResultsDue] = useState(false), [resultsClosed, setResultsClosed] = useState(false);
+  const standingsButton = useRef<HTMLButtonElement>(null);
+  useEffect(() => { if (resultsClosed) standingsButton.current?.focus(); }, [resultsClosed]);
   useEffect(() => { if (!finishedHere) { setResultsDue(false); return; } const timer = setTimeout(() => setResultsDue(true), 4800); return () => clearTimeout(timer); }, [finishedHere]);
   useEffect(() => setResultsClosed(false), [lobby?.race?.id, raceState?.ended]);
   useEffect(() => { if (!copied) return; const timer = setTimeout(() => setCopied(false), 2000); return () => clearTimeout(timer); }, [copied]);
@@ -161,11 +165,12 @@ export function PartyPanel({ game, active, player, onPlayer, reduced }: {
     const loading = !raceState.ended && !(game.partyRace?.ready && raceState.startAt);
     const ready = raceState.racers.filter(r => r.ready && !r.disconnected).length, total = raceState.racers.filter(r => !r.disconnected).length;
     const step = !game.partyRace ? 'Finding your lobby' : game.partyLoadStep || (!raceState.startAt ? `Waiting for drivers · ${ready} / ${total} ready` : 'Starting');
-    const spectating = game.state.mode === 'party-finished' && !raceState.ended;
+    const spectating = game.state.mode === 'party-finished';
     const watchable = spectating ? game.spectateCandidates() : [];
     const watchedName = raceState.racers.find(r => r.id === game.spectating)?.nickname;
     const field = racers.filter(r => !r.disconnected).length, place = racers.findIndex(r => r.id === player?.id) + 1;
-    const showResults = !!raceState.startAt && resultsDue && (raceState.ended || !resultsClosed);
+    const showResults = !!raceState.startAt && resultsDue && !resultsClosed;
+    const openResults = () => { setResultsDue(true); setResultsClosed(false); };
     if (loading) return <section className="party-loading" role="status" aria-live="polite" aria-label="Joining race">
       <img src={assetUrl(`art/${track.id}.png`)} alt=""/>
       <div className="party-loading-card">
@@ -178,14 +183,14 @@ export function PartyPanel({ game, active, player, onPlayer, reduced }: {
     </section>;
     return <section className={`party-race ${showResults ? 'shows-results' : ''}`} aria-label="Party race">
       {showResults && <PartyResults race={raceState} racers={racers} selfId={player?.id} bestLap={bestLap} laps={settings.laps}
-        host={host} hostName={hostName} busy={busy} onWatch={raceState.ended ? undefined : () => setResultsClosed(true)}
+        host={host} hostName={hostName} busy={busy} reduced={reduced} onClose={() => setResultsClosed(true)}
         onLobby={() => void party.reopen()} onLeave={() => void party.leave()}/>}
-      {spectating && !showResults && <div className="party-spectate" role="group" aria-label="Spectator camera" data-watching={watchedName ? "true" : undefined}>
+      {spectating && <div className="party-spectate" role="group" aria-label="Spectator camera" data-watching={watchedName ? "true" : undefined}>
         <span>{watchedName ? 'Watching' : 'Camera'}<strong>{watchedName ?? 'Your car'}</strong></span>
-        <button disabled={!watchable.length} onClick={() => game.spectate(-1)} aria-label="Previous driver">‹</button>
-        <button disabled={!watchable.length} onClick={() => game.spectate(1)} aria-label="Next driver">›</button>
+        {watchable.length > 0 && <><button onClick={() => game.spectate(-1)} aria-label="Previous driver">‹</button>
+        <button onClick={() => game.spectate(1)} aria-label="Next driver">›</button></>}
         {watchedName && <button onClick={() => game.spectate(0)}>Your car</button>}
-        <button onClick={() => setResultsClosed(false)}><ListOrdered size={14}/> Results</button>
+        <button ref={standingsButton} onClick={openResults}><ListOrdered size={14}/> Standings</button>
         {!watchable.length && <small>Everyone has finished</small>}
       </div>}
       <div className="party-race-status">{raceState.startAt && place > 0 && !raceState.racers.find(r => r.id === player?.id)?.disconnected && <b className="party-position" aria-label={`Position ${place} of ${field}`}>P{place}<small>/{field}</small></b>}

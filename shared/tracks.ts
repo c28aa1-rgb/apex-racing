@@ -67,8 +67,7 @@ function course(id: string, name: string, subtitle: string, difficulty: string, 
     metersPerUnit: officialLength / nativeLength, length: officialLength };
 }
 export const TRACKS: Track[] = [
-  // Medals (ms): gold = a clean lap in the starter Porsche 911 GT3 by the route driver (tests/smooth-audit.ts,
-  // physics v34), silver +15%, bronze +35%. Faster cars make gold easier, which is what unlocking them is for.
+  // Legacy target times remain available to route-calibration tools, not player awards.
   course('bugatti','Bugatti Circuit','Le Mans, France','Intermediate','The complete supplied Bugatti layout, with its real elevation, pit straight, permanent kerbs and circuit furniture.','#ff784c','bugatti.glb',BUGATTI_ROUTE,[6,13,20,27],[],[145000, 166000, 195000],4185,16),
   course('spa','Spa-Francorchamps','Ardennes, Belgium','Expert','A full lap of Spa on the supplied 2022 venue: long straights, major elevation change and fast committed corners.','#59d8d0','spa.glb',SPA_ROUTE,[10,20,30,40,50],[],[206000, 237000, 278000],7004,16),
   course('hungaroring','Hungaroring','Mogyoród, Hungary','Technical','A full 2020-layout lap where rhythm and mechanical grip matter more than a huge top speed.','#f5c56b','hungaroring.glb',HUNGARORING_ROUTE,[9,18,27,36,45],[],[160000, 183000, 216000],4381,15),
@@ -122,9 +121,6 @@ export const CONE_TRACK: Track = {
 export const ALL_TRACKS: Track[] = [...TRACKS, TRAINING_GROUNDS, CONE_TRACK];
 export const trackById = (id: string) => ALL_TRACKS.find(t => t.id === id);
 export const ranked = (track: Track) => track.kind !== 'lot';
-export function medalFor(track: Track, ms: number): string {
-  return ms <= track.medals[0] ? 'Gold' : ms <= track.medals[1] ? 'Silver' : ms <= track.medals[2] ? 'Bronze' : 'Finished';
-}
 export function formatTime(ms: number): string {
   if (!Number.isFinite(ms)) return '—';
   const n = Math.max(0, Math.round(ms));

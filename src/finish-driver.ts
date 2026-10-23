@@ -14,14 +14,14 @@ export class FinishDriver {
   /** Saved lap to rejoin, while driving the circuit's own loop past a finish the lap does not continue from. */
   private readonly lap?:Vec3[];
   private bridging=false;
-  constructor(private track:Track){
-    const points=track.mapPath?.length?track.mapPath:buildRoadMesh(track).points.map(p=>p.center);
+  constructor(private track:Track,path?:Vec3[]){
+    const points=path??(track.mapPath?.length?track.mapPath:buildRoadMesh(track).points.map(p=>p.center));
     const end=points.at(-1)!;
     // A saved lap that starts somewhere else (Daytona: the pit lane) has no road beyond its finish line.
     // Joining its start would cut across the infield, so drive on along the track and rejoin the lap later.
     const lapGap=Math.hypot(end.x-points[0].x,end.z-points[0].z)*track.metersPerUnit;
-    if(track.mapPath?.length&&lapGap>25)this.lap=points;
-    this.followRoad=!track.mapPath&&!!track.localFinish;
+    if(!path&&track.mapPath?.length&&lapGap>25)this.lap=points;
+    this.followRoad=!path&&!track.mapPath&&!!track.localFinish;
 
     let join=0,best=Infinity;
     // Timing routes overlap the opening straight. Skip that duplicate run-up,
@@ -32,7 +32,7 @@ export class FinishDriver {
     }
     this.route=points.slice(join);
   }
-  begin(sim:Simulation){this.speed=Math.max(0,sim.forwardSpeed);this.segment=-1;
+  begin(_sim:Simulation){this.speed=18/this.track.metersPerUnit;this.segment=-1;
     // Past a finish the saved lap does not continue from: read the road ahead until the lap is met again.
     this.bridging=!!this.lap;this.heading=Math.atan2(this.track.finish.forward.x,this.track.finish.forward.z);this.roadTarget=undefined;}
   step(sim:Simulation){
@@ -66,7 +66,7 @@ export class FinishDriver {
         this.heading+=delta*.25;
       }
       const dx=this.roadTarget.x-p.x,dz=this.roadTarget.z-p.z,curvature=2*(dx*right.x+dz*right.z)/Math.max(1,dx*dx+dz*dz);
-      sim.stepFinish(Math.atan(sim.carSpec.dimensions.wheelbaseM*curvature),Math.min(this.speed,Math.sqrt(9/(Math.abs(curvature)+.00001))));return;
+      sim.stepFinish(Math.atan(sim.carSpec.dimensions.wheelbaseM/this.track.metersPerUnit*curvature),Math.min(this.speed,Math.sqrt(6/this.track.metersPerUnit/(Math.abs(curvature)+.00001))));return;
     }
     let best=Infinity,index=0,fraction=0;
     const n=this.route.length;
@@ -88,8 +88,9 @@ export class FinishDriver {
       remaining-=available;
     }
     const dx=target.x-p.x,dz=target.z-p.z,curvature=2*(dx*right.x+dz*right.z)/Math.max(1,dx*dx+dz*dz);
-    // Hold crossing speed on straights; brake only when the actual bend needs it.
-    const cornerSpeed=Math.sqrt(9/(Math.abs(curvature)+.00001));
-    sim.stepFinish(Math.atan(sim.carSpec.dimensions.wheelbaseM*curvature),Math.min(this.speed,cornerSpeed));
+    // Brake toward a cooldown pace immediately, with a lower target for bends and rejoining the route.
+    const cornerSpeed=Math.sqrt(6/this.track.metersPerUnit/(Math.abs(curvature)+.00001));
+    const rejoinSpeed=best*this.track.metersPerUnit**2>16?9/this.track.metersPerUnit:this.speed;
+    sim.stepFinish(Math.atan(sim.carSpec.dimensions.wheelbaseM/this.track.metersPerUnit*curvature),Math.min(this.speed,cornerSpeed,rejoinSpeed));
   }
 }

@@ -24,7 +24,7 @@ if (!WEATHERS.includes(weather)) throw new Error(`Unknown weather ${weather}`);
 
 await initPhysics(tracks);
 let failed = false;
-console.log('track         car               lap        gold       walls  off-road  widest  recoveries');
+console.log('track         car               lap        benchmark  walls  off-road  widest  recoveries');
 for (const track of tracks) {
   const mpu = track.metersPerUnit, line = racingLine(RACING_LINES[track.id], mpu);
   const points = Array.from({ length: line.n }, (_, i) => ({ x: line.x[i], y: line.y[i], z: line.z[i] }));
