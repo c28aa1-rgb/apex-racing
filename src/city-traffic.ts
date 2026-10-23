@@ -48,6 +48,8 @@ type Lane = {
   spacing: number; target: number; links: Link[];
   /** Road width; and whether this is a connector (a curved path through a junction from one road to another). */
   width: number; connector?: boolean;
+  /** Lane number counted out from the centre line (0 is the inner lane, where left turns are made). */
+  index: number;
 };
 /** Where a wheel sits on its car, and whether it steers and which side it is on (right wheels are the left one turned round). */
 type WheelSlot = { at: THREE.Vector3; front: boolean; right: boolean };
@@ -122,6 +124,7 @@ export class CityTraffic {
   private nextId = 0;
   /** Counters for tuning: cars that left at dead ends, and cars taken off crowded lanes out of sight. */
   deadEnds = 0; trimmed = 0;
+  dropped: { from: string; to: string; why: string; turn: string; end: boolean; ahead: number; angle: number }[] = [];
   private time = 0;
   private random = mulberry(20261022);
   private registered?: Simulation;
@@ -206,7 +209,7 @@ export class CityTraffic {
           for (let i = 1; i < samples; i++) { const a = (i - 1) % count, b = i % count; s[i] = s[i - 1] + Math.hypot(points[b * 3] - points[a * 3], points[b * 3 + 1] - points[a * 3 + 1], points[b * 3 + 2] - points[a * 3 + 2]); }
           const spacing = DISTRICT_SPACING[path.district] ?? 140;
           const built: Lane = { road: path.name, closed: path.closed, speed: DISTRICT_SPEED[path.district] ?? 15, length: s[samples - 1], siblings: group, points, s, stops: [], zones: [], cars: [],
-            spacing, target: Math.max(1, Math.round(s[samples - 1] / spacing)), links: [], width: path.width };
+            spacing, target: Math.max(1, Math.round(s[samples - 1] / spacing)), links: [], width: path.width, index: lane };
           group.push(built); this.lanes.push(built);
         }
       }
@@ -277,8 +280,13 @@ export class CityTraffic {
         // Join the road beyond its junction box, never inside it or before its own stop line: cars there queue at
         // that road's red light, which would block the turn on exactly the phase it is allowed to go.
         const box = to.stops.find(stop => near.s >= stop.s - 8 && near.s <= stop.exit + 4);
-        const join = box ? (to.closed ? (box.exit + 3) % to.length : Math.min(to.length - 1, box.exit + 3)) : near.s;
-        lane.links.push({ at: lane.length, to, s: join, end: true });
+        // A turn starts before the road it turns onto (after this lane's own stop line) and joins it past the far
+        // edge of this road (past its junction box when it has signals), so the path sweeps through the junction.
+        const past = box ? box.exit + 3 : near.s + lane.width / 2 + 3;
+        const join = to.closed ? past % to.length : Math.min(to.length - 1, past);
+        const myStop = lane.stops.find(stop => stop.s > lane.length - 40);
+        const at = Math.max(myStop ? myStop.s + 1 : 0, lane.length - (to.width / 2 + 3));
+        lane.links.push({ at, to, s: join, end: true });
       }
       // A true dead end: turn round into this road's nearest lane going back the other way, which starts here.
       if (!lane.links.length) {
@@ -294,11 +302,49 @@ export class CityTraffic {
         const near = this.nearest(from, start);
         if (near.distance > 18 || near.s < 30 || (!from.closed && near.s > from.length - 30)) continue;
         if (this.direction(from, near.s).dot(away) < -.35) continue;
-        from.links.push({ at: near.s, to: lane, s: 0, end: false });
+        // Turning off starts before the side road (after a stop line there) and joins it past this road's edge.
+        const stop = from.stops.find(st => st.s < near.s && st.s > near.s - 40);
+        const at = Math.min(near.s, Math.max(stop ? stop.s + 1 : 0, near.s - (lane.width / 2 + 3)));
+        from.links.push({ at, to: lane, s: Math.min(lane.length - 1, from.width / 2 + 3), end: false });
       }
     }
+    // A car must never arrive on a road past that road's own ways on: joining points sit before its last one.
+    const lastWay = (lane: Lane) => Math.max(-Infinity, ...lane.links.filter(link => link.end).map(link => link.at));
+    for (const lane of this.lanes) for (const link of lane.links) if (!link.to.closed && link.to.links.some(l => l.end)) link.s = Math.max(0, Math.min(link.s, lastWay(link.to) - 8));
+    for (const lane of this.lanes) lane.links = this.realistic(lane);
     for (const lane of [...this.lanes]) for (const link of lane.links) this.connect(lane, link);
     for (const lane of this.lanes) lane.links.sort((a, b) => a.at - b.at);
+  }
+
+  /**
+   * Keeps the links a driver would really take. Turns bend at most 120 degrees and end ahead of where they start
+   * (no U-turns in a junction; the one exception is the turn-round at a true dead end, onto the same road). On a road
+   * with two lanes each way, left turns are made from and into the inner lane and right turns from and into the
+   * outer one, so a car waiting to turn left does not hold up traffic going straight on. A lane end always keeps at
+   * least one way on.
+   */
+  private realistic(lane: Lane) {
+    const a = new THREE.Vector3(), b = new THREE.Vector3();
+    const kinds = lane.links.map(link => {
+      if (link.to.road === lane.road) return { link, keep: true };
+      const ta = this.direction(lane, Math.max(0, link.at - 1)), tb = this.direction(link.to, link.s + 1);
+      this.sample(lane, link.at, 0, a); this.sample(link.to, link.s, 0, b);
+      const angle = Math.acos(THREE.MathUtils.clamp(ta.dot(tb), -1, 1)), ahead = (b.x - a.x) * ta.x + (b.z - a.z) * ta.z;
+      const side = tb.x * ta.z - tb.z * ta.x, turn = side > .3 ? 'left' : side < -.3 ? 'right' : 'straight';
+      const inner = (l: Lane) => l.index === 0, outer = (l: Lane) => l.index === Math.max(...l.siblings.map(x => x.index));
+      let keep = angle < THREE.MathUtils.degToRad(120) && ahead > 2, why = angle >= THREE.MathUtils.degToRad(120) ? 'angle' : ahead <= 2 ? 'behind' : '';
+      if (keep && turn === 'left') { keep = (lane.siblings.length < 2 || inner(lane)) && (link.to.siblings.length < 2 || inner(link.to)); if (!keep) why = 'lane'; }
+      if (keep && turn === 'right') { keep = (lane.siblings.length < 2 || outer(lane)) && (link.to.siblings.length < 2 || outer(link.to)); if (!keep) why = 'lane'; }
+      if (why) this.dropped.push({ from: lane.road, to: link.to.road, why, turn, end: link.end, ahead: Math.round(ahead), angle: Math.round(THREE.MathUtils.radToDeg(angle)) });
+      return { link, keep, angle };
+    });
+    const kept = kinds.filter(k => k.keep).map(k => k.link);
+    // Never strand a lane end: if every way on was filtered out, keep the gentlest forward one.
+    if (!lane.closed && !kept.some(link => link.end)) {
+      const best = kinds.filter(k => k.link.end && 'angle' in k).sort((x, y) => (x.angle ?? 9) - (y.angle ?? 9))[0];
+      if (best) kept.push(best.link);
+    }
+    return kept;
   }
 
   /**
@@ -330,7 +376,7 @@ export class CityTraffic {
         .flatMap(lane => lane.stops.filter(stop => stop.intersection === box.intersection).map(stop => ({ lane, from: stop.s - 45, to: stop.exit })));
     }
     const connector: Lane = { road: `${from.road}>${link.to.road}`, closed: false, speed: Math.max(5, Math.min(from.speed, link.to.speed) * (1 - angle / Math.PI * .65)),
-      length: s[count], siblings: [], points, s, stops: [], zones: [], cars: [], spacing: Infinity, target: 0, width: 0, connector: true,
+      length: s[count], siblings: [], points, s, stops: [], zones: [], cars: [], spacing: Infinity, target: 0, width: 0, connector: true, index: 0,
       links: [{ at: s[count], to: link.to, s: link.s, end: true }] };
     connector.siblings.push(connector);
     this.lanes.push(connector);
@@ -529,6 +575,7 @@ export class CityTraffic {
   }
   /** Puts a new car on a lane at distance s if the spot is clear (of cars, stop lines, crossings and the player). */
   private place(lane: Lane, s: number, player: THREE.Vector3, clearOfPlayer: number, hidden = false): Car | undefined {
+    if (!lane.closed && lane.links.some(link => link.end) && s > Math.max(...lane.links.filter(link => link.end).map(link => link.at)) - 5) return undefined;
     if (lane.cars.some(other => Math.abs(other.s - s) < 18) || lane.stops.some(stop => Math.abs(stop.s - s) < 12) || lane.zones.some(zone => s > zone.enter - 4 && s < zone.leave)) return undefined;
     const at = new THREE.Vector3(), index = this.sample(lane, s, 0, at);
     if (at.distanceTo(player) < clearOfPlayer) return undefined;
@@ -585,6 +632,8 @@ export class CityTraffic {
     const before = car.position.clone();
     car.lane.cars.splice(car.lane.cars.indexOf(car), 1); this.leaveZones(car);
     car.lane = link.to; car.s = link.s; car.considered = car.plan = undefined; car.joinWait = 0;
+    // A car crossing a junction stays committed along the connector, and is done once it is on its new road.
+    if (!link.to.connector) car.committed = undefined;
     link.to.cars.push(car); link.to.cars.sort((a, b) => a.s - b.s);
     car.index = this.sample(link.to, car.s, 0, car.position);
     car.drift.copy(before).sub(car.position).setY(0);
@@ -661,6 +710,8 @@ export class CityTraffic {
 
   private drive(car: Car, dt: number, player: THREE.Vector3, playerVelocity: THREE.Vector3, sim: Simulation) {
     const lane = car.lane, v = car.v;
+    // Out of the junction box (or onto another road): no longer committed to it.
+    if (car.committed && !lane.connector && (!lane.stops.includes(car.committed) || car.s - car.kind.body.lengthM > car.committed.exit)) car.committed = undefined;
     const cruise = lane.speed * car.temper;
     let accel = ACCEL * (1 - Math.pow(v / cruise, 4));
     let reason = 'free';
@@ -682,19 +733,35 @@ export class CityTraffic {
       if (distance < -1 || distance > 90) continue;
       const state = this.state(stop);
       if (car.committed === stop) { if (car.s - car.kind.body.lengthM > stop.exit) car.committed = undefined; continue; }
-      // Don't block the box: on green, wait at the line while traffic is backed up just past the junction.
-      const backedUp = ahead && ahead !== car && ahead.s > stop.s && ahead.s < stop.exit + car.kind.body.lengthM + 3 && ahead.v < 2;
-      if (state !== 2 && !backedUp) {
-        // Go only if the whole car can be out of the box before the cross street turns green (or it can no longer
-        // stop at all). Otherwise wait at the line: wide junctions take a slow or starting car several seconds.
-        // A road ending in the junction is crossed by its turn path, and the car must not wait inside the box for a
-        // gap: it leaves the line only when the road it joins already has one.
+      // Never stop inside the box: every wait happens at the line. The car enters only if it can drive straight
+      // through - its turn or merge has a gap now (left turns: oncoming traffic too), and there is room for the
+      // whole car beyond the box on the road it will be on.
+      const length = car.kind.body.lengthM;
+      const inBox = car.plan && car.plan.at >= stop.s - 2 && car.plan.at <= stop.exit + 2 ? car.plan : undefined;
+      const turnClear = !inBox || this.clear(inBox);
+      const beyond = inBox?.final ?? (inBox ? { to: inBox.to, s: inBox.s } : undefined);
+      const backedUp = beyond
+        ? beyond.to.cars.some(other => other.s > beyond.s - 2 && other.s < beyond.s + length + 6 && other.v < 3)
+        : !!ahead && ahead !== car && ahead.s > stop.s && ahead.s < stop.exit + length + 6 && ahead.v < 3;
+      // Held at the line by an optional left turn: after 2.5 s give it up and go straight on instead.
+      if (inBox && !turnClear && state !== 2) {
+        car.joinWait += dt;
+        if (inBox.yieldTo && !inBox.end && car.joinWait > 8) { car.plan = undefined; car.joinWait = 0; }
+        else if (inBox.end && car.joinWait > 3) {
+          const ends = lane.links.filter(link => link.end && link.at > car.s - .5 && this.clear(link));
+          if (ends.length) { car.plan = ends[Math.floor(this.random() * ends.length)]; car.joinWait = 0; }
+        }
+      }
+      // Last resort against gridlock: a car that has waited 15 s at a green line goes anyway.
+      const desperate = car.joinWait > 15;
+      if (state !== 2 && ((turnClear && !backedUp) || desperate)) {
+        // A road ending in the junction is crossed by its turn path as well.
         const endsHere = !lane.closed && stop.exit >= lane.length - .5, turn = endsHere && car.plan?.final ? car.plan.to.length : 0;
         const across = stop.exit - car.s - car.kind.rear + 1 + turn, clearIn = (-v + Math.sqrt(v * v + 2 * ACCEL * Math.max(0, across))) / ACCEL;
-        const cannotStop = distance < v * v / (2 * 8), room = !endsHere || !car.plan || this.clear(car.plan);
-        if ((clearIn < this.timeToCrossGreen(stop) - .3 && room) || cannotStop) { if (distance < 15 || cannotStop) car.committed = stop; continue; }
+        const cannotStop = distance < v * v / (2 * 8);
+        if (clearIn < this.timeToCrossGreen(stop) - .3 || cannotStop || desperate) { if (distance < 15 || cannotStop) { car.committed = stop; car.joinWait = 0; } continue; }
       }
-      if (distance > -1) { follow(Math.max(distance, 0), 0, .5, state === 2 ? 'red light' : backedUp ? 'box blocked' : 'cannot clear in time'); break; }
+      if (distance > -1) { follow(Math.max(distance, 0), 0, .5, state === 2 ? 'red light' : backedUp ? 'box blocked' : !turnClear ? (inBox?.yieldTo ? 'left-turn yield' : 'merge gap') : 'cannot clear in time'); break; }
     }
     // Unsignalised crossings: enter only when the crossing is empty or in use by this road.
     for (const entry of lane.zones) {
@@ -715,7 +782,7 @@ export class CityTraffic {
     const next = lane.links.find(link => link.at > car.s - .5 && link.at - car.s < 45);
     if (next && car.considered !== next) {
       car.considered = next;
-      const ends = lane.links.filter(link => link.end);
+      const ends = lane.links.filter(link => link.end && link.at > car.s - .5);
       car.plan = next.end ? ends[Math.floor(this.random() * ends.length)] : this.random() < TURN_OFF ? next : undefined;
     }
     // A turn ahead: slow to the connector's speed by the time the car reaches it.
@@ -724,7 +791,7 @@ export class CityTraffic {
     if (car.plan && !this.clear(car.plan)) {
       if (car.plan.at - car.s - car.kind.front < 3 && car.v < 1) car.joinWait += dt;
       if (car.joinWait > 3 && car.plan.end) {
-        const ends = lane.links.filter(link => link.end && this.clear(link));
+        const ends = lane.links.filter(link => link.end && link.at > car.s - .5 && this.clear(link));
         if (ends.length) car.plan = ends[Math.floor(this.random() * ends.length)];
       }
       // An optional left turn held up by oncoming traffic is given up after 2.5 s (the car carries on straight), so a
@@ -732,8 +799,9 @@ export class CityTraffic {
       if (car.plan.yieldTo && !car.plan.end && car.joinWait > 2.5) { car.plan = undefined; car.joinWait = 0; }
     }
     if (car.plan && !this.clear(car.plan)) {
-      // A left turn never forces its way through oncoming traffic: it waits for a gap (or their red light).
-      const squeeze = car.joinWait > 6 && !car.plan.yieldTo;
+      // A left turn never forces its way through oncoming traffic: it waits for a gap (or their red light). A car
+      // already in a junction box (committed at its line) never waits in there: it completes its move.
+      const squeeze = (car.joinWait > 6 && !car.plan.yieldTo) || !!car.committed;
       if (!squeeze && !this.clear(car.plan)) follow(car.plan.at - car.s - car.kind.front, 0, .5, car.plan.yieldTo ? 'left-turn yield' : 'merge gap');
     }
     // The player: a car (or anything) in this lane ahead is followed like any other car.
@@ -750,11 +818,14 @@ export class CityTraffic {
     car.s += car.v * dt;
     if (lane.closed && car.s >= lane.length) car.s -= lane.length;
     if (car.plan && car.s >= car.plan.at) {
-      if (this.clear(car.plan) || (car.joinWait > 6 && !car.plan.yieldTo)) this.follow(car, car.plan);
+      if (this.clear(car.plan) || (car.joinWait > 6 && !car.plan.yieldTo) || car.committed) this.follow(car, car.plan);
       else car.s = car.plan.at, car.v = 0;
     } else if (!lane.closed && car.s >= lane.length) {
+      // Past its road's ways on (it joined or was placed beyond them): take the nearest one from here, eased across.
+      const ends = lane.links.filter(link => link.end);
+      if (ends.length) { const way = ends.sort((x, y) => y.at - x.at)[0]; this.follow(car, way); }
       // A true dead end (no road to join): the car leaves, and rebalance() brings one in elsewhere, out of sight.
-      this.retire(car, sim); this.deadEnds++; return;
+      else { this.retire(car, sim); this.deadEnds++; return; }
     }
     car.index = this.sample(car.lane, Math.min(car.s, car.lane.length), car.index, car.position);
     car.drift.multiplyScalar(Math.exp(-dt / .7)); car.position.add(car.drift);
