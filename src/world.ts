@@ -918,6 +918,8 @@ export class RaceWorld {
   stopTraffic(sim?:Simulation) {this.traffic?.dispose(sim);this.traffic=undefined;}
   setTrack(track: Track) {
     ++this.trafficToken;this.stopTraffic();
+    // Leaving a night venue: day sky, sun and reflections come back now, not when the next venue finishes loading.
+    if(this.currentTrack?.night&&!track.night){this.currentTrack=track;this.setWeather(this.weather.preset);}
     void this.racingLine.setTrack(track.lot || track.kind === 'lot' ? undefined : track);
     if (track.lot) { this.setLot(track); return; }
     this.lotScene = undefined;
