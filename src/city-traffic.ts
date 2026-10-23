@@ -16,8 +16,12 @@ import type { ObstacleBody, Simulation } from '../shared/physics';
 
 type RoadPath = { name: string; district: string; width: number; closed: boolean; points: number[][] };
 type Signal = { intersection: Intersection; axis: 0 | 1; matrix: THREE.Matrix4; direction: THREE.Vector3 };
-/** A signal controller: its centre, its cycle offset and the travel direction its axis 0 runs along. */
-type Intersection = { center: THREE.Vector3; offset: number; axis: THREE.Vector3 };
+/**
+ * A signal controller: its centre and the travel direction its axis 0 runs along. Signals are traffic-actuated:
+ * `green` is the axis currently given right of way, `stage` and `t` the stage and seconds spent in it, `demand` the
+ * cars approaching each axis's stop lines, and `maxGreen` how long each axis may hold green while the other waits.
+ */
+type Intersection = { center: THREE.Vector3; axis: THREE.Vector3; green: 0 | 1; stage: 'green' | 'yellow' | 'clear'; t: number; demand: [number, number]; maxGreen: [number, number] };
 /** A stop line before a signalised junction; `exit` is where the lane leaves the junction box again. */
 type Stop = { s: number; exit: number; intersection: Intersection; axis: 0 | 1 };
 type Zone = { center: THREE.Vector3; road?: string; cars: Set<Car>;
@@ -69,6 +73,8 @@ type Car = {
   considered?: Link; plan?: Link; joinWait: number;
   /** A stop line the car decided to drive through on yellow: it keeps going when the light then turns red. */
   committed?: Stop;
+  /** What held the car back most this step (for tuning). */
+  reason?: string;
 };
 /** How often each kind turns up, relative to an ordinary car. */
 const KIND_WEIGHT: Record<string, number> = { 'lct-3000-07': .45, 'lightbody-90-md-utility': .7 };
@@ -77,11 +83,14 @@ const KIND_MASS: Record<string, number> = { 'lct-3000-07': 4200, 'lightbody-90-m
 const DRAW_WITHIN = 480;
 
 /** Signal cycle per intersection, in seconds: axis A green, yellow, all red, then axis B the same. */
-const GREEN = 14, YELLOW = 3, CLEAR = 3.5, CYCLE = 2 * (GREEN + YELLOW + CLEAR);
+/** Signal timing (s): shortest green, longest green for the busier and the quieter axis, yellow, all red. */
+const MIN_GREEN = 7, MAX_GREEN = 20, MINOR_GREEN = 12, YELLOW = 3, CLEAR = 2;
+/** Cars this close to a stop line (m) count as waiting for, or arriving at, that signal. */
+const DEMAND_REACH = 60;
 /** Cruising speed (m/s) and metres of lane per car, by district. The Training Link sets the feel (one car per ~135 m
  * of lane); the expressway is busier and much faster, the outer ridge roads quieter. */
 const DISTRICT_SPEED: Record<string, number> = { Highway: 29, Outer: 20, Industrial: 15, Commercial: 15, Downtown: 13, Training: 15 };
-const DISTRICT_SPACING: Record<string, number> = { Highway: 80, Outer: 190, Industrial: 150, Commercial: 130, Downtown: 115, Training: 135 };
+const DISTRICT_SPACING: Record<string, number> = { Highway: 80, Outer: 190, Industrial: 150, Commercial: 130, Downtown: 140, Training: 135 };
 /** Chance a car turns off onto a side road it passes. */
 const TURN_OFF = .45;
 /** Cars nearer than this are drawn in full (spinning, steering wheels); further ones as a simplified shell. */
@@ -170,7 +179,7 @@ export class CityTraffic {
       const root = find(i);
       if (!intersections.has(root)) {
         const members = poles.filter((_, j) => find(j) === root), center = members.reduce((sum, pole) => sum.add(pole.at), new THREE.Vector3()).divideScalar(members.length);
-        intersections.set(root, { center, offset: this.random() * CYCLE, axis: poles[i].direction.clone() });
+        intersections.set(root, { center, axis: poles[i].direction.clone(), green: this.random() < .5 ? 0 : 1, stage: 'green', t: this.random() * MIN_GREEN, demand: [0, 0], maxGreen: [MAX_GREEN, MAX_GREEN] });
       }
     }
     this.signals = poles.map((pole, i) => {
@@ -242,6 +251,11 @@ export class CityTraffic {
       }
     }
     for (const lane of this.lanes) lane.stops.sort((a, b) => a.s - b.s);
+    // The axis with more lanes stopping at a junction is the main road: it may hold green longer.
+    for (const junction of new Set(this.signals.map(signal => signal.intersection))) {
+      const lanes = [0, 1].map(axis => this.lanes.filter(lane => lane.stops.some(stop => stop.intersection === junction && stop.axis === axis)).length);
+      junction.maxGreen = lanes[0] >= lanes[1] ? [MAX_GREEN, MINOR_GREEN] : [MINOR_GREEN, MAX_GREEN];
+    }
   }
 
   /**
@@ -532,7 +546,7 @@ export class CityTraffic {
    * of sight and away from the player.
    */
   private rebalance(player: THREE.Vector3, sim: Simulation) {
-    const crowded = this.lanes.find(lane => !lane.connector && lane.cars.length > lane.target * 1.2 + 1);
+    const crowded = this.lanes.find(lane => !lane.connector && lane.cars.length > lane.target * 1.1 + 1);
     if (crowded) {
       const car = crowded.cars.find(c => !this.visible(c.position) && c.position.distanceTo(player) > 200 && !c.zones.size);
       if (car) { this.retire(car, sim); this.trimmed++; }
@@ -591,17 +605,42 @@ export class CityTraffic {
 
   // ------------------------------------------------------------------ signals
   /** 0 green, 1 yellow, 2 red, for one signal at the current time. */
-  private phase(signal: { intersection: Intersection; axis: 0 | 1 }) {
-    const t = (this.time + signal.intersection.offset) % CYCLE;
-    return signal.axis === 0 ? t : (t + CYCLE / 2) % CYCLE;
-  }
   private state(signal: { intersection: Intersection; axis: 0 | 1 }) {
-    const phase = this.phase(signal);
-    return phase < GREEN ? 0 : phase < GREEN + YELLOW ? 1 : 2;
+    const junction = signal.intersection, mine = junction.green === signal.axis;
+    return junction.stage === 'green' ? (mine ? 0 : 2) : junction.stage === 'yellow' ? (mine ? 1 : 2) : 2;
   }
-  /** Seconds before the cross street gets green: what is left of this phase's green and yellow, plus the all-red. */
+  /** Seconds, at the soonest, before the cross street gets green (what a car needs to be out of the box by). */
   private timeToCrossGreen(signal: { intersection: Intersection; axis: 0 | 1 }) {
-    return Math.max(0, GREEN + YELLOW - this.phase(signal)) + CLEAR;
+    const junction = signal.intersection;
+    if (junction.stage === 'clear') return Math.max(0, CLEAR - junction.t);
+    if (junction.stage === 'yellow') return Math.max(0, YELLOW - junction.t) + CLEAR;
+    // On green a car goes: yellow and all-red (5 s) are there to see it through the box.
+    return junction.green === signal.axis ? Infinity : 0;
+  }
+  /**
+   * Traffic-actuated signals: green stays with an axis while its cars keep coming, and passes to the other axis when
+   * cars wait there and either this axis has gone quiet or it has had its longest green. Busier axes (more lanes
+   * stopping at the junction) may hold green longer.
+   */
+  private runSignals(dt: number) {
+    const junctions = new Set(this.signals.map(signal => signal.intersection));
+    for (const junction of junctions) junction.demand = [0, 0];
+    for (const car of this.cars) {
+      for (const stop of car.lane.stops) {
+        const distance = stop.s - car.s;
+        if (distance < -2 || distance > DEMAND_REACH) continue;
+        stop.intersection.demand[stop.axis]++; break;
+      }
+    }
+    for (const junction of junctions) {
+      junction.t += dt;
+      const other = junction.green === 0 ? 1 : 0;
+      if (junction.stage === 'green') {
+        const waiting = junction.demand[other] > 0, quiet = junction.demand[junction.green] === 0;
+        if (junction.t >= MIN_GREEN && waiting && (quiet || junction.t >= junction.maxGreen[junction.green])) { junction.stage = 'yellow'; junction.t = 0; }
+      } else if (junction.stage === 'yellow' && junction.t >= YELLOW) { junction.stage = 'clear'; junction.t = 0; }
+      else if (junction.stage === 'clear' && junction.t >= CLEAR) { junction.stage = 'green'; junction.green = other; junction.t = 0; }
+    }
   }
 
   // ------------------------------------------------------------------ update
@@ -609,6 +648,7 @@ export class CityTraffic {
   update(dt: number, sim: Simulation, player: THREE.Vector3, playerVelocity: THREE.Vector3) {
     dt = Math.min(dt, .1);
     this.time += dt;
+    if (dt > 0) this.runSignals(dt);
     if (this.camera) { this.camera.updateMatrixWorld(); this.frustum.setFromProjectionMatrix(new THREE.Matrix4().multiplyMatrices(this.camera.projectionMatrix, this.camera.matrixWorldInverse)); }
     for (const lane of this.lanes) lane.cars.sort((a, b) => a.s - b.s);
     if (dt > 0) {
@@ -623,9 +663,11 @@ export class CityTraffic {
     const lane = car.lane, v = car.v;
     const cruise = lane.speed * car.temper;
     let accel = ACCEL * (1 - Math.pow(v / cruise, 4));
-    const follow = (gap: number, leaderSpeed: number, standstill = STANDSTILL) => {
+    let reason = 'free';
+    const follow = (gap: number, leaderSpeed: number, standstill = STANDSTILL, why = 'car ahead') => {
       const desired = standstill + v * HEADWAY + v * (v - leaderSpeed) / (2 * Math.sqrt(ACCEL * BRAKE));
-      accel = Math.min(accel, ACCEL * (1 - Math.pow(v / cruise, 4) - Math.pow(Math.max(desired, 0) / Math.max(gap, .1), 2)));
+      const next = ACCEL * (1 - Math.pow(v / cruise, 4) - Math.pow(Math.max(desired, 0) / Math.max(gap, .1), 2));
+      if (next < accel) { accel = next; reason = why; }
     };
     // The car ahead in this lane (round a loop, the first car is behind the last one).
     const index = lane.cars.indexOf(car), ahead = lane.cars[index + 1] ?? (lane.closed && lane.cars.length > 1 ? lane.cars[0] : undefined);
@@ -652,7 +694,7 @@ export class CityTraffic {
         const cannotStop = distance < v * v / (2 * 8), room = !endsHere || !car.plan || this.clear(car.plan);
         if ((clearIn < this.timeToCrossGreen(stop) - .3 && room) || cannotStop) { if (distance < 15 || cannotStop) car.committed = stop; continue; }
       }
-      if (distance > -1) { follow(Math.max(distance, 0), 0, .5); break; }
+      if (distance > -1) { follow(Math.max(distance, 0), 0, .5, state === 2 ? 'red light' : backedUp ? 'box blocked' : 'cannot clear in time'); break; }
     }
     // Unsignalised crossings: enter only when the crossing is empty or in use by this road.
     for (const entry of lane.zones) {
@@ -665,7 +707,7 @@ export class CityTraffic {
         if (zone.request?.road === lane.road) zone.request = undefined;
       } else {
         if (!zone.request) zone.request = { road: lane.road, since: this.time };
-        follow(Math.max(distance, 0), 0, .5);
+        follow(Math.max(distance, 0), 0, .5, 'crossing turn');
       }
       break;
     }
@@ -677,7 +719,7 @@ export class CityTraffic {
       car.plan = next.end ? ends[Math.floor(this.random() * ends.length)] : this.random() < TURN_OFF ? next : undefined;
     }
     // A turn ahead: slow to the connector's speed by the time the car reaches it.
-    if (car.plan?.final && v > car.plan.to.speed) follow(car.plan.at - car.s + 10, car.plan.to.speed, 0);
+    if (car.plan?.final && v > car.plan.to.speed) follow(car.plan.at - car.s + 10, car.plan.to.speed, 0, 'slowing to turn');
     // Waiting to join: after 3 s try the roomiest other way on; after 6 s squeeze in rather than lock the junction up.
     if (car.plan && !this.clear(car.plan)) {
       if (car.plan.at - car.s - car.kind.front < 3 && car.v < 1) car.joinWait += dt;
@@ -685,19 +727,24 @@ export class CityTraffic {
         const ends = lane.links.filter(link => link.end && this.clear(link));
         if (ends.length) car.plan = ends[Math.floor(this.random() * ends.length)];
       }
+      // An optional left turn held up by oncoming traffic is given up after 2.5 s (the car carries on straight), so a
+      // waiting turner does not hold the whole lane behind it.
+      if (car.plan.yieldTo && !car.plan.end && car.joinWait > 2.5) { car.plan = undefined; car.joinWait = 0; }
+    }
+    if (car.plan && !this.clear(car.plan)) {
       // A left turn never forces its way through oncoming traffic: it waits for a gap (or their red light).
       const squeeze = car.joinWait > 6 && !car.plan.yieldTo;
-      if (!squeeze && !this.clear(car.plan)) follow(car.plan.at - car.s - car.kind.front, 0, .5);
+      if (!squeeze && !this.clear(car.plan)) follow(car.plan.at - car.s - car.kind.front, 0, .5, car.plan.yieldTo ? 'left-turn yield' : 'merge gap');
     }
     // The player: a car (or anything) in this lane ahead is followed like any other car.
     const toPlayer = this.v3.copy(player).sub(car.position), along = toPlayer.x * car.heading.x + toPlayer.z * car.heading.z;
     const across = Math.abs(toPlayer.x * car.heading.z - toPlayer.z * car.heading.x);
     const playerAhead = along > 0 && along < 60 && across < car.kind.halfWidth + 1.6 && Math.abs(toPlayer.y) < 4;
-    if (playerAhead) follow(along - car.kind.front - 2.3, Math.max(0, playerVelocity.x * car.heading.x + playerVelocity.z * car.heading.z));
+    if (playerAhead) follow(along - car.kind.front - 2.3, Math.max(0, playerVelocity.x * car.heading.x + playerVelocity.z * car.heading.z), STANDSTILL, 'player');
     // Held up by a stopped player for a few seconds: move over to another lane going the same way, if it is clear.
     car.blocked = playerAhead && v < 1 && playerVelocity.length() < 1 ? car.blocked + dt : 0;
     if (car.blocked > 3) { car.blocked = 0; this.changeLane(car); }
-    accel = Math.max(accel, -9);
+    accel = Math.max(accel, -9); car.reason = reason;
     car.braking = accel < -1 || (v < .5 && accel <= 0);
     car.v = Math.max(0, v + accel * dt);
     car.s += car.v * dt;
