@@ -74,7 +74,7 @@ export class RaceWorld {
   camera = new THREE.PerspectiveCamera(46, innerWidth / innerHeight, 0.2, 10000);
   trackGroup = new THREE.Group();
   venueGroup = new THREE.Group();
-  private cullEntries:{mesh:THREE.Mesh,center:THREE.Vector3,radius:number,full:THREE.BufferGeometry,lod?:THREE.BufferGeometry,maxDistance?:number}[]=[];
+  private cullEntries:{mesh:THREE.Mesh,center:THREE.Vector3,radius:number,full:THREE.BufferGeometry,lod?:THREE.BufferGeometry,lodAt?:number,maxDistance?:number}[]=[];
   private cullAt=new THREE.Vector3(Infinity,0,0);
   private cullFar=-1;
   garageGroup = new THREE.Group();
@@ -749,16 +749,37 @@ export class RaceWorld {
    * Far versions of large instanced meshes (the city's buildings), swapped in by cullVenue past the LOD distance.
    * Positions are welded first: texture seams split vertices, and the simplifier treats every seam as a border it
    * may not collapse. Far away a seam's UVs can come from either side, which is invisible at that size.
-   * Foliage is left alone: it is many separate leaves, which simplification deletes outright.
+   * Foliage is many separate leaves, which simplification deletes outright: its far version keeps a third of the
+   * leaves instead, each grown to cover for the missing ones (see foliageLod).
    */
   private instancedLods(root:THREE.Object3D,simplifier?:typeof import('meshoptimizer').MeshoptSimplifier) {
     if(!simplifier)return;
     const made=new Map<THREE.BufferGeometry,THREE.BufferGeometry|undefined>();
     root.traverse(object=>{
-      if(!(object instanceof THREE.InstancedMesh)||/Nature/.test(object.name+(object.parent?.name??'')))return;
-      if(!made.has(object.geometry))made.set(object.geometry,this.weldedLod(object.geometry,simplifier));
-      const lod=made.get(object.geometry);if(lod)object.userData.apexLod=lod;
+      if(!(object instanceof THREE.InstancedMesh))return;
+      const foliage=/Foliage|shrub/i.test((object.material as THREE.Material).name)&&/Nature/.test(object.name+(object.parent?.name??''));
+      if(!made.has(object.geometry))made.set(object.geometry,foliage?this.foliageLod(object.geometry):this.weldedLod(object.geometry,simplifier));
+      const lod=made.get(object.geometry);if(lod){object.userData.apexLod=lod;if(foliage)object.userData.apexLodAt=160;}
     });
+  }
+  /** Keeps every third leaf (connected piece) of a foliage mesh, each grown 1.6x about its own centre. */
+  private foliageLod(source:THREE.BufferGeometry) {
+    const index=source.getIndex(),position=source.getAttribute('position');
+    if(!index||index.count<1500*3)return undefined;
+    const parent=Int32Array.from({length:position.count},(_,i)=>i),find=(i:number):number=>{while(parent[i]!==i)i=parent[i]=parent[parent[i]];return i;};
+    for(let i=0;i<index.count;i+=3){const a=find(index.getX(i));parent[find(index.getX(i+1))]=a;parent[find(index.getX(i+2))]=a;}
+    const keep=new Map<number,boolean>(),kept:number[]=[];let order=0;
+    for(let i=0;i<index.count;i+=3){const c=find(index.getX(i));if(!keep.has(c))keep.set(c,order++%3===0);if(keep.get(c))kept.push(index.getX(i),index.getX(i+1),index.getX(i+2));}
+    const centre=new Map<number,number[]>();
+    for(const v of new Set(kept)){const c=find(v),sum=centre.get(c)??[0,0,0,0];sum[0]+=position.getX(v);sum[1]+=position.getY(v);sum[2]+=position.getZ(v);sum[3]++;centre.set(c,sum);}
+    const grown=new Float32Array(position.count*3);
+    for(let v=0;v<position.count;v++){grown[v*3]=position.getX(v);grown[v*3+1]=position.getY(v);grown[v*3+2]=position.getZ(v);}
+    for(const v of new Set(kept)){const [x,y,z,n]=centre.get(find(v))!;grown[v*3]=x/n+(grown[v*3]-x/n)*1.6;grown[v*3+1]=y/n+(grown[v*3+1]-y/n)*1.6;grown[v*3+2]=z/n+(grown[v*3+2]-z/n)*1.6;}
+    const lod=new THREE.BufferGeometry();
+    for(const [name,attribute] of Object.entries(source.attributes))lod.setAttribute(name,attribute);
+    lod.setAttribute('position',new THREE.BufferAttribute(grown,3));lod.setIndex(kept);
+    lod.boundingBox=source.boundingBox;lod.boundingSphere=source.boundingSphere;
+    return lod;
   }
   private weldedLod(source:THREE.BufferGeometry,simplifier:typeof import('meshoptimizer').MeshoptSimplifier) {
     const index=source.getIndex(),position=source.getAttribute('position');
@@ -790,7 +811,7 @@ export class RaceWorld {
       const sphere=(object instanceof THREE.InstancedMesh?object.boundingSphere!:object.geometry.boundingSphere!).clone().applyMatrix4(object.matrixWorld);
       // A draw distance baked into the asset (design/build-city.ts) sits on the glTF node: the mesh or its group.
       const maxDistance=object.userData.apexCull??object.parent?.userData.apexCull;
-      this.cullEntries.push({mesh:object,center:sphere.center,radius:sphere.radius,full:object.geometry,lod:object.userData.apexLod,maxDistance});
+      this.cullEntries.push({mesh:object,center:sphere.center,radius:sphere.radius,full:object.geometry,lod:object.userData.apexLod,lodAt:object.userData.apexLodAt,maxDistance});
     });
     this.cullFar=-1;
   }
@@ -806,7 +827,9 @@ export class RaceWorld {
       const gap=position.distanceTo(entry.center)-entry.radius;
       entry.mesh.visible=gap<reach;
       // Hysteresis keeps a chunk at the LOD boundary from flipping geometry every pass.
-      if(entry.lod)entry.mesh.geometry=lodAt>0&&gap>(entry.mesh.geometry===entry.lod?lodAt-30:lodAt+30)?entry.lod:entry.full;
+      // Foliage has its own, nearer switch (a thinned canopy is indistinguishable sooner); no LOD setting keeps it off.
+      const at=entry.lodAt&&lodAt>0?Math.min(lodAt,entry.lodAt*(this.fast?.8:1)):lodAt;
+      if(entry.lod)entry.mesh.geometry=at>0&&gap>(entry.mesh.geometry===entry.lod?at-30:at+30)?entry.lod:entry.full;
     }
   }
   private async loadVenue(track:Track) {

@@ -18,7 +18,14 @@ type RoadPath = { name: string; district: string; width: number; closed: boolean
 type Signal = { intersection: Intersection; axis: 0 | 1; matrix: THREE.Matrix4; direction: THREE.Vector3 };
 type Intersection = { center: THREE.Vector3; offset: number };
 type Stop = { s: number; signal: Signal };
-type Zone = { center: THREE.Vector3; road?: string; cars: Set<Car> };
+type Zone = { center: THREE.Vector3; road?: string; cars: Set<Car>;
+  /** A road whose cars have been kept waiting: once it has waited long enough, the road in the crossing stops admitting more. */
+  request?: { road: string; since: number } };
+/**
+ * Where a car can leave its lane for another: at the lane's end onto the road it runs into (every car must take one
+ * there; a lane end without any is a dead end), or part-way along onto a side road that starts beside it.
+ */
+type Link = { at: number; to: Lane; s: number; end: boolean };
 type ZoneEntry = { zone: Zone; enter: number; leave: number };
 type Lane = {
   road: string; closed: boolean; speed: number; length: number;
@@ -27,22 +34,31 @@ type Lane = {
   /** x, y, z per sample, and the distance along the lane at each sample. */
   points: Float32Array; s: Float64Array;
   stops: Stop[]; zones: ZoneEntry[]; cars: Car[];
+  /** Metres of lane per car, the number of cars that makes, and the links out of this lane, by distance along it. */
+  spacing: number; target: number; links: Link[];
 };
 /** Where a wheel sits on its car, and whether it steers and which side it is on (right wheels are the left one turned round). */
 type WheelSlot = { at: THREE.Vector3; front: boolean; right: boolean };
 type Kind = {
   name: string; weight: number; body: ObstacleBody; front: number; rear: number; halfWidth: number; wheelbase: number; radius: number;
-  /** Instanced batches: body parts, lamps (with a per-car colour) and front/rear wheels. */
+  /** Instanced batches: body parts, lamps (with a per-car colour) and front/rear wheels; and the far version, a
+   * simplified body with its wheels fixed in place. */
   parts: THREE.InstancedMesh[]; heads: THREE.InstancedMesh[]; tails: THREE.InstancedMesh[]; frontWheels: THREE.InstancedMesh[]; rearWheels: THREE.InstancedMesh[];
+  far: THREE.InstancedMesh[];
   slots: WheelSlot[];
 };
 type Car = {
-  id: number; kind: Kind; lane: Lane; s: number; v: number; cruise: number; index: number; braking: boolean;
+  id: number; kind: Kind; lane: Lane; s: number; v: number; index: number; braking: boolean;
+  /** How briskly this driver goes: a share of each road's speed, kept from road to road. */
+  temper: number;
   position: THREE.Vector3; heading: THREE.Vector3; zones: Set<Zone>; obstacle: boolean;
   /** Seconds spent held up by the player; and the sideways offset left over from a lane change, easing to zero. */
   blocked: number; drift: THREE.Vector3;
   /** Wheel roll angle, front-wheel steer angle and last heading (for the turn rate). */
   spin: number; steer: number; yaw: number;
+  /** The next link considered and whether the car will take it (decided once, as the car comes up to it); and how long
+   * it has waited for room to join. */
+  considered?: Link; plan?: Link; joinWait: number;
 };
 /** How often each kind turns up, relative to an ordinary car. */
 const KIND_WEIGHT: Record<string, number> = { 'lct-3000-07': .45, 'lightbody-90-md-utility': .7 };
@@ -52,12 +68,18 @@ const DRAW_WITHIN = 480;
 
 /** Signal cycle per intersection, in seconds: axis A green, yellow, all red, then axis B the same. */
 const GREEN = 14, YELLOW = 3, CLEAR = 1.5, CYCLE = 2 * (GREEN + YELLOW + CLEAR);
-const DISTRICT_SPEED: Record<string, number> = { Highway: 25, Outer: 19, Industrial: 15, Commercial: 15, Downtown: 13, Training: 15 };
+/** Cruising speed (m/s) and metres of lane per car, by district. The Training Link sets the feel (one car per ~135 m
+ * of lane); the expressway is busier and much faster, the outer ridge roads quieter. */
+const DISTRICT_SPEED: Record<string, number> = { Highway: 29, Outer: 20, Industrial: 15, Commercial: 15, Downtown: 13, Training: 15 };
+const DISTRICT_SPACING: Record<string, number> = { Highway: 80, Outer: 190, Industrial: 150, Commercial: 130, Downtown: 115, Training: 135 };
+/** Chance a car turns off onto a side road it passes. */
+const TURN_OFF = .45;
+/** Cars nearer than this are drawn in full (spinning, steering wheels); further ones as a simplified shell. */
+const DETAIL_WITHIN = 75;
 /** Roads with no traffic: the test straight is the player's own. */
 const NO_TRAFFIC = new Set(['Acceleration']);
-const CAR_COUNT = 34;
-/** Traffic is kept within this distance of the player; cars beyond it are placed again ahead of time. */
-const KEEP_NEAR = 650;
+/** Upper bound on cars across the whole city (and the size of each instanced batch). */
+const MAX_CARS = 460;
 /** Only cars this close are solid to the player's car. */
 const SOLID_WITHIN = 110;
 /** Car-following (intelligent driver model): comfortable acceleration and braking, time headway, standstill gap. */
@@ -78,8 +100,9 @@ export class CityTraffic {
   private signals: Signal[] = [];
   private kinds: Kind[] = [];
   private cars: Car[] = [];
-  /** Car ids waiting for a free spot near the player (none was found when they were last placed). */
-  private waiting: number[] = [];
+  private nextId = 0;
+  /** Counters for tuning: cars that left at dead ends, and cars taken off crowded lanes out of sight. */
+  deadEnds = 0; trimmed = 0;
   private time = 0;
   private random = mulberry(20261022);
   private registered?: Simulation;
@@ -101,15 +124,16 @@ export class CityTraffic {
   /** Loads the road paths and vehicles, reads the traffic lights out of the loaded venue, and places the cars. */
   static async create(venue: THREE.Object3D, loader: GLTFLoader, player: THREE.Vector3) {
     const traffic = new CityTraffic();
-    const [map, gltf] = await Promise.all([
+    const [map, gltf, simplifier] = await Promise.all([
       fetch(assetUrl('models/tracks/racing-city.map.json')).then(response => { if (!response.ok) throw new Error(`City map failed: ${response.status}`); return response.json() as Promise<{ paths: RoadPath[] }>; }),
       loader.loadAsync(assetUrl('models/traffic/traffic-cars.glb')),
+      import('meshoptimizer').then(async ({ MeshoptSimplifier }) => { await MeshoptSimplifier.ready; return MeshoptSimplifier.supported ? MeshoptSimplifier : undefined; }).catch(() => undefined),
     ]);
     traffic.buildSignals(venue);
     traffic.buildLanes(map.paths);
-    traffic.buildKinds(gltf.scene);
+    traffic.buildKinds(gltf.scene, simplifier);
     traffic.buildLamps();
-    for (let i = 0; i < CAR_COUNT; i++) { const car = traffic.spawn(i, player, 60, KEEP_NEAR); if (car) traffic.cars.push(car); else traffic.waiting.push(i); }
+    traffic.populate(player);
     traffic.render();
     return traffic;
   }
@@ -162,7 +186,9 @@ export class CityTraffic {
           }
           const samples = path.closed ? count + 1 : count, s = new Float64Array(samples);
           for (let i = 1; i < samples; i++) { const a = (i - 1) % count, b = i % count; s[i] = s[i - 1] + Math.hypot(points[b * 3] - points[a * 3], points[b * 3 + 1] - points[a * 3 + 1], points[b * 3 + 2] - points[a * 3 + 2]); }
-          const built: Lane = { road: path.name, closed: path.closed, speed: DISTRICT_SPEED[path.district] ?? 15, length: s[samples - 1], siblings: group, points, s, stops: [], zones: [], cars: [] };
+          const spacing = DISTRICT_SPACING[path.district] ?? 140;
+          const built: Lane = { road: path.name, closed: path.closed, speed: DISTRICT_SPEED[path.district] ?? 15, length: s[samples - 1], siblings: group, points, s, stops: [], zones: [], cars: [],
+            spacing, target: Math.max(1, Math.round(s[samples - 1] / spacing)), links: [] };
           group.push(built); this.lanes.push(built);
         }
       }
@@ -178,6 +204,45 @@ export class CityTraffic {
       lane.stops.sort((a, b) => a.s - b.s);
     }
     this.buildZones();
+    this.buildLinks();
+  }
+
+  /**
+   * Links between roads. A lane that ends where it runs into another road joins that road's lane going a compatible
+   * way (not a U-turn onto its own road). A lane that starts beside another road can be turned into from it.
+   */
+  private buildLinks() {
+    const end = new THREE.Vector3(), start = new THREE.Vector3();
+    for (const lane of this.lanes) {
+      if (lane.closed) continue;
+      this.sample(lane, lane.length, lane.s.length - 2, end);
+      const heading = this.direction(lane, lane.length - 2);
+      for (const to of this.lanes) {
+        if (to.road === lane.road) continue;
+        const near = this.nearest(to, end);
+        if (near.distance > 18 || (!to.closed && near.s > to.length - 40)) continue;
+        if (this.direction(to, near.s).dot(heading) < -.35) continue;
+        this.sample(to, near.s, 0, start); if (Math.abs(start.y - end.y) > 4) continue;
+        lane.links.push({ at: lane.length, to, s: near.s, end: true });
+      }
+      // A true dead end: turn round into this road's nearest lane going back the other way, which starts here.
+      if (!lane.links.length) {
+        const back = this.lanes.filter(to => to.road === lane.road && !lane.siblings.includes(to))
+          .map(to => { this.sample(to, 0, 0, start); return { to, gap: start.distanceTo(end) }; }).sort((a, b) => a.gap - b.gap)[0];
+        if (back && back.gap < 20) lane.links.push({ at: lane.length, to: back.to, s: 0, end: true });
+      }
+      // Side roads that start beside this lane, as optional turn-offs.
+      this.sample(lane, 0, 0, start);
+      const away = this.direction(lane, 2);
+      for (const from of this.lanes) {
+        if (from.road === lane.road) continue;
+        const near = this.nearest(from, start);
+        if (near.distance > 18 || near.s < 30 || (!from.closed && near.s > from.length - 30)) continue;
+        if (this.direction(from, near.s).dot(away) < -.35) continue;
+        from.links.push({ at: near.s, to: lane, s: 0, end: false });
+      }
+    }
+    for (const lane of this.lanes) lane.links.sort((a, b) => a.at - b.at);
   }
 
   /** Where lanes of different roads cross away from a signal, cars take turns: one road at a time in the crossing. */
@@ -209,6 +274,9 @@ export class CityTraffic {
     const zones: Zone[] = [];
     for (const pair of hits) {
       if (this.signals.some(signal => signal.intersection.center.distanceTo(pair[0].at) < 50)) continue;
+      // Where a road starts or ends at another, cars merge (see links) instead of taking turns: a car queuing to merge
+      // inside a crossing would hold it forever.
+      if (pair.some(hit => !hit.lane.closed && (hit.s < 30 || hit.s > hit.lane.length - 30))) continue;
       let zone = zones.find(z => z.center.distanceTo(pair[0].at) < 25);
       if (!zone) { zone = { center: pair[0].at.clone(), cars: new Set() }; zones.push(zone); }
       for (const hit of pair) {
@@ -220,7 +288,7 @@ export class CityTraffic {
     for (const lane of this.lanes) lane.zones.sort((a, b) => a.enter - b.enter);
   }
 
-  private buildKinds(scene: THREE.Object3D) {
+  private buildKinds(scene: THREE.Object3D, simplifier?: typeof import('meshoptimizer').MeshoptSimplifier) {
     scene.updateMatrixWorld(true);
     const roleOf = (object: THREE.Object3D) => { for (let o: THREE.Object3D | null = object; o; o = o.parent) if (o.userData.apexPart) return o.userData.apexPart as string; return 'body'; };
     const clean = (geometry: THREE.BufferGeometry, matrix: THREE.Matrix4) => {
@@ -256,7 +324,7 @@ export class CityTraffic {
       const kind: Kind = {
         name: vehicle.name, weight: KIND_WEIGHT[vehicle.name] ?? 1, front: box.max.z, rear: box.min.z, halfWidth: (box.max.x - box.min.x) / 2, wheelbase: 0, radius: 0,
         body: { widthM: box.max.x - box.min.x, heightM: box.max.y - box.min.y, lengthM: box.max.z - box.min.z, massKg: KIND_MASS[vehicle.name] ?? 1500 },
-        parts: [], heads: [], tails: [], frontWheels: [], rearWheels: [], slots: [],
+        parts: [], heads: [], tails: [], frontWheels: [], rearWheels: [], far: [], slots: [],
       };
       const batch = (geometry: THREE.BufferGeometry, material: THREE.Material, count: number, perCarColour = false) => {
         const mesh = new THREE.InstancedMesh(geometry, material, count);
@@ -264,13 +332,20 @@ export class CityTraffic {
         if (perCarColour) mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(count * 3).fill(1), 3);
         this.group.add(mesh); return mesh;
       };
+      const farParts: THREE.BufferGeometry[] = [];
       for (const { role, material, geometries } of groups.values()) {
         const geometry = geometries.length > 1 ? mergeGeometries(geometries)! : geometries[0];
-        if (role === 'body') { kind.parts.push(batch(geometry, material, CAR_COUNT)); continue; }
+        if (role === 'body') {
+          kind.parts.push(batch(geometry, material, MAX_CARS));
+          // Far version: the part at about a tenth of the triangles, painted its material's average colour, so the
+          // whole far car (wheels included, interior dropped) merges into a single draw.
+          if (!/Interior/i.test(material.name)) farParts.push(painted(simplifier ? simplified(geometry, simplifier, .12) : geometry, material));
+          continue;
+        }
         // Lamps glow by themselves: an unlit copy of the lamp texture, tinted per car (brighter when braking).
         const source = material as THREE.MeshStandardMaterial;
         const lamp = new THREE.MeshBasicMaterial({ map: source.map, color: 0xffffff, toneMapped: false, transparent: source.transparent, opacity: source.opacity, side: source.side });
-        (role === 'head' ? kind.heads : kind.tails).push(batch(geometry, lamp, CAR_COUNT, true));
+        (role === 'head' ? kind.heads : kind.tails).push(batch(geometry, lamp, MAX_CARS, true));
       }
       // Wheels: forward is +z and right is -x, so left wheels have x > 0. The left front and left rear wheels become
       // the shapes; each is centred on its hub so it can turn about it.
@@ -288,9 +363,17 @@ export class CityTraffic {
         for (const [material, geometries] of byMaterial) {
           const geometry = geometries.length > 1 ? mergeGeometries(geometries)! : geometries[0];
           if (front) { geometry.computeBoundingBox(); kind.radius = Math.max(kind.radius, geometry.boundingBox!.max.y); }
-          (front ? kind.frontWheels : kind.rearWheels).push(batch(geometry, material, CAR_COUNT * 2));
+          (front ? kind.frontWheels : kind.rearWheels).push(batch(geometry, material, MAX_CARS * 2));
         }
       }
+      // Far wheels: all four, simplified and fixed in place, in one batch per wheel material.
+      const farWheels = new Map<THREE.Material, THREE.BufferGeometry[]>();
+      for (const wheel of wheels) for (const mesh of wheel.meshes) {
+        const geometry = clean(mesh.geometry, mesh.matrixWorld);
+        (farWheels.get(mesh.material as THREE.Material) ?? farWheels.set(mesh.material as THREE.Material, []).get(mesh.material as THREE.Material)!).push(geometry);
+      }
+      for (const [material, geometries] of farWheels) farParts.push(painted(simplifier ? simplified(mergeGeometries(geometries)!, simplifier, .15) : mergeGeometries(geometries)!, material));
+      if (farParts.length) kind.far.push(batch(mergeGeometries(farParts)!, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: .55, metalness: .25, name: 'traffic-far' }), MAX_CARS));
       this.kinds.push(kind);
     }
   }
@@ -298,7 +381,7 @@ export class CityTraffic {
   private buildLamps() {
     const poolMaterial = glow(0xfff0d0, .32, this.texture);
     poolMaterial.polygonOffset = true; poolMaterial.polygonOffsetFactor = -2; poolMaterial.polygonOffsetUnits = -2;
-    this.pools = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2), poolMaterial, CAR_COUNT);
+    this.pools = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2), poolMaterial, MAX_CARS);
     this.pools.frustumCulled = false; this.pools.count = 0; this.group.add(this.pools);
     // Signal bulbs: red, yellow and green per head, lit or dim; one glow per head around the lit bulb.
     const count = this.signals.length;
@@ -342,23 +425,52 @@ export class CityTraffic {
     return best;
   }
 
-  /** Places a car on a random lane between `near` and `far` metres from the player, clear of other cars. */
-  private spawn(id: number, player: THREE.Vector3, near: number, far: number, kind?: Kind): Car | undefined {
-    const at = new THREE.Vector3();
-    for (let attempt = 0; attempt < 240; attempt++) {
-      const lane = this.lanes[Math.floor(this.random() * this.lanes.length)], s = this.random() * lane.length;
-      const index = this.sample(lane, s, 0, at), distance = at.distanceTo(player);
-      if (distance < near || distance > far) continue;
-      if (lane.cars.some(other => Math.abs(other.s - s) < 30)) continue;
-      if (lane.stops.some(stop => Math.abs(stop.s - s) < 12) || lane.zones.some(zone => s > zone.enter - 4 && s < zone.leave)) continue;
-      const car: Car = { id, kind: kind ?? this.pickKind(), lane, s, v: lane.speed * .7, cruise: lane.speed * (.85 + this.random() * .25),
-        index, braking: false, position: at.clone(), heading: this.direction(lane, s), zones: new Set(), obstacle: false, blocked: 0, drift: new THREE.Vector3(),
-        spin: 0, steer: 0, yaw: 0 };
-      car.yaw = Math.atan2(car.heading.x, car.heading.z);
-      lane.cars.push(car);
-      return car;
+  /** Fills every lane to its density, evenly spaced with a little jitter, keeping clear of the player. */
+  private populate(player: THREE.Vector3) {
+    for (const lane of this.lanes) {
+      const step = lane.length / lane.target;
+      for (let k = 0; k < lane.target && this.cars.length < MAX_CARS; k++)
+        for (const shift of [.5, .2, .8, .05, .95]) if (this.place(lane, (k + shift) * step, player, 25)) break;
     }
-    return undefined;
+  }
+  /** Puts a new car on a lane at distance s if the spot is clear (of cars, stop lines, crossings and the player). */
+  private place(lane: Lane, s: number, player: THREE.Vector3, clearOfPlayer: number, hidden = false): Car | undefined {
+    if (lane.cars.some(other => Math.abs(other.s - s) < 18) || lane.stops.some(stop => Math.abs(stop.s - s) < 12) || lane.zones.some(zone => s > zone.enter - 4 && s < zone.leave)) return undefined;
+    const at = new THREE.Vector3(), index = this.sample(lane, s, 0, at);
+    if (at.distanceTo(player) < clearOfPlayer) return undefined;
+    if (hidden && this.camera && at.distanceTo(this.eye) < 420 && this.frustum.intersectsSphere(new THREE.Sphere(at, 4))) return undefined;
+    const car: Car = { id: this.nextId++, kind: this.pickKind(), lane, s, v: lane.speed * .7, temper: .85 + this.random() * .25,
+      index, braking: false, position: at, heading: this.direction(lane, s), zones: new Set(), obstacle: false, blocked: 0, drift: new THREE.Vector3(),
+      spin: 0, steer: 0, yaw: 0, joinWait: 0 };
+    car.yaw = Math.atan2(car.heading.x, car.heading.z);
+    lane.cars.push(car); lane.cars.sort((a, b) => a.s - b.s); this.cars.push(car);
+    return car;
+  }
+  /**
+   * Keeps each lane near its density without anything popping in or out where the player can see: a lane well over
+   * its share (cars pile up on loops fed by side roads) loses a car out of sight, and the emptiest lane gains one, out
+   * of sight and away from the player.
+   */
+  private rebalance(player: THREE.Vector3, sim: Simulation) {
+    const crowded = this.lanes.find(lane => lane.cars.length > lane.target * 1.2 + 1);
+    if (crowded) {
+      const car = crowded.cars.find(c => !this.visible(c.position) && c.position.distanceTo(player) > 200 && !c.zones.size);
+      if (car) { this.retire(car, sim); this.trimmed++; }
+    }
+    // Up to three of the emptiest lanes gain a car each frame.
+    const short = this.lanes.filter(lane => lane.cars.length < lane.target * .9).sort((a, b) => a.cars.length / a.target - b.cars.length / b.target);
+    let added = 0;
+    for (const lane of short) {
+      if (added >= 3 || this.cars.length >= MAX_CARS) break;
+      for (let attempt = 0; attempt < 8; attempt++) if (this.place(lane, this.random() * lane.length, player, 160, true)) { added++; break; }
+    }
+  }
+  private get eye() { return this.camera ? this.eyePosition.setFromMatrixPosition(this.camera.matrixWorld) : this.eyePosition; }
+  private eyePosition = new THREE.Vector3();
+  private visible(at: THREE.Vector3) { return !!this.camera && at.distanceTo(this.eye) < DRAW_WITHIN && this.frustum.intersectsSphere(new THREE.Sphere(at, 5)); }
+  private retire(car: Car, sim: Simulation) {
+    this.remove(car); this.release(car, sim);
+    this.cars.splice(this.cars.indexOf(car), 1);
   }
   private pickKind() {
     const total = this.kinds.reduce((sum, kind) => sum + kind.weight, 0);
@@ -368,9 +480,23 @@ export class CityTraffic {
   }
   private remove(car: Car) {
     car.lane.cars.splice(car.lane.cars.indexOf(car), 1);
+    this.leaveZones(car);
+  }
+  private leaveZones(car: Car) {
     for (const zone of car.zones) { zone.cars.delete(car); if (!zone.cars.size) zone.road = undefined; }
     car.zones.clear();
   }
+  /** Moves a car onto a linked lane, drawn where it was and easing across to the new line. */
+  private follow(car: Car, link: Link) {
+    const before = car.position.clone();
+    car.lane.cars.splice(car.lane.cars.indexOf(car), 1); this.leaveZones(car);
+    car.lane = link.to; car.s = link.s; car.considered = car.plan = undefined; car.joinWait = 0;
+    link.to.cars.push(car); link.to.cars.sort((a, b) => a.s - b.s);
+    car.index = this.sample(link.to, car.s, 0, car.position);
+    car.drift.copy(before).sub(car.position).setY(0);
+  }
+  /** Whether a linked lane has room at the joining point. */
+  private clear(link: Link) { return !link.to.cars.some(other => other.s > link.s - 14 && other.s < link.s + 10); }
 
   // ------------------------------------------------------------------ signals
   /** 0 green, 1 yellow, 2 red, for one signal at the current time. */
@@ -384,33 +510,23 @@ export class CityTraffic {
   update(dt: number, sim: Simulation, player: THREE.Vector3, playerVelocity: THREE.Vector3) {
     dt = Math.min(dt, .1);
     this.time += dt;
+    if (this.camera) { this.camera.updateMatrixWorld(); this.frustum.setFromProjectionMatrix(new THREE.Matrix4().multiplyMatrices(this.camera.projectionMatrix, this.camera.matrixWorldInverse)); }
     for (const lane of this.lanes) lane.cars.sort((a, b) => a.s - b.s);
-    if (dt > 0) for (const car of [...this.cars]) this.drive(car, dt, player, playerVelocity);
-    // Cars that ended their road or fell far behind are placed again near the player, out of sight distance.
-    for (let i = 0; i < this.cars.length; i++) {
-      const car = this.cars[i];
-      const ended = !car.lane.closed && car.s >= car.lane.length - 1;
-      if (!ended && car.position.distanceTo(player) <= KEEP_NEAR) continue;
-      this.remove(car); this.release(car, sim);
-      const next = this.spawn(car.id, player, 220, KEEP_NEAR * .9, car.kind);
-      if (next) this.cars[i] = next; else { this.waiting.push(car.id); this.cars.splice(i, 1); i--; }
-    }
-    // A couple of waiting cars try again each frame, out of sight distance.
-    for (let tries = 0; tries < 2 && this.waiting.length; tries++) {
-      const car = this.spawn(this.waiting[0], player, 220, KEEP_NEAR * .9);
-      if (!car) break;
-      this.waiting.shift(); this.cars.push(car);
+    if (dt > 0) {
+      for (const car of [...this.cars]) this.drive(car, dt, player, playerVelocity, sim);
+      this.rebalance(player, sim);
     }
     this.solid(sim, player);
     this.render();
   }
 
-  private drive(car: Car, dt: number, player: THREE.Vector3, playerVelocity: THREE.Vector3) {
+  private drive(car: Car, dt: number, player: THREE.Vector3, playerVelocity: THREE.Vector3, sim: Simulation) {
     const lane = car.lane, v = car.v;
-    let accel = ACCEL * (1 - Math.pow(v / car.cruise, 4));
+    const cruise = lane.speed * car.temper;
+    let accel = ACCEL * (1 - Math.pow(v / cruise, 4));
     const follow = (gap: number, leaderSpeed: number, standstill = STANDSTILL) => {
       const desired = standstill + v * HEADWAY + v * (v - leaderSpeed) / (2 * Math.sqrt(ACCEL * BRAKE));
-      accel = Math.min(accel, ACCEL * (1 - Math.pow(v / car.cruise, 4) - Math.pow(Math.max(desired, 0) / Math.max(gap, .1), 2)));
+      accel = Math.min(accel, ACCEL * (1 - Math.pow(v / cruise, 4) - Math.pow(Math.max(desired, 0) / Math.max(gap, .1), 2)));
     };
     // The car ahead in this lane (round a loop, the first car is behind the last one).
     const index = lane.cars.indexOf(car), ahead = lane.cars[index + 1] ?? (lane.closed && lane.cars.length > 1 ? lane.cars[0] : undefined);
@@ -431,9 +547,31 @@ export class CityTraffic {
       const distance = entry.enter - car.s - car.kind.front;
       if (car.s > entry.leave) { if (car.zones.delete(entry.zone)) { entry.zone.cars.delete(car); if (!entry.zone.cars.size) entry.zone.road = undefined; } continue; }
       if (car.zones.has(entry.zone) || distance > Math.max(10, stopping + 6)) continue;
-      if (!entry.zone.cars.size || entry.zone.road === lane.road) { entry.zone.road = lane.road; entry.zone.cars.add(car); car.zones.add(entry.zone); }
-      else follow(Math.max(distance, 0), 0, .5);
+      const zone = entry.zone, overdue = zone.request && zone.request.road !== lane.road && this.time - zone.request.since > 4;
+      if (!zone.cars.size || (zone.road === lane.road && !overdue)) {
+        zone.road = lane.road; zone.cars.add(car); car.zones.add(zone);
+        if (zone.request?.road === lane.road) zone.request = undefined;
+      } else {
+        if (!zone.request) zone.request = { road: lane.road, since: this.time };
+        follow(Math.max(distance, 0), 0, .5);
+      }
       break;
+    }
+    // Links: decide once per link as it comes up; at the lane's end the car must take one, or it has reached a dead end.
+    const next = lane.links.find(link => link.at > car.s - .5 && link.at - car.s < 45);
+    if (next && car.considered !== next) {
+      car.considered = next;
+      const ends = lane.links.filter(link => link.end);
+      car.plan = next.end ? ends[Math.floor(this.random() * ends.length)] : this.random() < TURN_OFF ? next : undefined;
+    }
+    // Waiting to join: after 3 s try the roomiest other way on; after 6 s squeeze in rather than lock the junction up.
+    if (car.plan && !this.clear(car.plan)) {
+      if (car.plan.at - car.s - car.kind.front < 3 && car.v < 1) car.joinWait += dt;
+      if (car.joinWait > 3 && car.plan.end) {
+        const ends = lane.links.filter(link => link.end && this.clear(link));
+        if (ends.length) car.plan = ends[Math.floor(this.random() * ends.length)];
+      }
+      if (car.joinWait <= 6 && !this.clear(car.plan)) follow(car.plan.at - car.s - car.kind.front, 0, .5);
     }
     // The player: a car (or anything) in this lane ahead is followed like any other car.
     const toPlayer = this.v3.copy(player).sub(car.position), along = toPlayer.x * car.heading.x + toPlayer.z * car.heading.z;
@@ -448,7 +586,14 @@ export class CityTraffic {
     car.v = Math.max(0, v + accel * dt);
     car.s += car.v * dt;
     if (lane.closed && car.s >= lane.length) car.s -= lane.length;
-    car.index = this.sample(car.lane, car.s, car.index, car.position);
+    if (car.plan && car.s >= car.plan.at) {
+      if (this.clear(car.plan) || car.joinWait > 6) this.follow(car, car.plan);
+      else car.s = car.plan.at, car.v = 0;
+    } else if (!lane.closed && car.s >= lane.length) {
+      // A true dead end (no road to join): the car leaves, and rebalance() brings one in elsewhere, out of sight.
+      this.retire(car, sim); this.deadEnds++; return;
+    }
+    car.index = this.sample(car.lane, Math.min(car.s, car.lane.length), car.index, car.position);
     car.drift.multiplyScalar(Math.exp(-dt / .7)); car.position.add(car.drift);
     const look = this.v3, ahead2 = car.lane; this.sample(ahead2, Math.min(ahead2.closed ? car.s + 3 : ahead2.length, car.s + 3), car.index, look);
     if (ahead2.closed && car.s + 3 >= ahead2.length) this.sample(ahead2, car.s + 3 - ahead2.length, 0, look);
@@ -498,22 +643,30 @@ export class CityTraffic {
 
   // ------------------------------------------------------------------ drawing
   private render() {
-    const m = this.matrix, q = this.q, up = new THREE.Vector3(0, 1, 0), counts = new Map<Kind, number>();
+    const m = this.matrix, q = this.q, up = new THREE.Vector3(0, 1, 0), counts = new Map<Kind, number>(), farCounts = new Map<Kind, number>(), lamps = new Map<Kind, number>();
     const local = new THREE.Matrix4(), spin = new THREE.Matrix4(), steer = new THREE.Matrix4(), flip = new THREE.Matrix4().makeRotationY(Math.PI);
-    if (this.camera) { this.camera.updateMatrixWorld(); this.frustum.setFromProjectionMatrix(new THREE.Matrix4().multiplyMatrices(this.camera.projectionMatrix, this.camera.matrixWorldInverse)); }
-    const sphere = new THREE.Sphere(), eye = this.camera ? new THREE.Vector3().setFromMatrixPosition(this.camera.matrixWorld) : undefined;
+    const sphere = new THREE.Sphere(), eye = this.camera ? this.eye.clone() : undefined;
     let pool = 0;
     for (const car of this.cars) {
       const k = car.kind;
       sphere.set(car.position, k.body.lengthM * .6);
-      if (eye && (car.position.distanceTo(eye) > DRAW_WITHIN || !this.frustum.intersectsSphere(sphere))) continue;
+      const distance = eye ? car.position.distanceTo(eye) : 0;
+      if (eye && (distance > DRAW_WITHIN || !this.frustum.intersectsSphere(sphere))) continue;
       const pitch = -Math.asin(THREE.MathUtils.clamp(car.heading.y, -1, 1));
       q.setFromEuler(new THREE.Euler(pitch, car.yaw, 0, 'YXZ'));
-      const n = counts.get(k) ?? 0; counts.set(k, n + 1);
       const carMatrix = new THREE.Matrix4().compose(car.position, q, this.scale.set(1, 1, 1));
+      const l = lamps.get(k) ?? 0; lamps.set(k, l + 1);
+      for (const mesh of k.heads) { mesh.setMatrixAt(l, carMatrix); mesh.setColorAt(l, this.color.setRGB(2.4, 2.3, 2.1)); }
+      for (const mesh of k.tails) { mesh.setMatrixAt(l, carMatrix); mesh.setColorAt(l, car.braking ? this.color.setRGB(4.5, 1.2, 1.1) : this.color.setRGB(1.6, .55, .5)); }
+      if (distance > DETAIL_WITHIN && k.far.length) {
+        const f = farCounts.get(k) ?? 0; farCounts.set(k, f + 1);
+        for (const mesh of k.far) mesh.setMatrixAt(f, carMatrix);
+        if (distance < 200) this.pools!.setMatrixAt(pool++, m.compose(this.v3.set(0, .06, k.front + 7).applyQuaternion(q).add(car.position), this.q.setFromAxisAngle(up, car.yaw), this.scale.set(5.5, 1, 12)));
+        this.scale.set(1, 1, 1);
+        continue;
+      }
+      const n = counts.get(k) ?? 0; counts.set(k, n + 1);
       for (const mesh of k.parts) mesh.setMatrixAt(n, carMatrix);
-      for (const mesh of k.heads) { mesh.setMatrixAt(n, carMatrix); mesh.setColorAt(n, this.color.setRGB(2.4, 2.3, 2.1)); }
-      for (const mesh of k.tails) { mesh.setMatrixAt(n, carMatrix); mesh.setColorAt(n, car.braking ? this.color.setRGB(4.5, 1.2, 1.1) : this.color.setRGB(1.6, .55, .5)); }
       let front = 0, rear = 0;
       for (const slot of k.slots) {
         spin.makeRotationX(car.spin); steer.makeRotationY(slot.front ? car.steer : 0);
@@ -528,8 +681,10 @@ export class CityTraffic {
     }
     for (const kind of this.kinds) {
       const n = counts.get(kind) ?? 0;
-      for (const mesh of [...kind.parts, ...kind.heads, ...kind.tails]) { mesh.count = n; mesh.instanceMatrix.needsUpdate = true; if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true; }
+      for (const mesh of kind.parts) { mesh.count = n; mesh.instanceMatrix.needsUpdate = true; }
       for (const mesh of [...kind.frontWheels, ...kind.rearWheels]) { mesh.count = n * 2; mesh.instanceMatrix.needsUpdate = true; }
+      for (const mesh of kind.far) { mesh.count = farCounts.get(kind) ?? 0; mesh.instanceMatrix.needsUpdate = true; }
+      for (const mesh of [...kind.heads, ...kind.tails]) { mesh.count = lamps.get(kind) ?? 0; mesh.instanceMatrix.needsUpdate = true; mesh.instanceColor!.needsUpdate = true; }
     }
     this.pools!.count = pool; this.pools!.instanceMatrix.needsUpdate = true;
     if (!this.bulbs || !this.bulbGlows) return;
@@ -559,4 +714,69 @@ export class CityTraffic {
 /** Small seeded generator, so traffic starts the same way each visit. */
 function mulberry(seed: number) {
   return () => { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+}
+
+/**
+ * A far version of a mesh: positions welded first (texture seams split vertices, and the simplifier will not collapse
+ * across a split), simplified to `ratio` of the triangles, then indexed back into the original vertex buffer.
+ */
+function simplified(source: THREE.BufferGeometry, simplifier: typeof import('meshoptimizer').MeshoptSimplifier, ratio: number) {
+  const index = source.getIndex()!, position = source.getAttribute('position');
+  if (index.count < 600) return source;
+  const unique = new Map<string, number>(), remap = new Uint32Array(position.count), flat: number[] = [];
+  for (let i = 0; i < position.count; i++) {
+    const key = `${position.getX(i).toFixed(3)},${position.getY(i).toFixed(3)},${position.getZ(i).toFixed(3)}`;
+    let id = unique.get(key); if (id === undefined) { id = unique.size; unique.set(key, id); flat.push(position.getX(i), position.getY(i), position.getZ(i)); }
+    remap[i] = id;
+  }
+  const representative = new Uint32Array(unique.size); for (let i = position.count - 1; i >= 0; i--) representative[remap[i]] = i;
+  const welded = new Uint32Array(index.count); for (let i = 0; i < index.count; i++) welded[i] = remap[index.getX(i)];
+  const [reduced] = simplifier.simplify(welded, new Float32Array(flat), 3, Math.max(36, Math.floor(index.count * ratio / 3) * 3), .05);
+  const lod = new THREE.BufferGeometry();
+  for (const [name, attribute] of Object.entries(source.attributes)) lod.setAttribute(name, attribute);
+  lod.setIndex(new THREE.BufferAttribute(reduced.map(id => representative[id]), 1));
+  return lod;
+}
+
+/** A material's overall colour: its texture averaged (sampled small) times its colour factor, in linear space. */
+const averages = new WeakMap<THREE.Material, THREE.Color>();
+function averageColour(material: THREE.Material) {
+  const known = averages.get(material); if (known) return known;
+  const standard = material as THREE.MeshStandardMaterial, colour = standard.color?.clone() ?? new THREE.Color(1, 1, 1);
+  const image = standard.map?.image as CanvasImageSource | undefined;
+  if (image) {
+    const canvas = document.createElement('canvas'); canvas.width = canvas.height = 8;
+    const c = canvas.getContext('2d', { willReadFrequently: true })!; c.drawImage(image, 0, 0, 8, 8);
+    const data = c.getImageData(0, 0, 8, 8).data; let r = 0, g = 0, b = 0;
+    for (let i = 0; i < data.length; i += 4) { r += data[i]; g += data[i + 1]; b += data[i + 2]; }
+    colour.multiply(new THREE.Color().setRGB(r / 64 / 255, g / 64 / 255, b / 64 / 255, THREE.SRGBColorSpace));
+  }
+  averages.set(material, colour); return colour;
+}
+/**
+ * A compact copy of a geometry (only the vertices its index uses) with plain position and normal arrays, coloured per
+ * vertex with the material's average colour. Plain arrays matter: source parts may store vertices interleaved, which
+ * cannot be merged.
+ */
+function painted(source: THREE.BufferGeometry, material: THREE.Material) {
+  const index = source.getIndex(), position = source.getAttribute('position'), normal = source.getAttribute('normal'), colour = averageColour(material);
+  const remap = new Map<number, number>(), positions: number[] = [], normals: number[] = [], colours: number[] = [], indices: number[] = [];
+  const count = index ? index.count : position.count;
+  for (let i = 0; i < count; i++) {
+    const vertex = index ? index.getX(i) : i;
+    let id = remap.get(vertex);
+    if (id === undefined) {
+      id = remap.size; remap.set(vertex, id);
+      positions.push(position.getX(vertex), position.getY(vertex), position.getZ(vertex));
+      normals.push(normal.getX(vertex), normal.getY(vertex), normal.getZ(vertex));
+      colours.push(colour.r, colour.g, colour.b);
+    }
+    indices.push(id);
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+  geometry.setAttribute('color', new THREE.Float32BufferAttribute(colours, 3));
+  geometry.setIndex(indices);
+  return geometry;
 }

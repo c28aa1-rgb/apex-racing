@@ -50,6 +50,7 @@ const CLASSES: { match: RegExp; triangles: number; cull: number; error?: number;
   { match: /./, triangles: 500, cull: 320 },
 ];
 const classOf = (name: string) => CLASSES.find(entry => entry.match.test(name))!;
+const THREE_clamp = (value: number) => Math.min(1, Math.max(0, value));
 
 /**
  * Modelled foliage is thousands of separate small leaves. Edge-collapse simplification deletes small parts first, so
@@ -92,6 +93,86 @@ const hasBuildings = root.listNodes().some(node => /build|tower|skyscraper/i.tes
 if (!hasBuildings) console.warn('warning: the export contains no building meshes; building collision blockers are left out so downtown has no invisible walls.');
 
 await doc.transform(weld());
+
+// Buildings carry up to 17 materials each, one draw call apiece per map cell. Untextured opaque ones (trim, metal,
+// black panels) become one shared material coloured per vertex, and the glass variants one shared glass, so the
+// parts below can be joined.
+const BUILDING = /_(MM|PP)_(BrickTower|CornerShops|GlassCentre|Retail|ArcTower|CrownTower)/;
+{
+  const solid = doc.createMaterial('RC_BuildingSolid').setBaseColorFactor([1, 1, 1, 1]).setMetallicFactor(.35).setRoughnessFactor(.55);
+  let glass: ReturnType<typeof doc.createMaterial> | undefined, merged = 0;
+  for (const node of root.listNodes()) {
+    if (!BUILDING.test(node.getName())) continue;
+    for (const primitive of node.getMesh()?.listPrimitives() ?? []) {
+      const material = primitive.getMaterial(); if (!material || material.getAlphaMode() !== 'OPAQUE' || material.getBaseColorTexture()) continue;
+      if (/Glass/i.test(material.getName())) { glass ??= material; primitive.setMaterial(glass); merged++; continue; }
+      const [r, g, b] = material.getBaseColorFactor(), count = primitive.getAttribute('POSITION')!.getCount(), colors = new Float32Array(count * 3);
+      for (let i = 0; i < count; i++) colors.set([r, g, b], i * 3);
+      for (const semantic of primitive.listSemantics()) if (semantic !== 'POSITION' && semantic !== 'NORMAL') primitive.setAttribute(semantic, null);
+      primitive.setAttribute('COLOR_0', doc.createAccessor().setType('VEC3').setArray(colors).setBuffer(root.listBuffers()[0]));
+      primitive.setMaterial(solid); merged++;
+    }
+  }
+  console.log(`building materials: ${merged} parts moved to shared solid/glass materials`);
+}
+
+// Street and road signs: ~90 text planes, each its own texture and draw call. They are packed into one atlas and
+// merged into a single mesh (instanced signs expanded to plain copies).
+{
+  type Placement = { primitive: Primitive; matrix: Matrix4 };
+  const placements: Placement[] = [], signNodes: Node[] = [];
+  for (const node of root.listNodes()) {
+    const primitive = node.getMesh()?.listPrimitives().find(p => /_Text$/.test(p.getMaterial()?.getName() ?? ''));
+    if (!primitive) continue;
+    signNodes.push(node);
+    const world = new Matrix4().fromArray(node.getWorldMatrix()), instancing = node.getExtension<any>('EXT_mesh_gpu_instancing');
+    if (!instancing) { placements.push({ primitive, matrix: world }); continue; }
+    const T = instancing.getAttribute('TRANSLATION'), R = instancing.getAttribute('ROTATION'), S = instancing.getAttribute('SCALE');
+    for (let i = 0; i < T.getCount(); i++) placements.push({ primitive, matrix: world.clone().multiply(new Matrix4().compose(
+      new Vector3().fromArray(T.getElement(i, [0, 0, 0])), R ? new Quaternion().fromArray(R.getElement(i, [0, 0, 0, 1])) : new Quaternion(), S ? new Vector3().fromArray(S.getElement(i, [0, 0, 0])) : new Vector3(1, 1, 1))) });
+  }
+  // Shelf-pack each distinct sign texture, scaled to at most 96 px tall, into a 2048 px wide atlas.
+  const ATLAS = 2048, slots = new Map<Primitive, { x: number; y: number; w: number; h: number; png: Buffer }>();
+  let x = 0, y = 0, row = 0;
+  for (const primitive of new Set(placements.map(p => p.primitive))) {
+    const bytes = primitive.getMaterial()!.getBaseColorTexture()?.getImage(); if (!bytes) continue;
+    const meta = await sharp(Buffer.from(bytes)).metadata(), scale = Math.min(1, 96 / meta.height!, ATLAS / meta.width!);
+    const w = Math.max(1, Math.round(meta.width! * scale)), h = Math.max(1, Math.round(meta.height! * scale));
+    if (x + w > ATLAS) { x = 0; y += row + 2; row = 0; }
+    slots.set(primitive, { x, y, w, h, png: await sharp(Buffer.from(bytes)).resize(w, h).png().toBuffer() });
+    x += w + 2; row = Math.max(row, h);
+  }
+  const height = 2 ** Math.ceil(Math.log2(y + row + 2));
+  const atlas = await sharp({ create: { width: ATLAS, height, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } })
+    .composite([...slots.values()].map(slot => ({ input: slot.png, left: slot.x, top: slot.y }))).png().toBuffer();
+  const positions: number[] = [], normals: number[] = [], uvs: number[] = [], indices: number[] = [];
+  const v = new Vector3(), n = new Vector3(), normalMatrix = new Matrix4();
+  for (const { primitive, matrix } of placements) {
+    const slot = slots.get(primitive); if (!slot) continue;
+    const P = primitive.getAttribute('POSITION')!, N = primitive.getAttribute('NORMAL'), UV = primitive.getAttribute('TEXCOORD_0')!, I = primitive.getIndices(), base = positions.length / 3;
+    normalMatrix.copy(matrix).invert().transpose();
+    for (let i = 0; i < P.getCount(); i++) {
+      v.fromArray(P.getElement(i, [0, 0, 0])).applyMatrix4(matrix); positions.push(v.x, v.y, v.z);
+      n.fromArray(N ? N.getElement(i, [0, 0, 0]) : [0, 1, 0]).applyMatrix4(normalMatrix).normalize(); normals.push(n.x, n.y, n.z);
+      const [u, w] = UV.getElement(i, [0, 0]);
+      uvs.push((slot.x + THREE_clamp(u) * slot.w) / ATLAS, (slot.y + THREE_clamp(w) * slot.h) / height);
+    }
+    for (let i = 0; i < (I?.getCount() ?? P.getCount()); i++) indices.push(base + (I ? I.getScalar(i) : i));
+  }
+  const buffer = root.listBuffers()[0], template = placements[0]?.primitive.getMaterial();
+  if (template && positions.length) {
+    const texture = doc.createTexture('RC_SignAtlas').setImage(new Uint8Array(atlas)).setMimeType('image/png');
+    const material = template.clone().setName('RC_Signs_Text').setBaseColorTexture(texture);
+    const primitive = doc.createPrimitive().setMaterial(material)
+      .setAttribute('POSITION', doc.createAccessor().setType('VEC3').setArray(new Float32Array(positions)).setBuffer(buffer))
+      .setAttribute('NORMAL', doc.createAccessor().setType('VEC3').setArray(new Float32Array(normals)).setBuffer(buffer))
+      .setAttribute('TEXCOORD_0', doc.createAccessor().setType('VEC2').setArray(new Float32Array(uvs)).setBuffer(buffer))
+      .setIndices(doc.createAccessor().setType('SCALAR').setArray(new Uint32Array(indices)).setBuffer(buffer));
+    root.getDefaultScene()!.addChild(doc.createNode('RC_Signs').setMesh(doc.createMesh('RC_Signs').addPrimitive(primitive)));
+    for (const node of signNodes) node.dispose();
+    console.log(`signs: ${placements.length} planes from ${slots.size} textures packed into one ${ATLAS}x${height} atlas`);
+  }
+}
 // Parts of one mesh that share a material and vertex layout draw as one.
 for (const mesh of root.listMeshes()) {
   const sets = new Map<string, Primitive[]>();
@@ -170,7 +251,7 @@ console.log(`instance cells: ${cells}`);
 const DETAILED = /^(T_|asphalt|Clay|Concrete0|plastered_wall|roof|stone07|tile_mar|walpanel|wood-15)/;
 await doc.transform(
   textureCompress({ encoder: sharp, resize: [1024, 1024], pattern: DETAILED }),
-  textureCompress({ encoder: sharp, resize: [512, 512], pattern: new RegExp(`^(?!Atlas)(?!${DETAILED.source.slice(1)})`) }),
+  textureCompress({ encoder: sharp, resize: [512, 512], pattern: new RegExp(`^(?!Atlas|RC_SignAtlas)(?!${DETAILED.source.slice(1)})`) }),
   dedup(), prune(),
 );
 await writeFile(join(out, 'racing-city.runtime.glb'), await io.writeBinary(doc));
