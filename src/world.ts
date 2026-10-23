@@ -64,6 +64,8 @@ export class RaceWorld {
   /** Headlamp beams: two spot lights riding on the car, created on first use. */
   private beams?: THREE.Group;
   private lightsOn = false;
+  /** Called with the share (0-1) of the venue model downloaded, while it loads. */
+  onVenueProgress?: (share: number) => void;
   /** AI traffic and working signals, for venues that have them (the city). */
   traffic?: CityTraffic;
   private trafficToken = 0;
@@ -841,7 +843,8 @@ export class RaceWorld {
       // asset is used by the collision builder; supplied originals stay intact.
       const raceFilename=track.runtimeModel??filename.replace(/\.glb$/,'.race.glb');
       let gltf;
-      try { gltf=await this.loader.loadAsync(assetUrl(`models/tracks/${raceFilename}`)); }
+      const progress=(event:ProgressEvent)=>{if(token===this.venueLoadToken&&event.total)this.onVenueProgress?.(event.loaded/event.total);};
+      try { gltf=await this.loader.loadAsync(assetUrl(`models/tracks/${raceFilename}`),progress); }
       catch { gltf=await this.loader.loadAsync(assetUrl(`models/tracks/${filename}`)); }
       if(token!==this.venueLoadToken){this.disposeObject(gltf.scene);return;}
       const model=gltf.scene;model.updateMatrixWorld(true);

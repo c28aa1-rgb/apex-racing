@@ -35,7 +35,9 @@ export type GameState={mode:Mode;track:Track;trackReady:boolean;trackLoading?:bo
   /** The last finished Cone Attack run, shown while the driver keeps rolling in free roam. `at` makes repeat results distinct. */
   coneResult?:{run:Run;timeMs:number;medal:string;newBest:boolean;previousBest?:number;penalties:number;offCourse:number;at:number};
   /** Whole-city map overlay (M); driving is frozen while it is open. */
-  mapOpen?:boolean};
+  mapOpen?:boolean;
+  /** Loading a night venue (the city): the step shown and progress 0-1. Driving is frozen until it is gone. */
+  venueLoad?:{step:string;progress:number}};
 export class Game {
   world:RaceWorld;sim:Simulation;state:GameState;private coarse!:GameState;
   settings=loadSettings();career:Career=loadCareer();
@@ -339,10 +341,22 @@ export class Game {
     const token=++this.selectionToken;this.keys.clear();this.garageView=false;this.runOrigin=undefined;
     this.ghostSim?.dispose();this.ghostSim=undefined;this.ghostRun=undefined;this.world.ghostFrame(undefined);
     this.world.setTrack(track);this.world.setHeadlights(!!track.night);
-    this.emit({track,mapOpen:false,trackReady:false,run:undefined,newBest:false,personalBest:undefined,penalties:0,atStart:false,coneResult:undefined,notice:''});
+    this.emit({track,mapOpen:false,trackReady:false,run:undefined,newBest:false,personalBest:undefined,penalties:0,atStart:false,coneResult:undefined,notice:'',
+      venueLoad:track.night?{step:'Loading the city',progress:.03}:undefined});
+    // The city is heavy: a loading screen covers it until the streets, physics and traffic are all in place.
+    if(track.night)this.world.onVenueProgress=share=>{if(token===this.selectionToken)this.emit({venueLoad:{step:'Loading the city',progress:.03+share*.67}});};
     await initPhysics(track);if(token!==this.selectionToken)return;
+    if(track.night){
+      this.emit({venueLoad:{step:'Building the streets',progress:Math.max(.7,this.state.venueLoad?.progress??0)}});
+      await this.world.venueReady;this.world.onVenueProgress=undefined;if(token!==this.selectionToken)return;
+    }
     this.emit({trackReady:true});this.start(false);
-    if(track.night){const p=this.sim.car.translation();void this.world.startTraffic(new Vector3(p.x,p.y,p.z));}
+    if(track.night){
+      this.emit({venueLoad:{step:'Starting traffic',progress:.88}});
+      const p=this.sim.car.translation();await this.world.startTraffic(new Vector3(p.x,p.y,p.z));if(token!==this.selectionToken)return;
+      this.emit({venueLoad:{step:'Ready',progress:1}});
+      setTimeout(()=>{if(token===this.selectionToken)this.emit({venueLoad:undefined});},350);
+    }
   }
   /**
    * Enter inside the orange box starts the hidden cone course from exactly where the car sits:
@@ -364,7 +378,7 @@ export class Game {
   menu() {this.closeCameraWheel();if(this.partyRace)return;this.chosenGhost=undefined;
     if(this.carBeforeReplay){const own=this.carBeforeReplay;this.carBeforeReplay=undefined;void this.selectCar(own);}
     // Leaving free roam goes back to the Garage, where it is opened from.
-    if(this.state.track.lot||this.freeRoam){this.world.setHeadlights(false);this.emit({mapOpen:false});
+    if(this.state.track.lot||this.freeRoam){this.world.setHeadlights(false);this.emit({mapOpen:false,venueLoad:undefined});
       // The city (venue, traffic, night lighting) must not stay loaded behind the menu: swap in the light car park.
       if(!this.state.track.lot)this.world.setTrack(TRAINING_GROUNDS);this.cockpitPreview=false;this.world.firstPerson=false;this.world.endFinish();this.world.setMouseLook(false);this.onLeaveTraining?.();void this.select(this.lastCircuit).then(()=>this.setGarage(true));return;}this.keys.clear();this.finishRevealAt=0;this.world.endFinish();this.cockpitPreview=false;this.world.firstPerson=false;this.world.setMouseLook(false);this.emit({mode:'menu',notice:''});this.world.ghostFrame(undefined);}
   pause() {this.closeCameraWheel();if(this.state.mapOpen)this.emit({mapOpen:false});this.keys.clear();this.world.applyPendingGraphics();if(this.partyRace)return;if(['racing','countdown','replay'].includes(this.state.mode)){this.pausedMode=this.state.mode;this.pausedCountdown=Math.max(0,this.countdownUntil-performance.now());this.emit({mode:'paused'});this.world.setMouseLook(false);}}
@@ -664,7 +678,7 @@ export class Game {
     if(this.state.mode==='celebrating'&&now>=this.finishRevealAt)this.emit({mode:'finished'});
     if(this.state.mode==='racing'||this.state.mode==='replay') {
       if(this.awaitingPedal&&(this.held('throttle')||this.held('brake'))){this.awaitingPedal=false;this.emit({notice:''});}
-      if((!this.awaitingPedal||this.state.mode==='replay')&&!this.state.mapOpen)this.accumulator+=elapsed;
+      if((!this.awaitingPedal||this.state.mode==='replay')&&!this.state.mapOpen&&!this.state.venueLoad)this.accumulator+=elapsed;
       while(this.accumulator>=DT){
         this.previousFrame=this.sim.frame();const input=this.state.mode==='replay'?(this.replayInput?.inputs[this.sim.ticks]??0):this.input();
         if(!this.freeRoam)this.inputs.push(input);
