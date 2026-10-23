@@ -7,12 +7,10 @@ import { CITY, TRAINING_GROUNDS, type Track } from '../shared/tracks';
 const ease = [.2, 0, 0, 1] as const;
 type Destination = { track: Track; art: ReactNode; facts: [string, string][] };
 const DESTINATIONS: Destination[] = [
-  { track: CITY, facts: [['Districts', '5'], ['Roads', '13'], ['Size', '3 km']], art: <svg className="roam-art-city" viewBox="0 0 320 120" preserveAspectRatio="xMidYMax slice" aria-hidden="true">
-    <path d="M0 96 Q80 70 160 88 T320 80 V120 H0Z" fill="#1e4152" />
-    {[[18, 52, 26], [48, 30, 22], [74, 62, 18], [96, 18, 28], [128, 44, 20], [152, 8, 30], [186, 36, 24], [214, 56, 18], [236, 24, 26], [266, 48, 22], [292, 64, 24]].map(([x, y, w]) => <rect key={x} x={x} y={y} width={w} height={120 - y} fill={y < 30 ? '#7fd1ff' : '#3c6f86'} opacity={y < 30 ? .9 : .75} />)}
-    <path d="M0 108 H320" stroke="#ff784c" strokeWidth="3" strokeDasharray="14 10" />
-  </svg> },
-  { track: TRAINING_GROUNDS, facts: [['Surface', 'Flat'], ['Cones', 'Yes'], ['Secret', '1']], art: <img src={assetUrl('art/training.png')} alt="" /> },
+  // Card art is rendered in the game itself (work/art capture): the night skyline from above the Founders Loop,
+  // and the car park from its corner, so the cards show exactly what the player drives into.
+  { track: CITY, facts: [['Districts', '5'], ['Roads', '13'], ['Traffic', 'Live']], art: <img src={assetUrl('art/free-roam-city.jpg')} alt="" /> },
+  { track: TRAINING_GROUNDS, facts: [['Surface', 'Flat'], ['Cones', 'Yes'], ['Secret', '1']], art: <img src={assetUrl('art/free-roam-training.jpg')} alt="" /> },
 ];
 
 /** Free-roam hub: the current car on the garage stage, and the untimed places to take it. */

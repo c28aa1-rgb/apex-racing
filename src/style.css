@@ -277,12 +277,13 @@ button:disabled{cursor:not-allowed}select:focus-visible{outline:2px solid #a8dad
 .roam-car small{grid-column:1/-1;font-size:10px;color:#789aa5}.roam-car strong{font-family:Shoulders;font-size:24px;line-height:1.05}
 .roam-car button{font-size:12px;color:var(--orange);padding:4px 0;border-bottom:1px solid #ff784c66}.roam-car button:hover{color:#ffb197;border-color:currentColor}
 .roam-destinations{right:44px;top:118px;width:min(430px,38vw);display:grid;gap:16px;max-height:calc(100dvh - 170px);overflow-y:auto;scrollbar-width:thin}
-.roam-card{--roam-accent:var(--orange);position:relative;display:grid;grid-template-rows:118px auto;width:100%;padding:0;text-align:left;overflow:hidden;border:1px solid var(--line);border-radius:8px;background:#132b3bf0;transition:border-color .14s ease-out,transform .2s cubic-bezier(.2,0,0,1)}
+.roam-card{--roam-accent:var(--orange);position:relative;display:grid;grid-template-rows:150px auto;width:100%;padding:0;text-align:left;overflow:hidden;border:1px solid var(--line);border-radius:8px;background:#132b3bf0;transition:border-color .14s ease-out,transform .2s cubic-bezier(.2,0,0,1)}
 .roam-card:before{content:'';position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--roam-accent);z-index:1}
 .roam-card:hover:not(:disabled){border-color:var(--roam-accent);transform:translateY(-2px)}.roam-card:disabled{cursor:wait}
 .roam-art{position:relative;display:block;overflow:hidden;background:linear-gradient(180deg,#0e2230,#173a4c)}
 .roam-art img,.roam-art svg{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block}
-.roam-art:after{content:'';position:absolute;inset:0;background:linear-gradient(0deg,#132b3bf0,transparent 60%)}
+.roam-art:after{content:'';position:absolute;inset:0;background:linear-gradient(0deg,#132b3b 0,#132b3b00 55%)}
+.roam-art img{transition:transform .5s cubic-bezier(.2,0,0,1)}.roam-card:hover:not(:disabled) .roam-art img{transform:scale(1.04)}.reduce-motion .roam-art img{transition:none}
 .roam-body{display:grid;gap:6px;padding:4px 20px 18px 22px}
 .roam-body>small{font-size:11px;color:var(--roam-accent)}.roam-body>strong{font-family:Shoulders;font-size:34px;line-height:1}
 .roam-body>span{font-size:12px;line-height:1.55;color:#bfd2d8}
