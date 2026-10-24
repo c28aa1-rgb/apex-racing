@@ -145,7 +145,7 @@ function patchMaterial(material:THREE.Material,uniforms:Uniforms){
 }
 
 /** Mean colour of a texture, read from an 8×8 downscale; undefined when the image cannot be drawn. */
-function averageTexture(texture:THREE.Texture){
+export function averageTexture(texture:THREE.Texture){
   try{
     const image=texture.image as CanvasImageSource|undefined;if(!image)return;
     const canvas=document.createElement('canvas');canvas.width=canvas.height=8;
@@ -179,7 +179,7 @@ void main(){
 }`;
 
 /** A fixed pool of camera-facing particles: one draw call, no allocations per frame. */
-class ParticlePool {
+export class ParticlePool {
   readonly points:THREE.Points;
   private position:Float32Array;private velocity:Float32Array;private color:Float32Array;private size:Float32Array;
   private life:Float32Array;private span:Float32Array;private grow:Float32Array;private alpha:Float32Array;

@@ -11,7 +11,7 @@ export type RoadPath = { name: string; width: number; points: number[][] };
 type Segment = { ax: number; az: number; ay: number; bx: number; bz: number; by: number; half: number };
 
 /** Bank geometry: top just under the road surface, flat for a shoulder, then this rise per metre outwards. */
-const TOP = .12, SHOULDER = 1.5, SLOPE = .35;
+const TOP = .12, SHOULDER = 2.2, SLOPE = .35;
 /** How far beyond the shoulder a bank may reach (a deeper drop is left partly open). */
 const REACH = 30;
 /** Raised stretches: the road more than this above the ground just beyond its edge. */

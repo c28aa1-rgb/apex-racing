@@ -45,6 +45,10 @@ export type UiCue='click'|'hover'|'confirm'|'back'|'select';
 // Safari before 14.1 cannot play Ogg Vorbis, so every sample also ships as AAC (.m4a).
 const AUDIO_EXT=(()=>{try{return document.createElement('audio').canPlayType('audio/ogg; codecs="vorbis"')?'ogg':'m4a';}catch{return 'ogg';}})();
 const MUSIC_DIR='audio/music/';
+/** What a knocked-over prop is made of, for its sound. */
+export type PropMaterial='metal'|'plastic'|'wood'|'water';
+/** Props the player knocked over since the last audio frame (pushed by src/city-props.ts; the audio drains it). */
+export const propHits:{material:PropMaterial;speed:number}[]=[];
 const smooth=(x:number,a:number,b:number)=>{const t=Math.min(1,Math.max(0,(x-a)/(b-a)));return t*t*(3-2*t);};
 export class RaceAudio {
   private context?:AudioContext;
@@ -154,6 +158,32 @@ export class RaceAudio {
     const c=this.context;if(!c)return;let at=c.currentTime+.02;
     for(let i=0;i<count;i++){at+=.04+Math.random()*.1;this.burst(at,volume*(.5+Math.random()*.5),160+Math.random()*320,.07+Math.random()*.05,1.4);this.burst(at,volume*.35,2400+Math.random()*900,.03,.8);}
   }
+  /** Ringing partials that fade out: the clang of struck metal. */
+  private ring(start:number,volume:number,frequencies:number[],decay:number) {
+    const c=this.context;if(!c||!this.master||volume<=0)return;
+    for(const [i,frequency] of frequencies.entries()){
+      const osc=c.createOscillator(),gain=c.createGain();osc.frequency.value=frequency*(.97+Math.random()*.06);
+      const level=volume/(1+i*.8),length=decay/(1+i*.45);
+      gain.gain.setValueAtTime(.0001,start);gain.gain.exponentialRampToValueAtTime(level,start+.004);gain.gain.exponentialRampToValueAtTime(.0001,start+length);
+      osc.connect(gain).connect(this.master);osc.start(start);osc.stop(start+length+.02);osc.onended=()=>{osc.disconnect();gain.disconnect();};
+    }
+  }
+  /** A prop knocked over at this speed (m/s): a clang for metal, a hollow thunk for plastic, a splintering crunch for wood. */
+  private smash(material:PropMaterial,speed:number,effects:number) {
+    const c=this.context;if(!c)return;const now=c.currentTime,force=Math.min(1.4,.35+speed/25),v=effects*force;
+    if(material==='metal'||material==='water'){
+      this.play('impact',Math.min(1,v*.9),1.35+Math.random()*.25);
+      this.ring(now,v*.05,[420+Math.random()*160,1130,1790,2610],.7);
+      // A burst hydrant: the hiss of the water jet.
+      if(material==='water')this.burst(now+.05,v*.09,2600,2.6,.4,'highpass');
+    }else if(material==='plastic'){
+      this.play('impactFast',Math.min(1,v*.8),1.35+Math.random()*.2);
+      this.burst(now,v*.14,260,.16,.9,'lowpass');this.burst(now+.01,v*.07,900+Math.random()*300,.12,2.5);
+    }else{
+      this.play('impactFast',Math.min(1,v*.6),.85+Math.random()*.15);this.burst(now,v*.12,180,.14,.8,'lowpass');
+      let at=now;for(let i=0;i<4+Math.floor(Math.random()*3);i++){at+=.012+Math.random()*.035;this.burst(at,v*(.05+Math.random()*.05),700+Math.random()*1400,.05+Math.random()*.05,1.6);}
+    }
+  }
   cue(kind:'light'|'go'|'checkpoint'|'finish'|'impact',volume:number) {
     const c=this.context;if(!c||!this.master||volume<=0)return;
     if((kind==='light'||kind==='go')&&this.play(kind,Math.min(1,volume*1.6)))return;
@@ -223,7 +253,7 @@ export class RaceAudio {
   update(sim:Simulation,active:boolean,muted:boolean,settings:Settings,driving=true) {
     const c=this.context;if(!c||!this.master)return;
     this.master.gain.setTargetAtTime(active&&!muted?settings.volume:0,c.currentTime,.05);
-    if(!active){this.lastHitCount=-1;this.airSince=-1;this.lastThrottle=0;return;}
+    if(!active){this.lastHitCount=-1;this.airSince=-1;this.lastThrottle=0;propHits.length=0;return;}
     const effects=settings.effectsVolume,now=c.currentTime;
     this.rainGain?.gain.setTargetAtTime(settings.weather==='rain'?effects*.09:0,now,.4);
     const voice=LIVERY_VOICES[this.look??sim.carSpec.id]??ENGINE_VOICES[sim.carSpec.id],speed=sim.speed*sim.track.metersPerUnit,voiceKey=`${sim.carSpec.id}|${this.look}`;
@@ -308,6 +338,7 @@ export class RaceAudio {
         }
       }
     }
+    for(const hit of propHits.splice(0))this.smash(hit.material,hit.speed,effects);
     const rubbing=sim.wallContact&&sim.grounded&&speed>4;
     this.scrapeGain!.gain.setTargetAtTime(rubbing?Math.min(1,speed/30)*effects*.22:0,now,rubbing?.05:.12);
     this.scrapeFilter!.frequency.setTargetAtTime(900+Math.min(speed,80)*18,now,.1);

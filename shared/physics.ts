@@ -521,9 +521,12 @@ export class Simulation {
     // now builds force over time instead of instantly commanding 100% throttle,
     // brake, or lock.
     const wantsForward = !!(input & Input.Throttle), wantsBack = !!(input & Input.Brake);
-    const throttleTarget = cruise?Math.max(0,Math.min(1,.35+(cruise.speed-forwardSpeed)*.65)):wantsForward && !wantsBack && forwardSpeed > -.25 ? 1 : 0;
+    // Throttle while rolling backwards brakes first; on a hill-start venue only when really reversing, so a car rolling
+    // back down a slope drives up it instead of hovering between brake and throttle.
+    const rollBack = this.track.hillStart ? -3 : -.25;
+    const throttleTarget = cruise?Math.max(0,Math.min(1,.35+(cruise.speed-forwardSpeed)*.65)):wantsForward && !wantsBack && forwardSpeed > rollBack ? 1 : 0;
     const reverseTarget = wantsBack && !wantsForward && forwardSpeed < .25 ? 1 : 0;
-    const brakeTarget = cruise?Math.max(0,Math.min(1,(forwardSpeed-cruise.speed-1)*.25)):(wantsBack && wantsForward) || (wantsBack && forwardSpeed >= .25) || (wantsForward && forwardSpeed <= -.25) ? 1 : 0;
+    const brakeTarget = cruise?Math.max(0,Math.min(1,(forwardSpeed-cruise.speed-1)*.25)):(wantsBack && wantsForward) || (wantsBack && forwardSpeed >= .25) || (wantsForward && forwardSpeed <= rollBack) ? 1 : 0;
     this.throttle = this.approach(this.throttle, throttleTarget, (throttleTarget ? 1.55 : 3.5) * DT);
     this.reverse = this.approach(this.reverse, reverseTarget, (reverseTarget ? 1.35 : 3.8) * DT);
     // Brakes bite fast (about 0.2 s to full pressure) for an arcade feel; a tap is still a light touch.
@@ -909,6 +912,8 @@ export class Simulation {
     const step=Math.max(dt,DT),v=pose.v?{...pose.v}:{x:(p.x-known.p.x)/step,y:(p.y-known.p.y)/step,z:(p.z-known.p.z)/step};
     Object.assign(known,{p,q,v,ticks:0});
   }
+  /** Where a stand-in really is after contact (position, velocity, spin), so a caller can react to being hit. */
+  obstacleState(id:string){const known=this.obstacles.get(id);if(!known)return undefined;return {p:known.body.translation(),q:known.body.rotation(),v:known.body.linvel(),w:known.body.angvel()};}
   /** Flies each stand-in toward where its driver is this tick: their velocity plus a pull back onto the path. */
   private driveObstacles() {
     const mpu=this.track.metersPerUnit;

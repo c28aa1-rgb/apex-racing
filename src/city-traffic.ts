@@ -78,6 +78,8 @@ type Car = {
   committed?: Stop;
   /** What held the car back most this step (for tuning). */
   reason?: string;
+  /** Rammed by the player: sliding free of its lane to a stop, then waiting with its hazards on (see wrecked()). */
+  wreck?: { velocity: THREE.Vector3; yawRate: number; still: number; offLane: boolean; hitAt: number };
 };
 /** How often each kind turns up, relative to an ordinary car. */
 const KIND_WEIGHT: Record<string, number> = { 'lct-3000-07': .45, 'lightbody-90-md-utility': .7 };
@@ -104,6 +106,10 @@ const NO_TRAFFIC = new Set(['Acceleration']);
 const MAX_CARS = 460;
 /** Only cars this close are solid to the player's car. */
 const SOLID_WITHIN = 110;
+/** A hit that changes a car's speed by more than this (m/s) knocks it out of its lane. */
+const WRECK_HIT = 2.2;
+/** A knocked car sits for this long (s) once stopped, then rejoins its lane when the player is not watching. */
+const WRECK_HOLD = 9;
 /** Car-following (intelligent driver model): comfortable acceleration and braking, time headway, standstill gap. */
 const ACCEL = 2.2, BRAKE = 3.2, HEADWAY = 1.3, STANDSTILL = 3;
 
@@ -123,8 +129,8 @@ export class CityTraffic {
   private kinds: Kind[] = [];
   private cars: Car[] = [];
   private nextId = 0;
-  /** Counters for tuning: cars that left at dead ends, and cars taken off crowded lanes out of sight. */
-  deadEnds = 0; trimmed = 0;
+  /** Counters for tuning: cars that left at dead ends, cars taken off crowded lanes out of sight, and hits by the player. */
+  deadEnds = 0; trimmed = 0; wrecks = 0;
   dropped: { from: string; to: string; why: string; turn: string; end: boolean; ahead: number; angle: number }[] = [];
   private time = 0;
   private random = mulberry(20261022);
@@ -715,6 +721,7 @@ export class CityTraffic {
   }
 
   private drive(car: Car, dt: number, player: THREE.Vector3, playerVelocity: THREE.Vector3, sim: Simulation) {
+    if (car.wreck) { this.wrecked(car, dt, player); return; }
     const lane = car.lane, v = car.v;
     // Out of the junction box (or onto another road): no longer committed to it.
     if (car.committed && !lane.connector && (!lane.stops.includes(car.committed) || car.s - car.kind.body.lengthM > car.committed.exit)) car.committed = undefined;
@@ -727,7 +734,11 @@ export class CityTraffic {
       if (next < accel) { accel = next; reason = why; }
     };
     // The car ahead in this lane (round a loop, the first car is behind the last one).
-    const index = lane.cars.indexOf(car), ahead = lane.cars[index + 1] ?? (lane.closed && lane.cars.length > 1 ? lane.cars[0] : undefined);
+    // A knocked car pushed clear of the lane is passed, not queued behind.
+    const index = lane.cars.indexOf(car);
+    let ahead: Car | undefined = lane.cars[index + 1] ?? (lane.closed && lane.cars.length > 1 ? lane.cars[0] : undefined);
+    for (let k = index + 2; ahead?.wreck?.offLane && k < lane.cars.length; k++) ahead = lane.cars[k];
+    if (ahead?.wreck?.offLane) ahead = undefined;
     if (ahead && ahead !== car) {
       const gap = (ahead.s - car.s + (ahead.s < car.s ? lane.length : 0)) - (car.kind.front - ahead.kind.rear);
       if (gap < 150) follow(gap, ahead.v);
@@ -816,7 +827,8 @@ export class CityTraffic {
     const playerAhead = along > 0 && along < 60 && across < car.kind.halfWidth + 1.6 && Math.abs(toPlayer.y) < 4;
     if (playerAhead) follow(along - car.kind.front - 2.3, Math.max(0, playerVelocity.x * car.heading.x + playerVelocity.z * car.heading.z), STANDSTILL, 'player');
     // Held up by a stopped player for a few seconds: move over to another lane going the same way, if it is clear.
-    car.blocked = playerAhead && v < 1 && playerVelocity.length() < 1 ? car.blocked + dt : 0;
+    const wreckAhead = !!ahead?.wreck && ahead.s - car.s < car.kind.body.lengthM + 12;
+    car.blocked = (playerAhead && playerVelocity.length() < 1 || wreckAhead) && v < 1 ? car.blocked + dt : 0;
     if (car.blocked > 3) { car.blocked = 0; this.changeLane(car); }
     accel = Math.max(accel, -9); car.reason = reason;
     car.braking = accel < -1 || (v < .5 && accel <= 0);
@@ -866,12 +878,13 @@ export class CityTraffic {
     for (const car of this.cars) {
       const near = car.position.distanceTo(player) < SOLID_WITHIN;
       if (!near) { this.release(car, sim); continue; }
+      if (car.obstacle && car.position.distanceTo(player) < 12) this.knocked(car, sim, player);
       const h = car.kind.body.heightM, yaw = Math.atan2(car.heading.x, car.heading.z), pitch = -Math.asin(THREE.MathUtils.clamp(car.heading.y, -1, 1));
       this.q.setFromEuler(new THREE.Euler(pitch, yaw, 0, 'YXZ'));
       sim.setObstacle(`traffic-${car.id}`, car.kind.body, {
         p: { x: car.position.x, y: car.position.y + .25 + h * .32, z: car.position.z },
         q: { x: this.q.x, y: this.q.y, z: this.q.z, w: this.q.w },
-        v: { x: car.heading.x * car.v, y: car.heading.y * car.v, z: car.heading.z * car.v },
+        v: car.wreck ? { x: car.wreck.velocity.x, y: 0, z: car.wreck.velocity.z } : { x: car.heading.x * car.v, y: car.heading.y * car.v, z: car.heading.z * car.v },
       });
       car.obstacle = true;
     }
@@ -903,6 +916,59 @@ export class CityTraffic {
     const forward = this.direction(lane, s), yaw = Math.atan2(forward.x, forward.z), q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
     return { position: { x: here.x, y: here.y, z: here.z }, forward: { x: forward.x, y: 0, z: forward.z }, rotation: { x: q.x, y: q.y, z: q.z, w: q.w }, width: lane.width, segment: 0 };
   }
+  /**
+   * Whether the player just hit this car: its stand-in in the physics world moving well off the speed it was given.
+   * The physics has already shared out the momentum by mass, so the stand-in's velocity is the shove; the car takes
+   * it and leaves its lane (or, already knocked, takes the new shove).
+   */
+  private knocked(car: Car, sim: Simulation, player: THREE.Vector3) {
+    // Only with the player's car against it (the stand-in also strays a little on its own as it is steered).
+    const to = this.v3.copy(player).sub(car.position), along = Math.abs(to.x * car.heading.x + to.z * car.heading.z), across = Math.abs(to.x * car.heading.z - to.z * car.heading.x);
+    if (along > car.kind.body.lengthM / 2 + 3 || across > car.kind.halfWidth + 2.2 || (car.wreck && this.time - car.wreck.hitAt < .3)) return;
+    const state = sim.obstacleState(`traffic-${car.id}`); if (!state) return;
+    const given = car.wreck ? car.wreck.velocity : this.v3.copy(car.heading).multiplyScalar(car.v);
+    if (Math.hypot(state.v.x - given.x, state.v.z - given.z) < WRECK_HIT) return;
+    if (!car.wreck) {
+      car.wreck = { velocity: new THREE.Vector3(), yawRate: 0, still: 0, offLane: false, hitAt: 0 };
+      car.drift.set(0, 0, 0); this.leaveZones(car); car.plan = undefined; car.committed = undefined;
+    }
+    // Carry on from where the hit really left it.
+    const forward = this.v3.set(0, 0, 1).applyQuaternion(this.q.set(state.q.x, state.q.y, state.q.z, state.q.w));
+    car.position.x = state.p.x; car.position.z = state.p.z; car.yaw = Math.atan2(forward.x, forward.z);
+    car.wreck.velocity.set(state.v.x, 0, state.v.z); car.wreck.yawRate = THREE.MathUtils.clamp(state.w.y, -3, 3); car.wreck.still = 0; car.wreck.hitAt = this.time;
+    car.v = 0; this.wrecks++;
+  }
+  /**
+   * A knocked car: it skids to a stop (hard on its brakes, harder still sideways) and turns with the spin it was given,
+   * and stays in its lane's queue at the point beside it, so cars behind stop or change lanes. Pushed clear of the
+   * lane, it no longer holds anyone up. Once it has sat for WRECK_HOLD and the player is not looking, it rejoins its
+   * lane where it stopped and drives on.
+   */
+  private wrecked(car: Car, dt: number, player: THREE.Vector3) {
+    const wreck = car.wreck!, velocity = wreck.velocity, speed = velocity.length();
+    if (speed > .05) {
+      const along = velocity.dot(car.heading), side = this.v3.copy(velocity).addScaledVector(car.heading, -along), sideways = side.length();
+      const slow = (value: number, rate: number) => Math.sign(value) * Math.max(0, Math.abs(value) - rate * dt);
+      velocity.copy(car.heading).multiplyScalar(slow(along, 7)).addScaledVector(side.normalize(), slow(sideways, 10));
+      velocity.y = 0; car.position.addScaledVector(velocity, dt);
+      // The wheels roll with the car's motion along its own heading.
+      car.spin = (car.spin + along * dt / Math.max(car.kind.radius, .2)) % (Math.PI * 2);
+    } else { velocity.set(0, 0, 0); wreck.still += dt; }
+    wreck.yawRate *= Math.exp(-dt / .45);
+    car.yaw += wreck.yawRate * dt;
+    car.heading.set(Math.sin(car.yaw), 0, Math.cos(car.yaw));
+    car.braking = true;
+    // Where it now sits along its lane, and how far off it.
+    const near = this.nearest(car.lane, car.position), onLane = new THREE.Vector3();
+    car.s = near.s; car.index = this.sample(car.lane, Math.min(car.s, car.lane.length), car.index, onLane);
+    wreck.offLane = near.distance > car.kind.halfWidth + 1.9;
+    if (wreck.still < WRECK_HOLD || (this.visible(car.position) && car.position.distanceTo(player) < 90 && wreck.still < 40)) return;
+    // Back on the road: eased across from where it sat, facing along the lane, from a standstill.
+    if (car.lane.cars.some(other => other !== car && !other.wreck && Math.abs(other.s - car.s) < car.kind.body.lengthM + 4)) return;
+    car.wreck = undefined; car.v = 0; car.considered = undefined; car.joinWait = 0;
+    car.drift.copy(car.position).sub(onLane).setY(0); car.position.copy(onLane);
+    car.heading.copy(this.direction(car.lane, car.s)); car.yaw = Math.atan2(car.heading.x, car.heading.z);
+  }
   private release(car: Car, sim: Simulation) {
     if (car.obstacle && this.registered === sim) sim.setObstacle(`traffic-${car.id}`, car.kind.body, undefined);
     car.obstacle = false;
@@ -924,7 +990,9 @@ export class CityTraffic {
       const carMatrix = new THREE.Matrix4().compose(car.position, q, this.scale.set(1, 1, 1));
       const l = lamps.get(k) ?? 0; lamps.set(k, l + 1);
       for (const mesh of k.heads) { mesh.setMatrixAt(l, carMatrix); mesh.setColorAt(l, this.color.setRGB(2.4, 2.3, 2.1)); }
-      for (const mesh of k.tails) { mesh.setMatrixAt(l, carMatrix); mesh.setColorAt(l, car.braking ? this.color.setRGB(4.5, 1.2, 1.1) : this.color.setRGB(1.6, .55, .5)); }
+      // A knocked car flashes its hazards.
+      const hazard = car.wreck && Math.floor(this.time * 2.6) % 2 === 0;
+      for (const mesh of k.tails) { mesh.setMatrixAt(l, carMatrix); mesh.setColorAt(l, hazard ? this.color.setRGB(5, 2.2, .4) : car.braking ? this.color.setRGB(4.5, 1.2, 1.1) : this.color.setRGB(1.6, .55, .5)); }
       if (distance > DETAIL_WITHIN && k.far.length) {
         const f = farCounts.get(k) ?? 0; farCounts.set(k, f + 1);
         for (const mesh of k.far) mesh.setMatrixAt(f, carMatrix);
