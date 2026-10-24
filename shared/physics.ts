@@ -124,6 +124,13 @@ export function rearSlipDemand(speedMps:number,steeringLoad:number,throttle:numb
   // Keep tire coefficients positive even at the maximum drift slider setting.
   return manual?Math.min(1,cornerDemand+extra):cornerDemand*.2;
 }
+/** shortcut: Gear position approximates drive torque; use measured ratios when adding a full drivetrain model. */
+export function powerSlipDemand(car:CarDefinition,speedMps:number,gear:number,steeringLoad:number,throttle:number,brake:number,driftStrength=1) {
+  const engine=engineState(car,speedMps,gear),ratio=Math.pow((engine.gears-gear)/(engine.gears-1),1.25);
+  const revs=Math.min(1,engine.load/.45)*Math.max(0,Math.min(1,(1.08-engine.load)/.1));
+  const speed=Math.max(0,Math.min(1,(speedMps-4)/14));
+  return Math.min(1,1.35*ratio*revs*speed*speed*(3-2*speed)*Math.pow(Math.max(0,Math.min(1,steeringLoad)),.7)*Math.pow(throttle,1.3)*(1-brake)*driftStrength);
+}
 /**
  * Arcade turning authority shared by every car: more wheel lock (STEER_BOOST), a higher grip limit
  * for that lock (STEER_GRIP, m/s^2) and more cornering grip (CORNER_GRIP, m/s^2). High-speed
@@ -168,13 +175,17 @@ export class Simulation {
   finishTicks = 0;
   driftStrength = 1;
   manual=false;gear=1;private shiftTicks=0;
+  /** Absent on saved runs: replay those with their original Shift-based handling. */
+  gearDrift=true;
+  /** Saved runs without this flag retain the first gear-driven drift tuning. */
+  driftExit=true;
   /** Counts downshifts refused because the lower gear would over-rev; the HUD flashes a warning when it changes. */
   blockedShifts=0;
   /** True once the gearbox can accept the next shift. */
   get shiftReady(){return this.shiftTicks<=1;}  // the countdown ticks once before the shift check
   get engine(){return engineState(this.carSpec,Math.abs(this.forwardSpeed)*this.track.metersPerUnit,this.gear,this.throttle);}
   private steerHold = 0;
-  /** Left Shift slide state: how firmly the slide is held (0..1) and which way the tail went (+1 left, -1 right). */
+  /** How firmly the slide is held (0..1) and which way the tail went (+1 left, -1 right). */
   private slideHold = 0; private slideDir = 0;
   respawns = 0; splits: number[] = []; previousInput = 0;
   /** Training Grounds only: tick each cone was knocked (-1 standing), and touched cones on the timed course. */
@@ -525,7 +536,8 @@ export class Simulation {
     const { lock: speedSteering, speedBlend: easedSpeed } = steeringLock(tuning.steerAngle, speedMps,this.carSpec.dimensions.wheelbaseM,STEER_GRIP+tuning.downforce*5+arcadeGrip);
     const offRoadSteer = this.offRoad ? .85 : 1;
     this.steerHold=steeringInput&&Math.sign(this.steering)===steeringInput?Math.min(1.2,this.steerHold+DT):0;
-    const holdBoost=1+(!(input&Input.Drift)?1:0)*.45*(1-Math.exp(-this.steerHold*3));
+    const gearDriven=this.gearDrift&&this.manual;
+    const holdBoost=1+(gearDriven?1-this.autoDrift:Number(!(input&Input.Drift)))*.45*(1-Math.exp(-this.steerHold*3));
     const target = cruise?Math.max(-tuning.steerAngle,Math.min(tuning.steerAngle,cruise.steering)):steeringInput * speedSteering * offRoadSteer * this.steeringStrength * holdBoost * STEER_BOOST;
     const counterSteering = steeringInput && Math.sign(steeringInput) !== Math.sign(this.steering);
     // Arcade feel: the wheels answer the keys quickly at any speed, snap
@@ -538,14 +550,16 @@ export class Simulation {
     // A stopped car may steer its wheels without releasing the hold.
     const parkingHold = !cruise && !wantsForward && !wantsBack && speedMps < .05;
     const steeringLoad = Math.min(1, Math.abs(this.steering) / Math.max(.005, speedSteering * .72));
-    // Loaded corners loosen the rear naturally. Left Shift increases that
-    // breakaway according to actual smoothed wheel lock and road speed. Both
-    // engagement and release share the ramp, so there is no binary rear lock.
-    const manualDrift=!cruise&&!!(input&Input.Drift);
+    // Manual power-oversteer uses gear, revs and pedals. Keep old input recordings reproducible.
+    const manualDrift=!cruise&&(gearDriven||!!(input&Input.Drift));
     const autoTarget = !cruise && this.grounded && !this.offRoad && forwardSpeed>0 && steeringInput
-      ? rearSlipDemand(speedMps,steeringLoad,this.throttle,this.brake,manualDrift,this.driftStrength) : 0;
-    this.autoDrift += (autoTarget-this.autoDrift)*(1-Math.exp(-DT*(autoTarget>this.autoDrift?(manualDrift?3.2:2.4):this.autoDrift>.2?1.6:3.8)));
-    this.slideHold=this.approach(this.slideHold,manualDrift&&this.grounded?1:0,(manualDrift?4:2.5)*DT);
+      ? gearDriven
+        ? Math.max(rearSlipDemand(speedMps,steeringLoad,this.throttle,this.brake,false,this.driftStrength),powerSlipDemand(this.carSpec,Math.abs(forwardSpeed)*this.track.metersPerUnit,this.gear,steeringLoad,this.throttle,this.brake,this.driftStrength)*(this.shiftTicks>3?.12:1))
+        : rearSlipDemand(speedMps,steeringLoad,this.throttle,this.brake,manualDrift,this.driftStrength) : 0;
+    const poweredExit=this.driftExit&&gearDriven&&!steeringInput&&this.throttle>.1;
+    this.autoDrift += (autoTarget-this.autoDrift)*(1-Math.exp(-DT*(poweredExit?4:autoTarget>this.autoDrift?(manualDrift?3.2:2.4):this.autoDrift>.2?1.6:3.8)));
+    const slideTarget=manualDrift&&this.grounded?(gearDriven?this.throttle*(1-this.brake):1):0;
+    this.slideHold=this.approach(this.slideHold,slideTarget,(manualDrift?4:2.5)*DT);
     if(this.autoDrift<.12||!this.slideDir)this.slideDir=steeringInput||Math.sign(this.steering);
     const topSpeed = tuning.topSpeedKph / 3.6 / this.track.metersPerUnit;
     const speedRatio = Math.min(speed / topSpeed, 1.2);
@@ -575,13 +589,13 @@ export class Simulation {
       this.vehicle.setWheelSteering(i, i < 2 ? this.steering : 0);
       const driven = tuning.drivetrain === 'AWD' || i >= 2;
       const reverseTopSpeed = 12.5 / this.track.metersPerUnit;
-      const traction = wheelOffRoad[i] ? .48 : 1;
+      const traction = wheelOffRoad[i] ? this.track.offRoad?.traction ?? .48 : 1;
       const rev=this.engine.load;
       const transmission=this.manual&&!cruise?(this.shiftTicks>3?.12:1)*manualPull*Math.max(0,Math.min(1,(1.04-rev)/.1)):1;
       const forwardForce = (engineForce*torqueCurve+highSpeedForce*Math.min(1,speedRatio*speedRatio)*Math.max(0,2-speedRatio))*this.throttle*traction*transmission;
       const reverseForce = forwardSpeed > -reverseTopSpeed ? -engineForce * .52 * this.reverse * Math.max(.2, 1 - Math.abs(forwardSpeed) / reverseTopSpeed) : 0;
       this.vehicle.setWheelEngineForce(i, driven ? forwardForce + reverseForce : 0);
-      const driftBrake=i>=2?tuning.driftBrake*this.autoDrift*(1-this.throttle)*Number(!!(input&Input.Drift)):0;
+      const driftBrake=!gearDriven&&i>=2?tuning.driftBrake*this.autoDrift*(1-this.throttle)*Number(!!(input&Input.Drift)):0;
       this.vehicle.setWheelBrake(i, brakeImpulse * (this.brake + (parkingHold ? 2.5 : 0) + (driven ? engineBrakeShare * 4 / drivenWheels : 0)) + driftBrake);
       if (i >= 2) {
         this.vehicle.setWheelFrictionSlip(i, (tuning.grip+(tuning.driftGrip-tuning.grip)*this.autoDrift) * (wheelOffRoad[i] ? .62 : 1) * weatherGrip);
@@ -621,7 +635,7 @@ export class Simulation {
         this.car.applyImpulse({ x: -right.x * correctedLateral * tuning.massKg * stability * DT, y: -right.y * correctedLateral * tuning.massKg * stability * DT, z: -right.z * correctedLateral * tuning.massKg * stability * DT }, true);
       }
       if (this.offRoad) {
-        const scrub = tuning.massKg * Math.min(9, 2.1 + planarSpeed * .14) * DT;
+        const scrub = tuning.massKg * Math.min(9, 2.1 + planarSpeed * .14) * DT * (this.track.offRoad?.scrub ?? 1);
         this.car.applyImpulse({ x: -velocity.x / planarSpeed * scrub, y: 0, z: -velocity.z / planarSpeed * scrub }, true);
       }
     }
@@ -648,7 +662,23 @@ export class Simulation {
       const turnAssist=1+Math.max(0,this.steeringStrength-1.35)*2*holdBoost;
       const gripAcceleration=Math.min(28,(CORNER_GRIP+tuning.downforce*4+arcadeGrip)*turnAssist)*(this.offRoad?.48:1)*weatherGrip/this.track.metersPerUnit;
       // Acceleration, braking and cornering share one traction budget.
-      const v=this.car.linvel(),dx=v.x-velocityBefore.x,dz=v.z-velocityBefore.z;
+      const v=this.car.linvel();let dx=v.x-velocityBefore.x,dz=v.z-velocityBefore.z;
+      const slide=Math.min(1,this.autoDrift*this.slideHold*2.5);
+      if(this.gearDrift&&slide>0&&speed>2){
+        const front=rotate(q,{x:0,y:0,z:1});
+        const angle=Math.atan2(front.x,front.z)-Math.atan2(velocityBefore.x,velocityBefore.z);
+        const over=Math.atan2(Math.sin(angle),Math.cos(angle));
+        const saturation=Math.max(0,Math.min(1,(Math.abs(over)-.25)/.55));
+        // Saturated tyres carry momentum along the existing path instead of carving an ever-tighter circle.
+        let lateral=(dx*velocityBefore.z-dz*velocityBefore.x)/speed;
+        if(this.driftExit){
+          const turnLimit=speed*(.2+(1-slide)*gripAcceleration/Math.max(5,speed))*DT;
+          const excess=lateral-Math.max(-turnLimit,Math.min(turnLimit,lateral));
+          dx-=excess*velocityBefore.z/speed;dz+=excess*velocityBefore.x/speed;lateral-=excess;
+        }
+        lateral=lateral*.93*slide*saturation*saturation;
+        dx-=lateral*velocityBefore.z/speed;dz+=lateral*velocityBefore.x/speed;
+      }
       // Hard braking gets extra grip on top of the cornering budget (more with downforce and speed),
       // capped at about 2.65 g so, with aero drag on top, the total stays under 3 g.
       const brakeGrip=this.brake*(9+tuning.downforce*5)*(.6+.4*Math.min(1,speedMps/60))*weatherGrip;
@@ -668,11 +698,10 @@ export class Simulation {
       // wheel lock and travel direction, including countersteering and reverse.
       const requestedYaw=forwardSpeed*Math.tan(this.steering)/this.carSpec.dimensions.wheelbaseM*(1+this.autoDrift*.2);
       let targetYaw=Math.max(-yawLimit,Math.min(yawLimit,requestedYaw));
-      // Arcade Shift slide: steer the body toward a target angle past the
+      // Arcade slide: steer the body toward a target angle past the
       // direction of travel. Holding into the slide with throttle swings it
       // nearly sideways; neutral holds a medium angle; countersteer or lifting
-      // Shift straightens it. Chasing a target angle also stops a spin-out.
-      const slide=Math.min(1,this.autoDrift*this.slideHold*2.5);
+      // throttle straightens it. Chasing a target angle also stops a spin-out.
       if(slide>0&&this.slideDir&&nextSpeed>2){
         const front=rotate(q,{x:0,y:0,z:1}),heading=Math.atan2(front.x,front.z),travel=Math.atan2(vx,vz);
         const wrap=(a:number)=>Math.atan2(Math.sin(a),Math.cos(a));
@@ -680,8 +709,8 @@ export class Simulation {
         // Countersteer swings the body back through straight; once it gets
         // there the slide flips the other way, so S-bends chain together.
         if(steeringInput===-this.slideDir&&over*this.slideDir<.05)this.slideDir=steeringInput;
-        const steerMod=steeringInput===this.slideDir?1:steeringInput?-.2:.6;
-        const maxAngle=Math.min(1.3,.95*Math.pow(this.driftStrength,.6));
+        const steerMod=steeringInput===this.slideDir?1:steeringInput?-.2:poweredExit?0:.6;
+        const maxAngle=Math.min(1.3,.95*Math.pow(this.driftStrength,.6))*(this.driftExit&&gearDriven?Math.pow(1/this.gear,.3):1);
         const targetOver=this.slideDir*maxAngle*this.autoDrift*(.55+.45*this.throttle)*steerMod;
         const slideYaw=Math.max(-2.2,Math.min(2.2,pathYaw+3.2*(targetOver-over)));
         targetYaw+=(slideYaw-targetYaw)*slide;
@@ -694,6 +723,15 @@ export class Simulation {
           const k=(previousSpeed-allowed)/kept;vx*=k;vz*=k;
           this.car.setLinvel({x:vx,y:v.y,z:vz},true);
         }
+      }
+      if(poweredExit&&nextSpeed>2){
+        const front=rotate(q,{x:0,y:0,z:1}),angle=Math.atan2(front.x,front.z)-Math.atan2(vx,vz);
+        // Unwinding under throttle points the body along its momentum instead of scrubbing the slide to a stop.
+        targetYaw=Math.max(-1.4,Math.min(1.4,-4.8*Math.atan2(Math.sin(angle),Math.cos(angle))));
+      }
+      if(this.gearDrift&&this.driftExit&&slide>0){
+        const driftYawLimit=poweredExit?1.4:1.15*(1-.35*slide);
+        targetYaw=Math.max(-driftYawLimit,Math.min(driftYawLimit,targetYaw));
       }
       // Fast yaw build gives crisp turn-in and a quick straighten on release.
       const limitedYaw=this.approach(previousYaw,targetYaw,(5+slide*6)*DT);

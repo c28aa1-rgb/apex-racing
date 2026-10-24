@@ -22,6 +22,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { chassisWalls, sealCracks } from './seal-cracks';
+import { embankments, refine, smoothNormals, terrainSampler } from './embankment';
 
 const source = process.argv.find(arg => arg.startsWith('--source='))?.slice(9) ?? join(homedir(), 'Downloads/RacingCity');
 const out = 'public/models/tracks';
@@ -96,6 +97,73 @@ if (!hasBuildings) console.warn('warning: the export contains no building meshes
 const REMOVED = /^RC_Training_Gantry|^RC_TrainingStart$/;
 for (const node of root.listNodes()) if (REMOVED.test(node.getName())) { node.traverse(child => child !== node && child.dispose()); node.dispose(); }
 await doc.transform(weld());
+
+// Embankments: the terrain beside raised hill roads is built up into banks a car can drive back up (the expressway
+// viaduct is left as a bridge). The bank is measured from the original terrain and the road collision, and applied
+// below to the visible terrain, the verges laid on it, the plants standing on it and the collision terrain.
+const mapData = JSON.parse(await readFile(join(source, 'map-data.json'), 'utf8'));
+const collision = await io.read(join(source, 'RacingCity-collision.glb'));
+const bank = (() => {
+  const node = root.listNodes().find(n => /^RC_RidgeLandscape/.test(n.getName()) && n.getMesh())!, primitive = node.getMesh()!.listPrimitives()[0];
+  const ground = terrainSampler(primitive.getAttribute('POSITION')!.getArray()!, primitive.getIndices()!.getArray()!);
+  const roadPositions: number[] = [], roadIndices: number[] = [];
+  collision.getRoot().getDefaultScene()!.traverse(n => {
+    if (!/RoadCollision|Streetscape_asphalt/.test(n.getName()) || !n.getMesh()) return;
+    const m = new Matrix4().fromArray(n.getWorldMatrix());
+    for (const p of n.getMesh()!.listPrimitives()) {
+      const pos = p.getAttribute('POSITION')!, idx = p.getIndices()!, base = roadPositions.length / 3, e: number[] = [], v = new Vector3();
+      for (let i = 0; i < pos.getCount(); i++) { v.fromArray(pos.getElement(i, e)).applyMatrix4(m); roadPositions.push(v.x, v.y, v.z); }
+      for (let i = 0; i < idx.getCount(); i++) roadIndices.push(base + idx.getScalar(i));
+    }
+  });
+  return embankments(mapData.roads, ground, /CoastalExpressway/, terrainSampler(roadPositions, roadIndices, 12));
+})();
+console.log(`embankments: ${bank.segments} raised road segments`, bank.byRoad);
+/** Raises a positions array to the bank (plus `lift`); true if anything moved. */
+const raise = (positions: number[] | Float32Array, lift = 0) => {
+  let moved = false;
+  for (let i = 0; i < positions.length; i += 3) { const h = bank.height(positions[i], positions[i + 2]); if (h + lift > positions[i + 1]) { positions[i + 1] = h + lift; moved = true; } }
+  return moved;
+};
+/** Refines a terrain mesh near raised roads and raises it into banks. Returns the new positions/indices/extras. */
+const bankTerrain = (positions: number[], indices: number[], extras: { values: number[]; size: number }[] = []) => {
+  const pick = (t: number) => [0, 1, 2].some(k => { const v = indices[t * 3 + k] * 3; return bank.near(positions[v], positions[v + 2], 8); });
+  const refined = refine([{ values: positions, size: 3 }, ...extras], indices, pick, 2);
+  raise(positions);
+  return refined;
+};
+{
+  const node = root.listNodes().find(n => /^RC_RidgeLandscape/.test(n.getName()) && n.getMesh())!, primitive = node.getMesh()!.listPrimitives()[0];
+  const positions = Array.from(primitive.getAttribute('POSITION')!.getArray()!), uvs = Array.from(primitive.getAttribute('TEXCOORD_0')!.getArray()!);
+  const normals = Array.from(primitive.getAttribute('NORMAL')!.getArray()!);
+  const before = primitive.getIndices()!.getCount() / 3;
+  const indices = bankTerrain(positions, Array.from(primitive.getIndices()!.getArray()!), [{ values: uvs, size: 2 }, { values: normals, size: 3 }]);
+  const buffer = root.listBuffers()[0];
+  primitive.setAttribute('POSITION', doc.createAccessor().setType('VEC3').setArray(new Float32Array(positions)).setBuffer(buffer));
+  primitive.setAttribute('NORMAL', doc.createAccessor().setType('VEC3').setArray(smoothNormals(positions, indices)).setBuffer(buffer));
+  primitive.setAttribute('TEXCOORD_0', doc.createAccessor().setType('VEC2').setArray(new Float32Array(uvs)).setBuffer(buffer));
+  primitive.setIndices(doc.createAccessor().setType('SCALAR').setArray(new Uint32Array(indices)).setBuffer(buffer));
+  console.log(`terrain: ${before} -> ${indices.length / 3} triangles after refining near raised roads`);
+  // Verges and gravel shoulders lie on the terrain. Where a bank now covers them they are dropped (the bank's grass
+  // shows instead): lifted, the strips that used to hang down the old drop turned into a jagged band of teeth.
+  let droppedDetail = 0;
+  for (const detail of root.listNodes().filter(n => /^RC_GroundDetail_/.test(n.getName()) && n.getMesh())) for (const p of detail.getMesh()!.listPrimitives()) {
+    const accessor = p.getAttribute('POSITION')!, values = accessor.getArray()!, indices = p.getIndices();
+    if (!indices) continue;
+    const ids = indices.getArray()!, kept: number[] = [];
+    const covered = (v: number) => bank.height(values[v * 3], values[v * 3 + 2]) > values[v * 3 + 1] - .02;
+    for (let i = 0; i < ids.length; i += 3) { if (covered(ids[i]) || covered(ids[i + 1]) || covered(ids[i + 2])) { droppedDetail++; continue; } kept.push(ids[i], ids[i + 1], ids[i + 2]); }
+    indices.setArray(new Uint32Array(kept));
+  }
+  console.log(`embankments: ${droppedDetail} verge/shoulder triangles under banks dropped`);
+  // Trees and shrubs standing on the terrain stand on the bank.
+  for (const n of root.listNodes()) {
+    const instancing = n.getExtension<any>('EXT_mesh_gpu_instancing');
+    if (!instancing || !/Nature/.test(n.getName())) continue;
+    const accessor = instancing.getAttribute('TRANSLATION'), values = accessor.getArray().slice() as Float32Array;
+    if (raise(values)) accessor.setArray(values);
+  }
+}
 
 // Buildings carry up to 17 materials each, one draw call apiece per map cell. Untextured opaque ones (trim, metal,
 // black panels) become one shared material coloured per vertex, and the glass variants one shared glass, so the
@@ -281,7 +349,6 @@ function outlines(primitive: Primitive, matrix: Matrix4) {
     return [...half(sorted), ...half([...sorted].reverse())].map(([x, z]) => [Math.round(x), Math.round(z)]);
   }).filter(hull => hull.length >= 3);
 }
-const collision = await io.read(join(source, 'RacingCity-collision.glb'));
 const vertices: number[] = [], indices: number[] = [], types: number[] = [];
 /** Building footprints for the city map: the ground outline of each collision box, as [x, z] corners. */
 const footprints: number[][][] = [];
@@ -307,10 +374,12 @@ collision.getRoot().getDefaultScene()!.traverse(node => {
       if (normal.y < -area * .2) [tri[1], tri[2]] = [tri[2], tri[1]];
       ids.push(...tri);
     }
+    // The collision terrain gets the same refinement and banks as the visible terrain.
+    const final = type === 1 ? bankTerrain(local, ids) : ids;
     const offset = vertices.length / 3;
     for (const coordinate of local) vertices.push(coordinate);
-    for (const id of ids) indices.push(id + offset);
-    for (let i = 0; i < ids.length; i += 3) types.push(type);
+    for (const id of final) indices.push(id + offset);
+    for (let i = 0; i < final.length; i += 3) types.push(type);
   }
 });
 // The rolling landscape (grass) runs flush under the paved pads and roads in places. A wheel ray then hits grass and
@@ -359,7 +428,6 @@ await writeFile(join(out, 'collision/racing-city.bin'), Buffer.concat([header, B
 console.log(`collision: ${t.length} triangles (+${flanges} crack flanges), ${walls.reduce((sum, w) => sum + w, 0)} chassis walls`);
 
 // ---------------------------------------------------------------- minimap roads
-const mapData = JSON.parse(await readFile(join(source, 'map-data.json'), 'utf8'));
 const roads = mapData.roads.map((road: { name: string; district: string; width: number; closed: boolean; points: number[][] }) => ({
   name: road.name, district: road.district, width: road.width, closed: road.closed,
   points: road.points.filter((_, index, all) => index % 4 === 0 || index === all.length - 1).map(([x, , z]) => [Math.round(x), Math.round(z)]),
