@@ -3,6 +3,7 @@ import type { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { assetUrl } from '../shared/assets';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import type { ObstacleBody, Simulation } from '../shared/physics';
+import { CityProps } from './city-props';
 
 /**
  * City traffic: signalised intersections and AI cars that keep to their lane, follow the car ahead, stop for red
@@ -141,6 +142,9 @@ export class CityTraffic {
   private scale = new THREE.Vector3(1, 1, 1);
   private color = new THREE.Color();
 
+  /** Street furniture the player can knock over. */
+  props?: CityProps;
+
   private constructor() { this.group.name = 'apex-city-traffic'; }
 
   /** Loads the road paths and vehicles, reads the traffic lights out of the loaded venue, and places the cars. */
@@ -152,6 +156,7 @@ export class CityTraffic {
       import('meshoptimizer').then(async ({ MeshoptSimplifier }) => { await MeshoptSimplifier.ready; return MeshoptSimplifier.supported ? MeshoptSimplifier : undefined; }).catch(() => undefined),
     ]);
     traffic.buildSignals(venue);
+    traffic.props = new CityProps(venue); traffic.group.add(traffic.props.group);
     traffic.buildLanes(map.paths);
     traffic.buildKinds(gltf.scene, simplifier);
     traffic.buildLamps();
@@ -705,6 +710,7 @@ export class CityTraffic {
       this.rebalance(player, sim);
     }
     this.solid(sim, player);
+    if (dt > 0) this.props?.update(dt, sim, player);
     this.render();
   }
 
@@ -856,7 +862,7 @@ export class CityTraffic {
   }
   /** Registers nearby cars as stand-ins in the player's physics world, and removes the rest. */
   private solid(sim: Simulation, player: THREE.Vector3) {
-    if (this.registered !== sim) { this.registered = sim; for (const car of this.cars) car.obstacle = false; }
+    if (this.registered !== sim) { this.registered = sim; for (const car of this.cars) car.obstacle = false; sim.recoverPoint = at => this.roadside(at); }
     for (const car of this.cars) {
       const near = car.position.distanceTo(player) < SOLID_WITHIN;
       if (!near) { this.release(car, sim); continue; }
@@ -869,6 +875,33 @@ export class CityTraffic {
       });
       car.obstacle = true;
     }
+  }
+  /**
+   * Where a recovered player car goes: the nearest point on a road lane (not a junction connector), facing along the
+   * lane, moved forward along it if a traffic car is close by, and clear of junction boxes.
+   */
+  private roadside(at: { x: number; y: number; z: number }) {
+    const point = new THREE.Vector3(at.x, at.y, at.z), here = new THREE.Vector3();
+    let best: { lane: Lane; s: number; distance: number } | undefined;
+    for (const lane of this.lanes) {
+      if (lane.connector) continue;
+      const near = this.nearest(lane, point);
+      this.sample(lane, near.s, 0, here);
+      // Prefer lanes at the car's height (the expressway above a street, or the street below it).
+      const distance = near.distance + Math.abs(here.y - point.y) * 2;
+      if (!best || distance < best.distance) best = { lane, s: near.s, distance };
+    }
+    if (!best) return undefined;
+    const { lane } = best;
+    let s = best.s;
+    for (let tries = 0; tries < 12; tries++) {
+      const busy = lane.cars.some(car => Math.abs(car.s - s) < 14) || lane.stops.some(stop => s > stop.s - 3 && s < stop.exit + 3);
+      if (!busy) break;
+      s = lane.closed ? (s + 12) % lane.length : Math.min(lane.length - 6, s + 12);
+    }
+    this.sample(lane, s, 0, here);
+    const forward = this.direction(lane, s), yaw = Math.atan2(forward.x, forward.z), q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
+    return { position: { x: here.x, y: here.y, z: here.z }, forward: { x: forward.x, y: 0, z: forward.z }, rotation: { x: q.x, y: q.y, z: q.z, w: q.w }, width: lane.width, segment: 0 };
   }
   private release(car: Car, sim: Simulation) {
     if (car.obstacle && this.registered === sim) sim.setObstacle(`traffic-${car.id}`, car.kind.body, undefined);
@@ -939,6 +972,8 @@ export class CityTraffic {
 
   dispose(sim?: Simulation) {
     if (sim) for (const car of this.cars) this.release(car, sim);
+    // Debris shares the venue's geometry and materials; the venue frees those.
+    this.props?.dispose();
     this.group.traverse(object => { if (object instanceof THREE.Mesh) { object.geometry.dispose(); (object.material as THREE.Material).dispose(); } });
     this.texture.dispose();
     this.group.removeFromParent();

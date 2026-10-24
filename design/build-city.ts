@@ -24,7 +24,8 @@ import { join } from 'node:path';
 import { chassisWalls, sealCracks } from './seal-cracks';
 import { embankments, refine, smoothNormals, terrainSampler } from './embankment';
 
-const source = process.argv.find(arg => arg.startsWith('--source='))?.slice(9) ?? join(homedir(), 'Downloads/RacingCity');
+// The default is the 2026-10-22 re-export (the first export, Downloads/RacingCity, has no buildings).
+const source = process.argv.find(arg => arg.startsWith('--source='))?.slice(9) ?? join(homedir(), 'Downloads/RacingCity-2026-10-22/RacingCity');
 const out = 'public/models/tracks';
 /** Instance batches are split into square cells of this size (metres) so each cell can be culled on its own. */
 const CELL = 200;
@@ -95,6 +96,8 @@ if (!hasBuildings) console.warn('warning: the export contains no building meshes
 
 // Taken out of the city: the start gantry and its sign over the test straight, right in front of the spawn.
 const REMOVED = /^RC_Training_Gantry|^RC_TrainingStart$/;
+/** Collision groups for the props that break (kept in step with KINDS in src/city-props.ts). */
+const BREAKABLE = /^RC_Streetscape_(TrashCan|Crate|Container|FencePanel|FencePost|StopSign)$|^RC_ReviewProps_\w*(FireHydrant|UtilityBox)$|^RC_ReviewProps_IndustrialBarrel$/;
 for (const node of root.listNodes()) if (REMOVED.test(node.getName())) { node.traverse(child => child !== node && child.dispose()); node.dispose(); }
 await doc.transform(weld());
 
@@ -116,6 +119,16 @@ const bank = (() => {
       for (let i = 0; i < idx.getCount(); i++) roadIndices.push(base + idx.getScalar(i));
     }
   });
+  // The visible road, sidewalk and curb surfaces cap the bank as well as the road collision (they differ slightly).
+  for (const n of root.listNodes()) {
+    if (!/^RC_Road_|Streetscape_(asphalt|walk)|StreetCurbs|GroundDetail_Asphalt/.test(n.getName()) || !n.getMesh()) continue;
+    const m = new Matrix4().fromArray(n.getWorldMatrix());
+    for (const p of n.getMesh()!.listPrimitives()) {
+      const pos = p.getAttribute('POSITION')!, idx = p.getIndices(), base = roadPositions.length / 3, e: number[] = [], v = new Vector3();
+      for (let i = 0; i < pos.getCount(); i++) { v.fromArray(pos.getElement(i, e)).applyMatrix4(m); roadPositions.push(v.x, v.y, v.z); }
+      for (let i = 0; i < (idx?.getCount() ?? pos.getCount()); i++) roadIndices.push(base + (idx ? idx.getScalar(i) : i));
+    }
+  }
   return embankments(mapData.roads, ground, /CoastalExpressway/, terrainSampler(roadPositions, roadIndices, 12));
 })();
 console.log(`embankments: ${bank.segments} raised road segments`, bank.byRoad);
@@ -358,6 +371,8 @@ collision.getRoot().getDefaultScene()!.traverse(node => {
   const name = node.getName();
   if (!hasBuildings && /BuildingCollision|RealCity_Collision/.test(name)) return;
   if (REMOVED.test(name)) return;
+  // Breakable street furniture has no solid collision: src/city-props.ts knocks it over when the car hits it.
+  if (BREAKABLE.test(name)) return;
   // 1 = grass grip off the road: the rolling landscape around the city.
   const type = /Landscape/.test(name) ? 1 : 0;
   const matrix = new Matrix4().fromArray(node.getWorldMatrix());
@@ -418,6 +433,28 @@ collision.getRoot().getDefaultScene()!.traverse(node => {
     if (under) { types[t] = 0; repaved++; }
   }
   console.log(`terrain: ${repaved} grass triangles under paving counted as pavement (${paved.length} paved floor triangles)`);
+}
+// Expressway viaduct: the guardrails are solid boxes with flat tops, and a wheel striking one at an angle can climb onto
+// the top and carry the car over the edge. Behind each rail (just past the deck edge) stands an invisible wall of
+// vertical faces only - nothing to climb - from below the deck to 2.6 m above it, wherever the deck is raised.
+{
+  const road = mapData.roads.find((r: { name: string }) => r.name === 'CoastalExpressway'), half = road.width / 2 + .2;
+  let panels = 0;
+  for (const side of [-1, 1]) {
+    for (let i = 1; i < road.points.length; i++) {
+      const [ax, ay, az] = road.points[i - 1], [bx, by, bz] = road.points[i];
+      if (Math.min(ay, by) < 3) continue;
+      const offset = (p: number[], q: number[]) => { const dx = q[0] - p[0], dz = q[2] - p[2], l = Math.hypot(dx, dz) || 1; return [-dz / l * side * half, dx / l * side * half]; };
+      const [oax, oaz] = offset(road.points[Math.max(0, i - 2)], road.points[i]), [obx, obz] = offset(road.points[i - 1], road.points[Math.min(road.points.length - 1, i + 1)]);
+      const base = vertices.length / 3;
+      vertices.push(ax + oax, ay - .3, az + oaz, bx + obx, by - .3, bz + obz, bx + obx, by + 2.6, bz + obz, ax + oax, ay + 2.6, az + oaz);
+      // Both faces, so the wall stops a car from either side.
+      indices.push(base, base + 1, base + 2, base, base + 2, base + 3, base, base + 2, base + 1, base, base + 3, base + 2);
+      types.push(0, 0, 0, 0);
+      panels++;
+    }
+  }
+  console.log(`expressway: ${panels} barrier panels behind the guardrails`);
 }
 const flanges = sealCracks(vertices, indices, types, { reach: 1.25, drop: .02, tolerance: .1 });
 const walls = chassisWalls(vertices, indices, .15);

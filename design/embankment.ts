@@ -70,8 +70,16 @@ export function embankments(roads: RoadPath[], ground: (x: number, z: number, be
     let best = -Infinity;
     for (const s of grid.get(`${Math.floor(x / CELL)},${Math.floor(z / CELL)}`) ?? []) {
       const dx = s.bx - s.ax, dz = s.bz - s.az, l2 = dx * dx + dz * dz || 1, t = Math.min(1, Math.max(0, ((x - s.ax) * dx + (z - s.az) * dz) / l2));
-      const d = Math.hypot(x - s.ax - dx * t, z - s.az - dz * t), y = s.ay + (s.by - s.ay) * t - TOP;
+      const cx = s.ax + dx * t, cz = s.az + dz * t, d = Math.hypot(x - cx, z - cz);
       const out = d - s.half - SHOULDER; if (out > REACH) continue;
+      // The bank starts from the road's real surface at its nearest edge: on a curve the road tilts, and its low edge
+      // sits below the centre line the export gives.
+      let y = s.ay + (s.by - s.ay) * t;
+      if (paved && d > .01) {
+        const k = Math.min(d, s.half - .3) / d, edge = paved(cx + (x - cx) * k, cz + (z - cz) * k, y + 2);
+        if (edge > -Infinity) y = Math.min(y, edge);
+      }
+      y -= TOP;
       best = Math.max(best, out <= 0 ? y : y - out * SLOPE);
     }
     // Under the road itself the bank stays just below the actual road surface (roads tilt on curves).

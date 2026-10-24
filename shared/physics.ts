@@ -833,9 +833,14 @@ export class Simulation {
     const t = -da / (db-da);
     return insideGate(gate, { x: a.x + (b.x-a.x)*t, y: a.y + (b.y-a.y)*t, z: a.z + (b.z-a.z)*t });
   }
+  /**
+   * Free roam in an open venue (the city): where a recovered car is put, given where it is now, instead of the spawn
+   * - the nearest road lane, facing its direction. Undefined elsewhere; never used for timed runs.
+   */
+  recoverPoint?: (at: Vec3) => Gate | undefined;
   respawn() {
     this.gear=1;this.shiftTicks=0;
-    const gate = this.checkpoint ? this.gates.checkpoints[this.checkpoint - 1] : this.spawnPoint;
+    const gate = (!this.checkpoint && this.recoverPoint?.(this.car.translation())) || (this.checkpoint ? this.gates.checkpoints[this.checkpoint - 1] : this.spawnPoint);
     this.world.removeVehicleController(this.vehicle);
     this.car.setTranslation(this.surfaceSpawn({ x: gate.position.x + gate.forward.x * 3, y: gate.position.y, z: gate.position.z + gate.forward.z * 3 }), true);
     this.car.setRotation(gate.rotation, true); this.car.setLinvel({ x: 0, y: 0, z: 0 }, true); this.car.setAngvel({ x: 0, y: 0, z: 0 }, true);
