@@ -1,6 +1,7 @@
 import { CONE_COURSE, CONE_GATES, TRAINING_LOT, type LotLayout } from './lot';
 import { BARCELONA_ROUTE, BUGATTI_ROUTE, DAYTONA_ROUTE, HUNGARORING_ROUTE, INDIANAPOLIS_LAYOUT, INDIANAPOLIS_ROUTE, MARINA_ROUTE, SPA_ROUTE } from './track-routes';
 import { TRACK_LAYOUTS } from './track-layouts';
+import { CITY_RACE_DATA } from './city-races.data';
 
 export type Vec3 = { x: number; y: number; z: number };
 export type Quat = Vec3 & { w: number };
@@ -16,8 +17,10 @@ export type Track = {
   /** Optional smoothed developer drive trace used by UI maps and circuit cards. */
   mapPath?: Vec3[];
   localCheckpoints?:boolean;localFinish?:boolean;localWidths?:boolean;
-  /** 'lot' is untimed free roam; 'cones' is the timed course inside the same lot. Circuits omit it. */
-  kind?: 'lot' | 'cones';
+  /** 'lot' is untimed free roam; 'cones' is the timed course inside the same lot; 'street' a city street race. Circuits omit it. */
+  kind?: 'lot' | 'cones' | 'street';
+  /** City street races: the route, laps, start box, police roadblocks and race traffic (shared/city-races.data.ts). */
+  street?: StreetRace;
   /** Flat, walled car park built from shared layout data instead of a venue model. */
   lot?: LotLayout;
   /** Kept out of menus, party and the public track list; still accepted by the leaderboard. */
@@ -35,6 +38,21 @@ export type Track = {
    */
   hillStart?: boolean;
 };
+/** A street race in the city, as built by design/build-city-races.ts. */
+export type StreetRace = {
+  laps: number; closed: boolean;
+  /** The route at 5 m spacing: x, y, z, road width, traffic speed. */
+  route: readonly (readonly number[])[];
+  /** Start box (centre, heading, width across, length along): stop in it and press Enter. */
+  zone: { x: number; y: number; z: number; heading: number; w: number; l: number };
+  /** Police roadblocks: the cars (x, y, z, yaw, model) and the solid line behind them. */
+  roadblocks: readonly { x: number; y: number; z: number; heading: number; road: string; cars: readonly (readonly number[])[]; wall: { x: number; y: number; z: number; heading: number; length: number } }[];
+};
+/** Whether a point lies inside a street race's start box. */
+export function inStartZone(zone: StreetRace['zone'], x: number, z: number) {
+  const dx = x - zone.x, dz = z - zone.z, s = Math.sin(zone.heading), c = Math.cos(zone.heading);
+  return Math.abs(dx * s + dz * c) < zone.l / 2 && Math.abs(dx * c - dz * s) < zone.w / 2;
+}
 const round = (n: number) => Math.round(n * 1e6) / 1e6 || 0;
 export const v = (x: number, y: number, z: number): Vec3 => ({ x, y, z });
 export function direction(a: Vec3, b: Vec3): Vec3 {
@@ -143,8 +161,27 @@ export const CITY: Track = {
   start: placed(-700, -285, 0, 20), finish: placed(-700, 300, 0, 20),
   metersPerUnit: 1, length: 1000,
 };
+/**
+ * Street races in the city, each started from its box in free roam: the route is closed off by police roadblocks and
+ * has its own traffic (shared/race-traffic.ts). Ranked like circuits.
+ */
+export const CITY_RACES: Track[] = CITY_RACE_DATA.map(race => {
+  const route = race.route, gate = (g: { x: number; y: number; z: number; heading: number; width: number }) => {
+    const forward = v(round(Math.sin(g.heading)), 0, round(Math.cos(g.heading)));
+    let segment = 0, best = Infinity;
+    for (let i = 0; i < route.length - 1; i++) { const d = Math.hypot(route[i][0] - g.x, route[i][2] - g.z); if (d < best) { best = d; segment = i; } }
+    return { position: v(g.x, g.y, g.z), forward, rotation: orientation(forward), width: g.width, segment };
+  };
+  const points = race.closed ? [...route, route[0]] : route;
+  const segments: Segment[] = points.slice(0, -1).map((p, i) => ({ id: `${race.id}-${i}`, next: i < points.length - 2 ? `${race.id}-${i + 1}` : null,
+    start: v(p[0], p[1], p[2]), end: v(points[i + 1][0], points[i + 1][1], points[i + 1][2]), width: p[3], surface: 'road' as const, rails: false }));
+  return { ...CITY, id: race.id, version: 1, name: race.name, subtitle: race.subtitle, difficulty: 'Street race', description: race.description, accent: race.accent,
+    medals: [...race.medals] as [number, number, number], kind: 'street' as const, segments, checkpoints: race.checkpoints.map(gate), start: gate(race.start), finish: gate(race.finish),
+    length: race.length, mapPath: route.map(p => v(p[0], p[1], p[2])),
+    street: { laps: race.laps, closed: race.closed, route, zone: race.zone, roadblocks: race.roadblocks } };
+});
 /** Every track the simulation and leaderboard accept, including hidden ones. */
-export const ALL_TRACKS: Track[] = [...TRACKS, TRAINING_GROUNDS, CONE_TRACK];
+export const ALL_TRACKS: Track[] = [...TRACKS, TRAINING_GROUNDS, CONE_TRACK, ...CITY_RACES];
 export const trackById = (id: string) => ALL_TRACKS.find(t => t.id === id);
 export const ranked = (track: Track) => track.kind !== 'lot';
 export function medalFor(track: Track, ms: number): string {

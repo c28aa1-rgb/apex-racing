@@ -4,6 +4,9 @@ import { assetUrl } from '../shared/assets';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import type { ObstacleBody, Simulation } from '../shared/physics';
 import { CityProps } from './city-props';
+import { CityRaceScene } from './city-race';
+import type { Track } from '../shared/tracks';
+import type { RaceCar } from '../shared/race-traffic';
 
 /**
  * City traffic: signalised intersections and AI cars that keep to their lane, follow the car ahead, stop for red
@@ -51,6 +54,8 @@ type Lane = {
   width: number; connector?: boolean;
   /** Lane number counted out from the centre line (0 is the inner lane, where left turns are made). */
   index: number;
+  /** During a street race: the stretches of this lane inside the closed-off route (start and end distance). */
+  shut?: [number, number][];
 };
 /** Where a wheel sits on its car, and whether it steers and which side it is on (right wheels are the left one turned round). */
 type WheelSlot = { at: THREE.Vector3; front: boolean; right: boolean };
@@ -150,21 +155,29 @@ export class CityTraffic {
 
   /** Street furniture the player can knock over. */
   props?: CityProps;
+  /** Street races: start boxes in free roam, police roadblocks during a race. */
+  readonly race = new CityRaceScene();
+  /** The street race whose route is closed to free-roam traffic, and the race's own cars as drawn. */
+  private closedFor?: Track;
+  private puppets = new Map<RaceCar, Car>();
 
   private constructor() { this.group.name = 'apex-city-traffic'; }
 
   /** Loads the road paths and vehicles, reads the traffic lights out of the loaded venue, and places the cars. */
   static async create(venue: THREE.Object3D, loader: GLTFLoader, player: THREE.Vector3) {
     const traffic = new CityTraffic();
-    const [map, gltf, simplifier] = await Promise.all([
+    const [map, gltf, simplifier, police] = await Promise.all([
       fetch(assetUrl('models/tracks/racing-city.map.json')).then(response => { if (!response.ok) throw new Error(`City map failed: ${response.status}`); return response.json() as Promise<{ paths: RoadPath[] }>; }),
       loader.loadAsync(assetUrl('models/traffic/traffic-cars.glb')),
       import('meshoptimizer').then(async ({ MeshoptSimplifier }) => { await MeshoptSimplifier.ready; return MeshoptSimplifier.supported ? MeshoptSimplifier : undefined; }).catch(() => undefined),
+      loader.loadAsync(assetUrl('models/traffic/police-cars.glb')).catch(error => { console.warn('Police cars unavailable.', error); return undefined; }),
     ]);
     traffic.buildSignals(venue);
     traffic.props = new CityProps(venue); traffic.group.add(traffic.props.group);
     traffic.buildLanes(map.paths);
     traffic.buildKinds(gltf.scene, simplifier);
+    if (police) traffic.race.build(police.scene);
+    traffic.group.add(traffic.race.group);
     traffic.buildLamps();
     traffic.populate(player);
     traffic.render();
@@ -588,6 +601,7 @@ export class CityTraffic {
   private place(lane: Lane, s: number, player: THREE.Vector3, clearOfPlayer: number, hidden = false): Car | undefined {
     if (!lane.closed && lane.links.some(link => link.end) && s > Math.max(...lane.links.filter(link => link.end).map(link => link.at)) - 5) return undefined;
     if (lane.cars.some(other => Math.abs(other.s - s) < 18) || lane.stops.some(stop => Math.abs(stop.s - s) < 12) || lane.zones.some(zone => s > zone.enter - 4 && s < zone.leave)) return undefined;
+    if (lane.shut?.some(([from, to]) => s > from - 30 && s < to + 5)) return undefined;
     const at = new THREE.Vector3(), index = this.sample(lane, s, 0, at);
     if (at.distanceTo(player) < clearOfPlayer) return undefined;
     if (hidden && this.camera && at.distanceTo(this.eye) < 420 && this.frustum.intersectsSphere(new THREE.Sphere(at, 4))) return undefined;
@@ -708,6 +722,9 @@ export class CityTraffic {
   update(dt: number, sim: Simulation, player: THREE.Vector3, playerVelocity: THREE.Vector3) {
     dt = Math.min(dt, .1);
     this.time += dt;
+    const street = sim.track.kind === 'street' ? sim.track : undefined;
+    if (street !== this.closedFor) this.close(street, sim);
+    this.race.update(dt, this.camera ? this.eye : undefined);
     if (dt > 0) this.runSignals(dt);
     if (this.camera) { this.camera.updateMatrixWorld(); this.frustum.setFromProjectionMatrix(new THREE.Matrix4().multiplyMatrices(this.camera.projectionMatrix, this.camera.matrixWorldInverse)); }
     for (const lane of this.lanes) lane.cars.sort((a, b) => a.s - b.s);
@@ -717,6 +734,7 @@ export class CityTraffic {
     }
     this.solid(sim, player);
     if (dt > 0) this.props?.update(dt, sim, player);
+    this.syncPuppets(sim);
     this.render();
   }
 
@@ -821,6 +839,11 @@ export class CityTraffic {
       const squeeze = (car.joinWait > 6 && !car.plan.yieldTo) || !!car.committed;
       if (!squeeze && !this.clear(car.plan)) follow(car.plan.at - car.s - car.kind.front, 0, .5, car.plan.yieldTo ? 'left-turn yield' : 'merge gap');
     }
+    // A street race is on: the closed-off route ahead is a roadblock to wait at.
+    if (lane.shut) for (const [from] of lane.shut) {
+      const gap = from - car.s - car.kind.front - 4;
+      if (gap > -2 && gap < 60) { follow(Math.max(0, gap), 0, .5, 'roadblock'); break; }
+    }
     // The player: a car (or anything) in this lane ahead is followed like any other car.
     const toPlayer = this.v3.copy(player).sub(car.position), along = toPlayer.x * car.heading.x + toPlayer.z * car.heading.z;
     const across = Math.abs(toPlayer.x * car.heading.z - toPlayer.z * car.heading.x);
@@ -874,6 +897,9 @@ export class CityTraffic {
   }
   /** Registers nearby cars as stand-ins in the player's physics world, and removes the rest. */
   private solid(sim: Simulation, player: THREE.Vector3) {
+    // A street race's simulation has its own traffic; free-roam cars there are scenery, never solid (replays must
+    // not depend on them), and recovery goes back to the last checkpoint.
+    if (sim.track.kind === 'street') { if (this.registered !== sim) { this.registered = sim; for (const car of this.cars) car.obstacle = false; } return; }
     if (this.registered !== sim) { this.registered = sim; for (const car of this.cars) car.obstacle = false; sim.recoverPoint = at => this.roadside(at); }
     for (const car of this.cars) {
       const near = car.position.distanceTo(player) < SOLID_WITHIN;
@@ -969,6 +995,57 @@ export class CityTraffic {
     car.drift.copy(car.position).sub(onLane).setY(0); car.position.copy(onLane);
     car.heading.copy(this.direction(car.lane, car.s)); car.yaw = Math.atan2(car.heading.x, car.heading.z);
   }
+  /**
+   * Closes a street race's route to free-roam traffic (or opens it again): the stretches of every lane inside the
+   * route are marked shut, cars already in there are taken away, and cars coming up to them wait at the roadblock.
+   */
+  private close(race: Track | undefined, sim: Simulation) {
+    this.closedFor = race; this.race.show(race); this.puppets.clear();
+    for (const lane of this.lanes) lane.shut = undefined;
+    const route = race?.street?.route; if (!route) return;
+    const CELL = 20, grid = new Map<string, number[]>(), segments = race!.street!.closed ? route.length : route.length - 1;
+    for (let i = 0; i < segments; i++) {
+      const a = route[i], b = route[(i + 1) % route.length];
+      for (let x = Math.floor((Math.min(a[0], b[0]) - 20) / CELL); x <= Math.floor((Math.max(a[0], b[0]) + 20) / CELL); x++)
+        for (let z = Math.floor((Math.min(a[2], b[2]) - 20) / CELL); z <= Math.floor((Math.max(a[2], b[2]) + 20) / CELL); z++) (grid.get(`${x},${z}`) ?? grid.set(`${x},${z}`, []).get(`${x},${z}`)!).push(i);
+    }
+    const inside = (x: number, y: number, z: number) => (grid.get(`${Math.floor(x / CELL)},${Math.floor(z / CELL)}`) ?? []).some(i => {
+      const a = route[i], b = route[(i + 1) % route.length], dx = b[0] - a[0], dz = b[2] - a[2], l2 = dx * dx + dz * dz || 1;
+      const t = Math.min(1, Math.max(0, ((x - a[0]) * dx + (z - a[2]) * dz) / l2));
+      return Math.hypot(x - a[0] - dx * t, z - a[2] - dz * t) < a[3] / 2 + 2 && Math.abs(y - a[1] - (b[1] - a[1]) * t) < 4;
+    });
+    for (const lane of this.lanes) {
+      const p = lane.points, count = p.length / 3, shut: [number, number][] = [];
+      let from = -1;
+      for (let i = 0; i < lane.s.length; i++) {
+        const j = (i % count) * 3, isIn = inside(p[j], p[j + 1], p[j + 2]);
+        if (isIn && from < 0) from = lane.s[i];
+        if ((!isIn || i === lane.s.length - 1) && from >= 0) { shut.push([from, lane.s[i]]); from = -1; }
+      }
+      if (shut.length) lane.shut = shut;
+    }
+    for (const car of [...this.cars]) if (car.lane.shut?.some(([from, to]) => car.s > from - car.kind.front - 2 && car.s < to)) this.retire(car, sim);
+  }
+  /** The race's own cars (shared/race-traffic.ts), copied into drawable cars each frame. */
+  private syncPuppets(sim: Simulation) {
+    const cars = sim.raceTraffic?.cars; if (!cars) return;
+    for (const raceCar of cars) {
+      let car = this.puppets.get(raceCar);
+      if (raceCar.parked) { if (car) this.puppets.delete(raceCar); continue; }
+      const kind = this.kinds.find(k => k.name === raceCar.kind.id); if (!kind) continue;
+      if (!car) {
+        car = { id: -1 - raceCar.id, kind, lane: this.lanes[0], s: 0, v: 0, index: 0, braking: false, temper: 1, position: new THREE.Vector3(), heading: new THREE.Vector3(), zones: new Set(), obstacle: false,
+          blocked: 0, drift: new THREE.Vector3(), spin: 0, steer: 0, yaw: raceCar.yaw, joinWait: 0 };
+        this.puppets.set(raceCar, car);
+      }
+      const turn = Math.atan2(Math.sin(raceCar.yaw - car.yaw), Math.cos(raceCar.yaw - car.yaw)), speed = Math.max(.5, raceCar.v);
+      car.position.set(raceCar.x, raceCar.y, raceCar.z); car.yaw = raceCar.yaw; car.v = raceCar.v; car.braking = raceCar.braking;
+      car.heading.set(Math.sin(raceCar.yaw) * Math.cos(raceCar.pitch), -Math.sin(raceCar.pitch), Math.cos(raceCar.yaw) * Math.cos(raceCar.pitch));
+      car.spin = (raceCar.travel / Math.max(kind.radius, .2)) % (Math.PI * 2);
+      car.steer = raceCar.v > .5 ? THREE.MathUtils.clamp(Math.atan(kind.wheelbase * turn * 60 / speed), -.6, .6) * .5 + car.steer * .5 : car.steer;
+      car.wreck = raceCar.wreck ? (car.wreck ?? { velocity: new THREE.Vector3(), yawRate: 0, still: 0, offLane: false, hitAt: 0 }) : undefined;
+    }
+  }
   private release(car: Car, sim: Simulation) {
     if (car.obstacle && this.registered === sim) sim.setObstacle(`traffic-${car.id}`, car.kind.body, undefined);
     car.obstacle = false;
@@ -980,7 +1057,7 @@ export class CityTraffic {
     const local = new THREE.Matrix4(), spin = new THREE.Matrix4(), steer = new THREE.Matrix4(), flip = new THREE.Matrix4().makeRotationY(Math.PI);
     const sphere = new THREE.Sphere(), eye = this.camera ? this.eye.clone() : undefined;
     let pool = 0;
-    for (const car of this.cars) {
+    for (const car of [...this.cars, ...this.puppets.values()]) {
       const k = car.kind;
       sphere.set(car.position, k.body.lengthM * .6);
       const distance = eye ? car.position.distanceTo(eye) : 0;
@@ -996,7 +1073,7 @@ export class CityTraffic {
       if (distance > DETAIL_WITHIN && k.far.length) {
         const f = farCounts.get(k) ?? 0; farCounts.set(k, f + 1);
         for (const mesh of k.far) mesh.setMatrixAt(f, carMatrix);
-        if (distance < 200) this.pools!.setMatrixAt(pool++, m.compose(this.v3.set(0, .06, k.front + 7).applyQuaternion(q).add(car.position), this.q.setFromAxisAngle(up, car.yaw), this.scale.set(5.5, 1, 12)));
+        if (distance < 200 && pool < MAX_CARS) this.pools!.setMatrixAt(pool++, m.compose(this.v3.set(0, .06, k.front + 7).applyQuaternion(q).add(car.position), this.q.setFromAxisAngle(up, car.yaw), this.scale.set(5.5, 1, 12)));
         this.scale.set(1, 1, 1);
         continue;
       }
@@ -1011,7 +1088,7 @@ export class CityTraffic {
         const index = n * 2 + (slot.front ? front++ : rear++);
         for (const mesh of slot.front ? k.frontWheels : k.rearWheels) mesh.setMatrixAt(index, m);
       }
-      this.pools!.setMatrixAt(pool++, m.compose(this.v3.set(0, .06, k.front + 7).applyQuaternion(q).add(car.position), this.q.setFromAxisAngle(up, car.yaw), this.scale.set(5.5, 1, 12)));
+      if (pool < MAX_CARS) this.pools!.setMatrixAt(pool++, m.compose(this.v3.set(0, .06, k.front + 7).applyQuaternion(q).add(car.position), this.q.setFromAxisAngle(up, car.yaw), this.scale.set(5.5, 1, 12)));
       this.scale.set(1, 1, 1);
     }
     for (const kind of this.kinds) {

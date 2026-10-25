@@ -1,5 +1,5 @@
 import { DT, initPhysics, Input, MAX_TICKS, PHYSICS_VERSION, rotate, Simulation, type Frame, type RunOrigin, type Weather } from '../shared/physics';
-import { CONE_TRACK, TRACKS, TRAINING_GROUNDS, medalFor, type Track, type Vec3 } from '../shared/tracks';
+import { CITY, CITY_RACES, CONE_TRACK, TRACKS, TRAINING_GROUNDS, inStartZone, medalFor, type Track, type Vec3 } from '../shared/tracks';
 import { carById, DEFAULT_CAR, lookOf, withLivery, type CarDefinition, type CarId } from '../shared/cars';
 import { stepReplay, type Run } from '../shared/replay';
 import { CAMERA_LABELS, RaceWorld, type CameraMode, type CockpitOffset } from './world';
@@ -26,6 +26,8 @@ export type GameState={mode:Mode;track:Track;trackReady:boolean;trackLoading?:bo
   penalties:number;driftCombo:number;driftBest:number;
   /** Free roam: the car is inside the Cone Attack start box, so Enter can start the run. */
   atStart:boolean;
+  /** City free roam: the street race whose start box the car is in. */
+  atRace?:string;
   /** Low frame rate notice: the preset in use, the lighter one suggested, and the measured average. */
   perfTip?:{from:GraphicsQuality;to:GraphicsPreset;fps:number;target:number};
   /** Camera wheel, open while the camera key is held: the view the mouse points at, if any. */
@@ -33,7 +35,7 @@ export type GameState={mode:Mode;track:Track;trackReady:boolean;trackLoading?:bo
   /** Party countdown with the throttle held (a jump start in the making); and the length of a jump-start penalty being served, in ms. */
   jumpWarning?:boolean;penalty?:number;
   /** The last finished Cone Attack run, shown while the driver keeps rolling in free roam. `at` makes repeat results distinct. */
-  coneResult?:{run:Run;timeMs:number;medal:string;newBest:boolean;previousBest?:number;penalties:number;offCourse:number;at:number};
+  coneResult?:{run:Run;timeMs:number;medal:string;newBest:boolean;previousBest?:number;penalties:number;offCourse:number;at:number;name?:string};
   /** Whole-city map overlay (M); driving is frozen while it is open. */
   mapOpen?:boolean;
   /** Loading a night venue (the city): the step shown and progress 0-1. Driving is frozen until it is gone. */
@@ -308,7 +310,7 @@ export class Game {
     this.world.applyPendingGraphics();
     this.awaitingPedal=!countdown;this.bogUntil=0;this.goAt=-Infinity;this.finishRevealAt=0;this.world.endFinish();this.world.skidMarks.clear();this.world.carDamage.reset();this.pendingShifts=0;this.seenBlockedShifts=0;this.runManual=this.settings.advancedDriving;this.runWeather=this.partyWeather??this.settings.weather;
     this.keys.clear();this.garageView=false;this.cockpitPreview=false;this.inputs=[];this.steeringInputs=[];this.driftInputs=[];this.accumulator=0;this.lastCheckpoint=0;this.lastRespawns=0;this.previousFrame=undefined;this.queuedRespawn=false;this.queuedFlip=false;this.replayInput=undefined;
-    if(this.state.track.kind!=='cones')this.runOrigin=undefined;
+    if(this.state.track.kind!=='cones'&&this.state.track.kind!=='street')this.runOrigin=undefined;
     this.sim.dispose();this.sim=new Simulation(this.state.track,this.state.car.id,this.runOrigin);this.sim.steeringStrength=this.steeringStrength;this.sim.driftStrength=this.driftStrength;
     this.ghostSim?.dispose();this.ghostSim=undefined;
     this.ghostRun=this.chosenGhost?.trackId===this.state.track.id?this.chosenGhost:bestRun(this.state.track);this.previousGhostFrame=undefined;if(this.state.ghost&&this.ghostRun){this.ghostSim=new Simulation(this.state.track,this.ghostRun.carId,this.ghostRun.origin);void this.world.setGhostCar(this.ghostRun.carId);}
@@ -329,9 +331,14 @@ export class Game {
     }
     this.emit({mode:countdown?'countdown':'racing',countdown:6,time:0,speed:0,checkpoint:0,newBest:false,run:undefined,penalties:0,driftCombo:0,notice:countdown?'':`Press ${this.keyHint('throttle')} or ${this.keyHint('brake')} to start the clock`});
   }
-  restart() {this.start(this.state.track.kind==='cones');}
+  restart() {this.start(this.state.track.kind==='cones'||this.state.track.kind==='street');}
   /** Prepares a circuit and races a leaderboard run's ghost on it; restarts keep that ghost (see chosenGhost). */
   async raceGhost(track:Track,run:Run) {
+    if(track.kind==='street'){
+      // A street race starts from its box in the city, with that ghost to beat.
+      await this.intoStreetRace(track);const zone=track.street!.zone;this.runOrigin={x:zone.x,z:zone.z,heading:zone.heading};
+      this.chosenGhost=run;this.emit({ghost:true});this.start(true);return;
+    }
     await this.select(track,true);
     this.chosenGhost=run;this.emit({ghost:true});this.start();
   }
@@ -366,7 +373,54 @@ export class Game {
     if(!this.freeRoam||this.state.mode!=='racing'||!this.state.atStart)return;
     if(this.sim.speed>2){this.emit({notice:'Stop the car in the box first'});this.noticeUntil=performance.now()+1400;return;}
     const p=this.sim.car.translation(),forward=rotate(this.sim.car.rotation(),{x:0,y:0,z:1}),round=(value:number)=>Math.round(value*1000)/1000;
-    void this.startConeRun({x:round(p.x),z:round(p.z),heading:round(Math.atan2(forward.x,forward.z))});
+    const origin={x:round(p.x),z:round(p.z),heading:round(Math.atan2(forward.x,forward.z))},race=CITY_RACES.find(r=>r.id===this.state.atRace);
+    if(race){void this.startStreetRace(race,origin);return;}
+    void this.startConeRun(origin);
+  }
+  /**
+   * A city street race starts from where the car sits in its box, like Cone Attack. The city stays loaded: only the
+   * simulation changes, and the city's traffic module shows the roadblocks and the race's own traffic.
+   */
+  private async startStreetRace(race:Track,origin:RunOrigin) {
+    const token=++this.selectionToken;this.runOrigin=origin;
+    this.ghostSim?.dispose();this.ghostSim=undefined;this.ghostRun=undefined;this.world.ghostFrame(undefined);
+    this.emit({track:race,trackReady:false,personalBest:bestRun(race)?.timeMs,run:undefined,newBest:false,penalties:0,atStart:false,atRace:undefined,coneResult:undefined,notice:''});
+    await initPhysics(race);if(token!==this.selectionToken)return;
+    this.emit({trackReady:true});this.start(true);
+  }
+  /** Leaderboard runs on a street race play in the city, loaded first (with its traffic and roadblocks) if need be. */
+  private async intoStreetRace(track:Track) {
+    if(this.state.track.id!==CITY.id&&this.state.track.kind!=='street'){this.partyView=false;this.setGarage(false);await this.enterTraining(CITY);}
+    await initPhysics(track);
+    this.emit({track,trackReady:true,personalBest:bestRun(track)?.timeMs,run:undefined,newBest:false,atStart:false,atRace:undefined,coneResult:undefined});
+  }
+  /** Leaves a street race for city free roam where the car is, keeping its speed (the finish) or stopped (the menu). */
+  private carryOnInCity(keepSpeed:boolean) {
+    const old=this.sim,frame=old.frame(),linear=keepSpeed?old.car.linvel():{x:0,y:0,z:0},angular=keepSpeed?old.car.angvel():{x:0,y:0,z:0};
+    const forward=rotate(frame.q,{x:0,y:0,z:1});
+    this.sim=new Simulation(CITY,this.state.car.id,{x:frame.p.x,z:frame.p.z,heading:Math.atan2(forward.x,forward.z)});
+    this.sim.car.setTranslation(frame.p,true);this.sim.car.setRotation(frame.q,true);this.sim.car.setLinvel(linear,true);this.sim.car.setAngvel(angular,true);
+    if(keepSpeed)Object.assign(this.sim,{steering:old.steering,throttle:old.throttle,brake:old.brake,autoDrift:old.autoDrift,gear:old.gear});
+    Object.assign(this.sim,{manual:old.manual,weather:old.weather});
+    this.sim.maxTicks=Infinity;this.sim.steeringStrength=this.steeringStrength;this.sim.driftStrength=this.driftStrength;
+    old.dispose();this.world.endFinish();this.finishRevealAt=0;
+    this.runOrigin=undefined;this.previousFrame=undefined;this.inputs=[];this.steeringInputs=[];this.driftInputs=[];this.lastPenalties=0;this.lastHits=this.sim.hitCount;this.accumulator=0;
+    this.ghostSim?.dispose();this.ghostSim=undefined;this.ghostRun=undefined;this.world.ghostFrame(undefined);
+  }
+  /** Back to city free roam from a street race (the pause menu). */
+  leaveStreetRace() {
+    if(this.state.track.kind!=='street')return;
+    this.carryOnInCity(false);this.keys.clear();this.world.setMouseLook(true);this.world.lockMouse();
+    this.emit({track:CITY,trackReady:true,mode:'racing',run:undefined,newBest:false,personalBest:undefined,penalties:0,checkpoint:0,driftCombo:0,notice:''});
+  }
+  /** A street race never stops the car either: the run is saved and posted, and city free roam carries on. */
+  private finishStreetRace(run:Run,newBest:boolean,previousBest?:number) {
+    const track=this.state.track;
+    if(newBest&&saveBestRun(track,run))void this.world.setGhostCar(run.carId);
+    const result={run,timeMs:run.timeMs,medal:medalFor(track,run.timeMs),newBest,previousBest,penalties:0,offCourse:0,at:performance.now(),name:track.name};
+    this.carryOnInCity(true);
+    this.world.confettiBurst();this.sound.cue('finish',this.settings.effectsVolume);
+    this.emit({track:CITY,trackReady:true,mode:'racing',run,newBest,personalBest:undefined,penalties:0,checkpoint:0,driftCombo:0,coneResult:result,notice:''});
   }
   private async startConeRun(origin:RunOrigin) {
     const token=++this.selectionToken;write('conesFound',true);this.runOrigin=origin;
@@ -378,7 +432,7 @@ export class Game {
   menu() {this.closeCameraWheel();if(this.partyRace)return;this.chosenGhost=undefined;
     if(this.carBeforeReplay){const own=this.carBeforeReplay;this.carBeforeReplay=undefined;void this.selectCar(own);}
     // Leaving free roam goes back to the Garage, where it is opened from.
-    if(this.state.track.lot||this.freeRoam){this.world.setHeadlights(false);this.emit({mapOpen:false,venueLoad:undefined});
+    if(this.state.track.lot||this.freeRoam||this.state.track.kind==='street'){this.world.setHeadlights(false);this.emit({mapOpen:false,venueLoad:undefined});
       // The city (venue, traffic, night lighting) must not stay loaded behind the menu: swap in the light car park.
       if(!this.state.track.lot)this.world.setTrack(TRAINING_GROUNDS);this.cockpitPreview=false;this.world.firstPerson=false;this.world.endFinish();this.world.setMouseLook(false);this.onLeaveTraining?.();void this.select(this.lastCircuit).then(()=>this.setGarage(true));return;}this.keys.clear();this.finishRevealAt=0;this.world.endFinish();this.cockpitPreview=false;this.world.firstPerson=false;this.world.setMouseLook(false);this.emit({mode:'menu',notice:''});this.world.ghostFrame(undefined);}
   pause() {this.closeCameraWheel();if(this.state.mapOpen)this.emit({mapOpen:false});this.keys.clear();this.world.applyPendingGraphics();if(this.partyRace)return;if(['racing','countdown','replay'].includes(this.state.mode)){this.pausedMode=this.state.mode;this.pausedCountdown=Math.max(0,this.countdownUntil-performance.now());this.emit({mode:'paused'});this.world.setMouseLook(false);}}
@@ -413,6 +467,7 @@ export class Game {
   /** Plays a leaderboard run from the start in its own car; the player's car comes back when they return to the menu. */
   async watchRecord(track:Track,run:Run) {
     const own=this.carBeforeReplay??this.state.car.id;
+    if(track.kind==='street')await this.intoStreetRace(track);else
     await this.select(track,true);
     this.carBeforeReplay=run.carId!==own?own:undefined;
     await this.watch(run);
@@ -429,10 +484,11 @@ export class Game {
     if(Math.round(combo)!==Math.round(this.state.driftCombo)||best!==this.state.driftBest)this.emit({driftCombo:combo,driftBest:best});
   }
   private finish() {
-    const run:Run={trackId:this.state.track.id,trackVersion:this.state.track.version,physicsVersion:PHYSICS_VERSION,carId:this.state.car.id,timeMs:this.sim.timeMs,inputs:[...this.inputs],steering:[...this.steeringInputs],drift:[...this.driftInputs],...(this.runManual?{manual:true}:{}),...(this.runWeather!=='clear'?{weather:this.runWeather}:{}),...(this.runOrigin&&this.state.track.kind==='cones'?{origin:this.runOrigin}:{})};
+    const run:Run={trackId:this.state.track.id,trackVersion:this.state.track.version,physicsVersion:PHYSICS_VERSION,carId:this.state.car.id,timeMs:this.sim.timeMs,inputs:[...this.inputs],steering:[...this.steeringInputs],drift:[...this.driftInputs],...(this.runManual?{manual:true}:{}),...(this.runWeather!=='clear'?{weather:this.runWeather}:{}),...(this.runOrigin&&(this.state.track.kind==='cones'||this.state.track.kind==='street')?{origin:this.runOrigin}:{})};
     const custom=hasLocalStartPlacement(this.state.track);
     const best=bestRun(this.state.track);const newBest=!best||run.timeMs<best.timeMs;
     if(this.state.track.kind==='cones'){this.finishConeRun(run,newBest,best?.timeMs);return;}
+    if(this.state.track.kind==='street'){this.finishStreetRace(run,newBest,best?.timeMs);return;}
     // Custom layouts keep their own personal best and ghost on this device.
     let notice=custom?'Custom layout — personal best and ghost saved here; online ranking unavailable.':'';
     if(newBest&&!saveBestRun(this.state.track,run))notice=custom?'Device storage is full; this ghost was not saved.':'Device storage is full. Submit this run before leaving.';
@@ -709,9 +765,11 @@ export class Game {
     }
     if(this.freeRoam&&this.state.mode==='racing'&&this.state.trackReady){
       const zone=this.state.track.lot?.startZone,p=this.sim.car.translation();
-      const inside=!!zone&&Math.abs(p.x-zone.x)<zone.w/2&&Math.abs(p.z-zone.z)<zone.l/2;
-      if(inside!==this.state.atStart)this.emit({atStart:inside});
-    }else if(this.state.atStart)this.emit({atStart:false});
+      // In the city, any street race's start box.
+      const race=this.state.track.night?CITY_RACES.find(r=>Math.abs(p.y-r.street!.zone.y)<4&&inStartZone(r.street!.zone,p.x,p.z)):undefined;
+      const inside=!!race||!!zone&&Math.abs(p.x-zone.x)<zone.w/2&&Math.abs(p.z-zone.z)<zone.l/2;
+      if(inside!==this.state.atStart||race?.id!==this.state.atRace)this.emit({atStart:inside,atRace:race?.id});
+    }else if(this.state.atStart)this.emit({atStart:false,atRace:undefined});
     if(this.state.track.lot){this.world.updateLot(this.state.mode==='menu'?undefined:this.sim,elapsed,this.freeRoam);if(this.state.mode==='racing')this.world.updateConfetti(elapsed);}
     if(this.state.mode==='menu'){if(this.cockpitPreview)this.world.chase(this.sim,elapsed);else if(this.editorView)this.world.editor(elapsed);else if(this.garageView)this.world.garage(elapsed);else this.world.overview(elapsed);this.world.ghostFrame(undefined);}else if(this.state.mode==='party-finished'&&this.partyFinishDriver){
       this.accumulator+=elapsed;

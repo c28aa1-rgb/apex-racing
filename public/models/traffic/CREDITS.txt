@@ -8,3 +8,8 @@ City traffic vehicles, modified (turned, recentred, textures re-encoded):
 - Milano '95 by DanielZhabotinsky, CC BY 4.0 - https://sketchfab.com/3d-models/122a22d210234596ad23623588d0d166
 - Negotiator '80 by DanielZhabotinsky, CC BY 4.0 - https://sketchfab.com/3d-models/892b2684fb37442299bfad9222cf331c
 Licence: https://creativecommons.org/licenses/by/4.0/
+
+Roadblock police cars, modified (turned, recentred, textures re-encoded):
+- Fairheaven LT '80 Cop Cruiser by DanielZhabotinsky, CC BY 4.0 - https://sketchfab.com/3d-models/61766c1e6e1e4b2b803c174f33433a74
+- Negotiator '80 Cop Cruiser by DanielZhabotinsky, CC BY 4.0 - https://sketchfab.com/3d-models/945fd09f513f4d1ab19b6388a7ea7323
+Licence: https://creativecommons.org/licenses/by/4.0/

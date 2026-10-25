@@ -1,5 +1,5 @@
 import { initPhysics, Simulation, type Frame } from './physics';
-import { trackById } from './tracks';
+import { inStartZone, trackById } from './tracks';
 import { runSchema, type Run } from './replay-schema';
 export { runSchema, type Run } from './replay-schema';
 
@@ -19,9 +19,11 @@ export async function validateReplay(value: unknown, captureFrames = false): Pro
   if (!track || track.version !== run.trackVersion) throw new Error('Track version is no longer supported. Start a new run.');
   await initPhysics(track);
   if (run.origin) {
-    // A custom start is only legal inside the Cone Attack start box.
-    const zone = track.lot?.startZone;
-    if (track.kind !== 'cones' || !zone || Math.abs(run.origin.x - zone.x) > zone.w / 2 || Math.abs(run.origin.z - zone.z) > zone.l / 2) throw new Error('The run does not start inside the start box.');
+    // A custom start is only legal inside the Cone Attack start box, or a street race's.
+    const zone = track.lot?.startZone, street = track.street?.zone;
+    const inside = track.kind === 'cones' ? !!zone && Math.abs(run.origin.x - zone.x) <= zone.w / 2 && Math.abs(run.origin.z - zone.z) <= zone.l / 2
+      : track.kind === 'street' && !!street && inStartZone(street, run.origin.x, run.origin.z);
+    if (!inside) throw new Error('The run does not start inside the start box.');
   }
   const sim = new Simulation(track, run.carId, run.origin);
   const frames: Frame[] = [];

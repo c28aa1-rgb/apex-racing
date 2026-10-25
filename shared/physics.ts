@@ -8,6 +8,7 @@ import { engineState, automaticGear, TRANSMISSIONS } from './transmission';
 import { CONE_PENALTY_MS, CONE_RADIUS, type LotLayout } from './lot';
 
 import { DT, MAX_TICKS } from './physics-version';
+import { RaceTraffic } from './race-traffic';
 export { PHYSICS_VERSION, DT, MAX_TICKS } from './physics-version';
 /** Where a Cone Attack run begins: wherever the car stopped inside the start box. Part of the run, so replays start in the same place. */
 export type RunOrigin = { x: number; z: number; heading: number };
@@ -55,10 +56,12 @@ const RIDE = { stiffness: 19, compression: 11.5, relaxation: 13, vertical: .82, 
 // One layout at a time: a venue snapshot is tens of megabytes.
 let staticWorld: { key: string; snapshot: Uint8Array; surfaces: [number, number][]; route: Track['segments'] } | undefined;
 /** Everything the static colliders are built from. */
-const staticWorldKey = (track: Track) => JSON.stringify([track.id, !!collisionMeshes.get(track.id), track.segments, track.spawn ?? null, track.mapPath ?? null]);
+/** Tracks sharing a venue (the city and its street races) share its loaded collision mesh. */
+const meshKey = (track: Track) => track.collision ?? track.id;
+const staticWorldKey = (track: Track) => JSON.stringify([track.id, !!collisionMeshes.get(meshKey(track)), track.segments, track.spawn ?? null, track.mapPath ?? null]);
 async function loadCollision(track: Track) {
-  if (!track.collision || collisionMeshes.has(track.id)) return;
-  const existing = collisionLoads.get(track.id); if (existing) return existing;
+  if (!track.collision || collisionMeshes.has(meshKey(track))) return;
+  const existing = collisionLoads.get(meshKey(track)); if (existing) return existing;
   const loading = (async () => {
     let buffer: ArrayBuffer;
     if (typeof window !== 'undefined') {
@@ -82,10 +85,10 @@ async function loadCollision(track: Track) {
     const sourceIndices = new Uint32Array(buffer, 16 + vertexCount * 12, indexCount);
     const surfaces = new Uint8Array(buffer, 16 + vertexCount * 12 + indexCount * 4, indexCount / 3);
     const walls = magic === 'APEXCOL3' ? new Uint8Array(buffer, 16 + vertexCount * 12 + indexCount * 4 + indexCount / 3, indexCount / 3) : undefined;
-    collisionMeshes.set(track.id, { vertices, indices: sourceIndices, surfaces, walls });
+    collisionMeshes.set(meshKey(track), { vertices, indices: sourceIndices, surfaces, walls });
   })();
-  collisionLoads.set(track.id, loading);
-  try { await loading; } finally { collisionLoads.delete(track.id); }
+  collisionLoads.set(meshKey(track), loading);
+  try { await loading; } finally { collisionLoads.delete(meshKey(track)); }
 }
 export async function initPhysics(tracks?: Track | Track[]) {
   await (ready ??= RAPIER.init());
@@ -93,7 +96,7 @@ export async function initPhysics(tracks?: Track | Track[]) {
 }
 export async function collisionGeometry(track: Track) {
   await loadCollision(track);
-  const geometry = collisionMeshes.get(track.id);
+  const geometry = collisionMeshes.get(meshKey(track));
   if (!geometry) throw new Error(`Missing physical geometry for ${track.name}.`);
   return geometry;
 }
@@ -201,16 +204,19 @@ export class Simulation {
   get gates() {
     const { checkpoints, finish } = this.track;
     if (this.gateSource?.checkpoints !== checkpoints || this.gateSource.finish !== finish)
-      this.gateSource = { checkpoints, finish, gates: fittedGates(this.track, collisionMeshes.get(this.track.id)) };
+      this.gateSource = { checkpoints, finish, gates: fittedGates(this.track, collisionMeshes.get(meshKey(this.track))) };
     return this.gateSource.gates;
   }
   /** Pose the car starts from, and returns to when it is respawned before the first checkpoint. */
   readonly spawnPoint: Gate;
+  /** Street races: the race's own traffic, moved every tick (shared/race-traffic.ts). */
+  readonly raceTraffic?: RaceTraffic;
   constructor(public track: Track, carId: CarId = DEFAULT_CAR.id, origin?: RunOrigin) {
     this.carSpec = carById(carId);
     if (origin) {
       const forward = { x: Math.sin(origin.heading), y: 0, z: Math.cos(origin.heading) };
-      this.spawnPoint = { position: { x: origin.x, y: 0, z: origin.z }, forward, rotation: orientation(forward), width: 4, segment: 0 };
+      // A street race starts at its box's height (the city is not flat); the Training Grounds lot is at 0.
+      this.spawnPoint = { position: { x: origin.x, y: track.street?.zone.y ?? 0, z: origin.z }, forward, rotation: orientation(forward), width: 4, segment: 0 };
     } else this.spawnPoint = spawnGate(track);
     this.coneHits = new Int32Array(track.lot?.cones.length ?? 0).fill(-1);
     this.recoveryFloor = Math.min(...track.segments.flatMap(segment=>[segment.start.y,segment.end.y])) - 12;
@@ -275,7 +281,7 @@ export class Simulation {
         ...mappedRoute];
     })() : mappedRoute;
     const road = buildRoadMesh(track);
-    const nativeCollision = collisionMeshes.get(track.id);
+    const nativeCollision = collisionMeshes.get(meshKey(track));
     if (nativeCollision) {
       // The venue model's drivable surface is baked smooth at build time (design/bake-road.ts), so the
       // visible triangles are the physical road: tyres, chassis and queries all use them directly.
@@ -321,6 +327,16 @@ export class Simulation {
     this.world.free();
     this.world = RAPIER.World.restoreSnapshot(staticWorld.snapshot);
     }
+    // A street race's police roadblocks: each car, and a line behind them reaching over the sidewalks.
+    for (const block of track.street?.roadblocks ?? []) {
+      const yaw = (angle: number) => ({ x: 0, y: Math.sin(angle / 2), z: 0, w: Math.cos(angle / 2) });
+      for (const car of block.cars) this.world.createCollider(RAPIER.ColliderDesc.cuboid(.95, .75, 2.5).setTranslation(car[0], car[1] + .75, car[2]).setRotation(yaw(car[3]))
+        .setFriction(.3).setCollisionGroups(groups(GROUP.wall, 0xffff)));
+      const wall = block.wall;
+      this.world.createCollider(RAPIER.ColliderDesc.cuboid(wall.length / 2, 1.6, .35).setTranslation(wall.x, wall.y + 1.1, wall.z).setRotation(yaw(wall.heading))
+        .setFriction(.3).setCollisionGroups(groups(GROUP.wall, 0xffff)));
+    }
+    if (track.street) this.raceTraffic = new RaceTraffic({ seed: track.id, route: track.street.route, closed: track.street.closed, start: this.spawnPoint.position });
     const spawn = this.spawnPoint;
     const spawnPosition = this.surfaceSpawn(spawn.position);
     this.car = this.world.createRigidBody(RAPIER.RigidBodyDesc.dynamic()
@@ -751,6 +767,7 @@ export class Simulation {
           z:up.z*limitedYaw+restore.z*gain+(angular.z-up.z*yaw)*.025},true);
       }else this.car.setAngvel({x:angular.x+up.x*(limitedYaw-yaw),y:angular.y+up.y*(limitedYaw-yaw),z:angular.z+up.z*(limitedYaw-yaw)},true);
     }
+    this.raceTraffic?.step(this);
     this.driveObstacles();
     this.world.step();
     // A car never goes faster than its rated top speed: not down a hill, off a boost pad or in a draft.

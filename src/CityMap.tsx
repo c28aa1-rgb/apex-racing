@@ -1,5 +1,6 @@
 import { memo, useEffect, useState } from 'react';
 import { assetUrl } from '../shared/assets';
+import { CITY_RACES, type Track } from '../shared/tracks';
 
 type CityRoads = { roads: { name: string; district: string; width: number; closed: boolean; points: [number, number][] }[]; buildings: [number, number][][] };
 /** Metres shown across the map: the city is ~3 km wide, so the map follows the car instead of fitting it all. */
@@ -10,15 +11,30 @@ const loadRoads = () => roads ??= fetch(assetUrl('models/tracks/racing-city.map.
   return response.json() as Promise<CityRoads>;
 });
 
+/** A street race on the map: its route, and the next gate to drive through. */
+function RaceRoute({ race, next, width }: { race: Track; next?: { x: number; z: number }; width: number }) {
+  const points = race.street!.route.map(p => `${p[0]},${p[2]}`).join(' '), common = { fill: 'none', strokeLinejoin: 'round' as const, strokeLinecap: 'round' as const };
+  return <>
+    {race.street!.closed ? <polygon points={points} {...common} stroke={race.accent} strokeWidth={width} strokeOpacity=".9" /> : <polyline points={points} {...common} stroke={race.accent} strokeWidth={width} strokeOpacity=".9" />}
+    {next && <circle cx={next.x} cy={next.z} r={width * 1.6} fill="#fff" stroke={race.accent} strokeWidth={width * .6} />}
+  </>;
+}
+/** Free roam: where each street race starts. */
+function RaceStarts({ size, labels = false }: { size: number; labels?: boolean }) {
+  return <>{CITY_RACES.map(race => { const zone = race.street!.zone; return <g key={race.id} transform={`translate(${zone.x} ${zone.z})`}>
+    <circle r={size} fill="#ff7a1a" stroke="#fff" strokeWidth={size * .3} /><path d={`M${-size * .35} ${size * .45} V${-size * .5} L${size * .5} ${-size * .2} L${-size * .35} ${size * .1}`} fill="#fff" />
+    {labels && <text y={-size * 1.6} className="city-full-map-race">{race.name}</text>}
+  </g>; })}</>;
+}
 /** City map: road centerlines from the export, north-up (x right, z down) like the other minimaps, centred on the car. */
-export function CityMap({ car }: { car?: { x: number; z: number } }) {
+export function CityMap({ car, race, next }: { car?: { x: number; z: number }; race?: Track; next?: { x: number; z: number } }) {
   const [data, setData] = useState<CityRoads>();
   useEffect(() => { let live = true; loadRoads().then(value => { if (live) setData(value); }, error => console.warn(error)); return () => { live = false; }; }, []);
   const x = car?.x ?? 0, z = car?.z ?? 0, scale = 150 / SPAN;
   return <svg className="minimap lot-map" viewBox="0 0 170 170" role="img" aria-label="City map">
     <defs><clipPath id="city-map-clip"><rect x="10" y="10" width="150" height="150" rx="2" /></clipPath></defs>
     <rect x="10" y="10" width="150" height="150" rx="2" fill="rgba(19,43,59,.55)" stroke="rgba(168,218,220,.45)" strokeWidth="1.5" />
-    <g clipPath="url(#city-map-clip)"><g transform={`translate(85 85) scale(${scale}) translate(${-x} ${-z})`}>{data && <><Blocks data={data} /><Roads data={data} /></>}</g></g>
+    <g clipPath="url(#city-map-clip)"><g transform={`translate(85 85) scale(${scale}) translate(${-x} ${-z})`}>{data && <><Blocks data={data} /><Roads data={data} /></>}{race ? <RaceRoute race={race} next={next} width={9} /> : <RaceStarts size={14} />}</g></g>
     {car && <circle cx="85" cy="85" r="5" fill="#ff784c" stroke="#fff" strokeWidth="2" />}
   </svg>;
 }
@@ -48,7 +64,7 @@ function districts(data: CityRoads) {
 }
 
 /** Whole-city map (M): every road and block, district names, and where the car is and which way it faces. */
-export function CityFullMap({ car, heading, onClose }: { car: { x: number; z: number }; heading: number; onClose: () => void }) {
+export function CityFullMap({ car, heading, onClose, race, next }: { car: { x: number; z: number }; heading: number; onClose: () => void; race?: Track; next?: { x: number; z: number } }) {
   const [data, setData] = useState<CityRoads>();
   useEffect(() => { let live = true; loadRoads().then(value => { if (live) setData(value); }, error => console.warn(error)); return () => { live = false; }; }, []);
   if (!data) return <div className="city-full-map" role="dialog" aria-label="City map"><p className="city-full-map-loading">Loading map…</p></div>;
@@ -67,11 +83,12 @@ export function CityFullMap({ car, heading, onClose }: { car: { x: number; z: nu
         </g>;
       })}
       {districts(data).map(label => <text key={label.name} x={label.x} y={label.z} className="city-full-map-district">{label.name}</text>)}
+      {race ? <RaceRoute race={race} next={next} width={12} /> : <RaceStarts size={26} labels />}
       {/* The arrow points along the car's heading: +z is down the map, so a heading of 0 points down. */}
       <g transform={`translate(${car.x} ${car.z}) rotate(${-degrees})`}>
         <circle r="56" fill="#ff784c2e" /><path d="M0 40 L26 -24 L0 -8 L-26 -24 Z" fill="#ff784c" stroke="#fff" strokeWidth="6" strokeLinejoin="round" />
       </g>
     </svg>
-    <p className="city-full-map-hint">Racing City · <kbd>M</kbd> or <kbd>Esc</kbd> to close</p>
+    <p className="city-full-map-hint">{race ? `${race.name} · ` : 'Racing City · orange flags start street races · '}<kbd>M</kbd> or <kbd>Esc</kbd> to close</p>
   </div>;
 }

@@ -102,9 +102,10 @@ export class CityProps {
   private smash(prop: Prop, carVelocity: THREE.Vector3, sim: Simulation) {
     prop.brokenAt = this.time; this.broken++;
     for (const mesh of prop.meshes) { mesh.setMatrixAt(prop.index, this.hidden); mesh.instanceMatrix.needsUpdate = true; }
-    // The car pays for the hit in proportion to the prop's weight against its own.
+    // The car pays for the hit in proportion to the prop's weight against its own - not in a street race, whose
+    // replays (ghost, leaderboard, server check) cannot see the props.
     const share = Math.min(.25, prop.mass / sim.carSpec.physics.massKg * 1.6);
-    sim.car.setLinvel({ x: carVelocity.x * (1 - share), y: carVelocity.y, z: carVelocity.z * (1 - share) }, true);
+    if (sim.track.kind !== 'street') sim.car.setLinvel({ x: carVelocity.x * (1 - share), y: carVelocity.y, z: carVelocity.z * (1 - share) }, true);
     if (propHits.length < 16) propHits.push({ material: prop.material, speed: carVelocity.length() });
     this.bits(prop, carVelocity);
     if (this.debris.length >= MAX_DEBRIS) this.remove(this.debris.shift()!);
