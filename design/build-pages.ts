@@ -11,7 +11,8 @@ execFileSync(process.execPath, ['node_modules/vite/bin/vite.js', 'build', '--mod
 });
 for (const folder of ['cars', 'tracks']) {
   for (const file of readdirSync(`dist/models/${folder}`)) {
-    if (file.endsWith('.glb') && (folder === 'cars' || !file.endsWith('.clean.glb'))) rmSync(`dist/models/${folder}/${file}`);
+    // Source models stay out; a circuit's clean model and the city's runtime model are what the game loads.
+    if (file.endsWith('.glb') && (folder === 'cars' || !/\.(clean|runtime)\.glb$/.test(file))) rmSync(`dist/models/${folder}/${file}`);
   }
 }
 let bytes = 0;

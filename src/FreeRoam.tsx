@@ -21,6 +21,8 @@ export function FreeRoam({ car, modelReady, onDrive, onChangeCar, reduced }: { c
       <p>No clock · no limits</p><h1>Free<br />roam.</h1>
       <span className="roam-copy">Drift, explore and learn a car. Nothing here is timed or ranked, and every car is welcome.</span>
       <div className="roam-car"><small>Driving</small><strong>{car.name}</strong><button onClick={onChangeCar}>Change car</button></div>
+      {/* The city's traffic and police cars are CC BY 4.0: credited here, where the city is entered. */}
+      <a className="roam-credit" href={assetUrl('models/traffic/CREDITS.txt')} target="_blank" rel="noreferrer">City vehicle credits</a>
     </motion.aside>
     <motion.section className="roam-destinations" aria-label="Choose where to drive" initial={{ opacity: 0, x: reduced ? 0 : 18 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: reduced ? 0 : .3, delay: reduced ? 0 : .1, ease }}>
       {DESTINATIONS.map(({ track, art, facts }) => <button key={track.id} className="roam-card" style={{ '--roam-accent': track.accent } as CSSProperties} disabled={!modelReady} onClick={() => onDrive(track)}>

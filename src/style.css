@@ -349,3 +349,6 @@ button:disabled{cursor:not-allowed}select:focus-visible{outline:2px solid #a8dad
 .venue-loading-card>small{font-size:13px;color:#bfd2d8}
 .venue-loading-card>p{margin:18px 0 0;font-size:12px;color:var(--muted)}.venue-loading-card kbd{margin:0 4px 0 12px;padding:2px 6px;border:1px solid var(--line);border-radius:3px;color:#f1faee}.venue-loading-card kbd:first-child{margin-left:0}
 @media(max-width:580px){.venue-loading-card>strong{font-size:46px}}
+
+/* Free roam: the city's vehicle credits under the car you are driving. */
+.roam-credit{display:inline-block;margin-top:14px;font-size:11px;color:var(--foam);text-decoration:none;opacity:.8}.roam-credit:hover{text-decoration:underline;opacity:1}
