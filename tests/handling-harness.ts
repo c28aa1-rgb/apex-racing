@@ -36,7 +36,7 @@ export const MANEUVERS = {
   'both-pedals': (_:number)=>Input.Throttle|Input.Brake,
 };
 export function runManeuver(carId:CarId,mph:number,maneuver:Maneuver,seconds=5,strength=1.1,manualDrift=false) {
-  const sim=new Simulation(handlingTrack(),carId);sim.steeringStrength=strength;
+  const sim=new Simulation(handlingTrack(),carId);sim.steeringStrength=strength;if(manualDrift)sim.gearDrift=false;
   try {
     for(let i=0;i<30;i++)sim.step(0);
     sim.car.setLinvel({x:0,y:0,z:mph*MPH},true);

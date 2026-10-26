@@ -10,6 +10,7 @@ test('replays preserve changes to the live steering and drift sliders',()=>{
   const track=handlingTrack(),a=new Simulation(track),b=new Simulation(track);
   const inputs=Array.from({length:600},(_,i)=>Input.Throttle|(i%240<120?Input.Left:Input.Right)|(i>=200&&i<400?Input.Drift:0));
   const steering=inputs.map((_,i)=>i<200?1.1:i<400?.7:1.35);
+  a.gearDrift=false;
   const drift=inputs.map((_,i)=>i<200?0:i<400?2:.5);
   const run: Run={trackId:track.id,trackVersion:track.version,physicsVersion:PHYSICS_VERSION,carId:a.carSpec.id,timeMs:10000,inputs,steering,drift};
   try{
@@ -23,9 +24,9 @@ test('replays preserve changes to the live steering and drift sliders',()=>{
   }finally{a.dispose();b.dispose();}
 });
 
-test('every car sustains a powered slide, countersteers and recovers grip',()=>{
+test('legacy Shift replays sustain a powered slide, countersteer and recover grip',()=>{
   for(const car of CARS){
-    const sim=new Simulation(handlingTrack(),car.id);sim.steeringStrength=1.5;
+    const sim=new Simulation(handlingTrack(),car.id);sim.steeringStrength=1.5;sim.gearDrift=false;
     try{
       sim.car.setLinvel({x:0,y:0,z:35},true);
       for(let i=0;i<180;i++)sim.step(Input.Throttle|Input.Left|Input.Drift);
@@ -46,7 +47,7 @@ test('every car sustains a powered slide, countersteers and recovers grip',()=>{
 
 test('maximum steering and drift settings keep positive tire grip and bounded forces',()=>{
   for(const car of CARS)for(const mph of [30,100,200]){
-    const sim=new Simulation(handlingTrack(),car.id);sim.steeringStrength=2;sim.driftStrength=2;
+    const sim=new Simulation(handlingTrack(),car.id);sim.steeringStrength=2;sim.driftStrength=2;sim.gearDrift=false;
     try{
       sim.car.setLinvel({x:0,y:0,z:mph*MPH},true);let previous=telemetry(sim);
       for(let i=0;i<480;i++){

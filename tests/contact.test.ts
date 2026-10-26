@@ -257,7 +257,7 @@ test('natural rear slip builds gently during a fast corner and releases on a str
     {const v=sim.car.linvel(),r=rotate(sim.car.rotation(),{x:1,y:0,z:0});t.diagnostic(`maximum corner slip ${(maxSlip*180/Math.PI).toFixed(2)} degrees; auto ${sim.autoDrift.toFixed(3)}; lateral ${(v.x*r.x+v.y*r.y+v.z*r.z).toFixed(2)} m/s; forward ${sim.forwardSpeed.toFixed(2)} m/s`);}
     {const v=sim.car.linvel(),r=rotate(sim.car.rotation(),{x:1,y:0,z:0});assert.ok(v.x*r.x+v.y*r.y+v.z*r.z<0,'momentum must fall outside the positive-steering corner, toward local -X');}
     assert.ok(maxSlip>.017,'high-speed cornering should retain a little natural outward slip');
-    assert.ok(maxSlip<.105,'large slides should require Left Shift');
+    assert.ok(maxSlip<.105,'automatic corners should retain subtle natural slip');
     assert.ok((sim.vehicle.wheelSideFrictionStiffness(2)??0)<(sim.vehicle.wheelSideFrictionStiffness(0)??0));
     for(let i=0;i<90;i++)sim.step(Input.Throttle);
     assert.ok(sim.autoDrift<.003,'straight-line grip must recover');
