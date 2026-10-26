@@ -20,6 +20,8 @@ export class PartyUpdates<T> {
   private intervals: number[] = [];
   constructor(private options: {
     ready: () => boolean;
+    /** Milliseconds between poses while ready (a city party slows down when no other driver is near). */
+    interval?: () => number;
     send: () => Promise<T>;
     receive: (result: T, sentAt: number, receivedAt: number) => void;
     error: (cause: unknown) => void;
@@ -27,7 +29,7 @@ export class PartyUpdates<T> {
   tick(now = performance.now()) {
     if (this.stopped || now < this.nextAt) return;
     const ready = this.options.ready();
-    const interval = ready ? POSE_INTERVAL_MS : 500;
+    const interval = ready ? this.options.interval?.() ?? POSE_INTERVAL_MS : 500;
     // Keep the timer's phase: resetting from each receipt of a timer tick skips slots on small clock variations.
     this.nextAt = now - this.nextAt >= interval ? now + interval : this.nextAt + interval;
     if (this.inFlight >= (ready ? PARTY_MAX_IN_FLIGHT : 1)) { this.skipped++; return; }

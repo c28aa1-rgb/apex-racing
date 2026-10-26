@@ -25,7 +25,9 @@
     "build:pages": "tsc --noEmit && node --import tsx design/build-pages.ts",
     "build:city": "node --max-old-space-size=8192 --import tsx design/build-city.ts",
     "build:traffic": "node --import tsx design/build-traffic.ts",
-    "build:police": "node --import tsx design/build-police.ts"
+    "build:police": "node --import tsx design/build-police.ts",
+    "build:city-shared": "node --import tsx design/build-city-shared.ts",
+    "build:city-races": "node --import tsx design/build-city-races.ts"
   },
   "dependencies": {
     "@dimforge/rapier3d-compat": "0.19.3",

@@ -26,3 +26,8 @@ export type PartyLobby = {
 };
 export type PartyResponse = { lobby: PartyLobby | null };
 export const DEFAULT_PARTY_SETTINGS: PartySettings = { trackId: 'bugatti', weather: 'clear', laps: 3, maxPlayers: 4 };
+/** A city party: free roam together in Racing City (no laps or finish; friends can join while it runs). */
+export const CITY_PARTY_TRACK = 'racing-city';
+export const isCityParty = (settings: Pick<PartySettings, 'trackId'>) => settings.trackId === CITY_PARTY_TRACK;
+/** A city party's traffic update for one driver (see shared/city-party-traffic.ts and CityTraffic.follow). */
+export type PartyTrafficPacket = { at: number; cars: number[][]; signals: number[]; handoff?: boolean; seed?: boolean };

@@ -5,7 +5,7 @@
  * places. Cars keep to lanes either side of the route (right-hand traffic), follow the car ahead, slow for the
  * player, and are knocked out of their lane when hit (sliding to a stop, then rejoining once the player is away).
  */
-import type { ObstacleBody } from './physics';
+import type { ObstacleBody } from './obstacle';
 
 /** Traffic models (public/models/traffic/traffic-cars.glb) with their measured bodies, and how often each turns up. */
 export const RACE_TRAFFIC_KINDS: (ObstacleBody & { id: string; front: number; rear: number; weight: number })[] = [

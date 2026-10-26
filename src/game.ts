@@ -14,7 +14,8 @@ import { keyLabel, type Action } from './controls';
 import { Quaternion, Vector3 } from 'three';
 import { FinishDriver } from './finish-driver';
 import { CarRig } from './car-rig';
-import type { PartyLobby, PartyPose, PartyRace, PartyRacer, PartyWeather } from '../shared/party';
+import { isCityParty, type PartyLobby, type PartyPose, type PartyRace, type PartyRacer, type PartyTrafficPacket, type PartyWeather } from '../shared/party';
+import { PARTY_CLOSE_M, PARTY_CLOSE_S, PARTY_POSE_HZ, PARTY_ROAM_POSE_HZ } from '../shared/party-network';
 import { Group, CanvasTexture, Sprite, SpriteMaterial } from 'three';
 import { RemoteMotion } from './remote-motion';
 import type { PartyUpdates } from './party-network';
@@ -84,7 +85,9 @@ export class Game {
   onLeaveTraining?:()=>void;
   /** Your finishing position in the current party race, once the server confirms it. */
   partyPlace?:number;
-  partyRace?: { id: string; lap: number; laps: number; ready: boolean; started: boolean; finished: boolean };
+  partyRace?: { id: string; lap: number; laps: number; ready: boolean; started: boolean; finished: boolean; city?: boolean };
+  /** City party: the server asked for the traffic around this driver, to start its own from. */
+  private partySeedWanted=false;
   private partySequence=0;
   private partySelf='';
   /** Estimated (server clock − performance.now()) in ms, from the quickest race reply so far; undefined until the first reply. */
@@ -527,21 +530,23 @@ export class Game {
     this.selectionToken++;this.carToken++;
     const race=lobby.race!,me=race.racers.find(r=>r.id===selfId)!;
     this.partyOriginalTrack=this.state.track;this.partySelf=selfId;this.partyPlace=undefined;
-    const track=structuredClone(TRACKS.find(t=>t.id===lobby.settings.trackId)!);
+    // A city party is free roam together in the city: no laps, no finish, traffic shared through the server.
+    const city=isCityParty(lobby.settings);
+    const track=structuredClone(city?CITY:TRACKS.find(t=>t.id===lobby.settings.trackId)!);
     track.spawn=structuredClone(race.grid[me.slot]);track.checkpoints=structuredClone(race.checkpoints);track.finish=structuredClone(race.finish);
-    this.partyFinishDriver=undefined;this.spectating=undefined;
-    this.partyRace={id:race.id,lap:me.pose?.lap??1,laps:lobby.settings.laps,ready:false,started:false,finished:!!(me.finishedAt||me.disconnected||race.ended)};
+    this.partyFinishDriver=undefined;this.spectating=undefined;this.partySeedWanted=false;
+    this.partyRace={id:race.id,lap:me.pose?.lap??1,laps:lobby.settings.laps,ready:false,started:false,finished:!!(me.finishedAt||me.disconnected||race.ended),city};
     this.partySequence=me.pose?.sequence??0;this.lapStartTick=me.pose?-1:0;this.partyBestLap=me.pose?.best;this.partyView=false;this.keys.clear();this.garageView=false;this.awaitingPedal=false;
     this.inputs=[];this.steeringInputs=[];this.driftInputs=[];this.accumulator=0;this.previousFrame=undefined;
     this.lastCheckpoint=0;this.lastRespawns=0;this.queuedRespawn=false;this.queuedFlip=false;this.pendingShifts=0;this.seenBlockedShifts=0;
     this.ghostSim?.dispose();this.ghostSim=undefined;this.ghostRun=undefined;this.chosenGhost=undefined;this.world.ghostFrame(undefined);this.world.endFinish();
-    this.partyWeather=lobby.settings.weather;this.world.setTrack(track);this.world.setWeather(lobby.settings.weather);
-    this.partyLoadStep='Loading circuit';
+    this.partyWeather=lobby.settings.weather;this.world.setTrack(track);this.world.setWeather(lobby.settings.weather);if(city)this.world.setHeadlights(true);
+    this.partyLoadStep=city?'Loading the city':'Loading circuit';
     const myCar=dressed(me.carId);this.sound.look=lookOf(myCar);
     this.emit({mode:'party-loading',track,car:myCar,trackReady:false,modelReady:false,time:0,speed:0,checkpoint:0,run:undefined,newBest:false,notice:''});
     await initPhysics(track);
     if(this.partyRace?.id!==race.id)return;
-    this.sim.dispose();this.sim=new Simulation(track,me.carId);this.sim.weather=lobby.settings.weather;this.sim.maxTicks=60*3600;this.sim.steeringStrength=this.steeringStrength;this.sim.driftStrength=this.driftStrength;this.sim.manual=this.settings.advancedDriving;
+    this.sim.dispose();this.sim=new Simulation(track,me.carId);this.sim.weather=lobby.settings.weather;this.sim.maxTicks=city?Infinity:60*3600;this.sim.steeringStrength=this.steeringStrength;this.sim.driftStrength=this.driftStrength;this.sim.manual=this.settings.advancedDriving;
     if(me.pose){this.sim.car.setTranslation(me.pose.p,true);this.sim.car.setRotation(me.pose.q,true);this.sim.car.setLinvel({x:0,y:0,z:0},true);this.sim.car.setAngvel({x:0,y:0,z:0},true);this.sim.checkpoint=me.pose.checkpoint;this.sim.ticks=Math.max(0,Math.round((this.serverTime()-(race.startAt??this.serverTime()))/1000/DT));this.sim.finished=this.partyRace.finished;}
     this.world.setCockpitOffset(loadCockpitOffsets()[me.carId]);
     this.partyLoadStep='Loading your car';this.emit();
@@ -549,6 +554,11 @@ export class Game {
     if(this.partyRace?.id!==race.id)return;
     if(!loaded)throw new Error('Your car could not load. Return to lobby and retry.');
     if(this.world.venueLoadError)throw new Error(this.world.venueLoadError);
+    if(city){
+      this.partyLoadStep='Starting traffic';this.emit();
+      const p=this.sim.car.translation();await this.world.startTraffic(new Vector3(p.x,p.y,p.z));
+      if(this.partyRace?.id!==race.id)return;
+    }
     this.partyLoadStep='Loading other drivers\' cars';this.emit();
     for(const racer of race.racers.filter(r=>r.id!==selfId)) {
       const model=await this.world.partyModel(racer.carId);
@@ -582,6 +592,11 @@ export class Game {
     if(local.ready&&local.finished&&this.state.mode!=='party-finished')this.emit({mode:'party-finished'});
     // Lights out at the same server instant on every screen; refined while the countdown runs as better clock readings arrive.
     if(local.started&&race.startAt&&this.state.mode==='countdown'&&this.serverOffset!==undefined)this.countdownUntil=race.startAt-this.serverOffset;
+    if(local.ready&&race.startAt&&!local.started&&!race.ended&&!local.finished&&local.city){
+      // A city party has no lights: drive as soon as this screen is ready.
+      local.started=true;this.accumulator=0;this.goAt=performance.now();this.lapStartTick=this.sim.ticks;
+      this.prepareAudio();this.world.setMouseLook(true);this.emit({mode:'racing',notice:'City party · drive anywhere together'});this.noticeUntil=performance.now()+2600;
+    }
     if(local.ready&&race.startAt&&!local.started&&!race.ended&&!local.finished){
       local.started=true;this.countdownUntil=this.serverOffset!==undefined?race.startAt-this.serverOffset:performance.now()+race.startAt-serverNow;this.goAt=-Infinity;
       this.prepareAudio();this.world.setMouseLook(true);this.emit({mode:'countdown',countdown:6});
@@ -593,6 +608,34 @@ export class Game {
     // t: the moment of the physics tick the pose came from, on the shared server clock.
     return {...this.sim.frame(),v:this.sim.car.linvel(),sequence:++this.partySequence,lap:race.lap,checkpoint:this.sim.checkpoint,finished:race.finished,
       ...(this.serverOffset!==undefined?{t:+this.serverTime(this.previous-this.accumulator*1000).toFixed(1)}:{}),...(this.partyBestLap?{best:this.partyBestLap}:{})};
+  }
+  /**
+   * How often to send poses: always the full rate in a race; in a city party half that, unless another driver is
+   * near (within PARTY_CLOSE_M, or closing on you within PARTY_CLOSE_S), where contact needs every pose.
+   */
+  partyPoseInterval(){
+    if(!this.partyRace?.city)return 1000/PARTY_POSE_HZ;
+    const p=this.sim.car.translation(),v=this.sim.car.linvel();
+    for(const remote of this.remoteCars.values()){
+      if(!remote.group.visible)continue;
+      const q=remote.group.position,dx=q.x-p.x,dz=q.z-p.z,distance=Math.hypot(dx,dz),f=remoteForward.set(0,0,1).applyQuaternion(remote.group.quaternion),w={x:f.x*remote.wheels.speed,z:f.z*remote.wheels.speed};
+      const closing=-((w.x-v.x)*dx+(w.z-v.z)*dz)/(distance||1);
+      if(distance<PARTY_CLOSE_M||(closing>0&&distance/closing<PARTY_CLOSE_S))return 1000/PARTY_POSE_HZ;
+    }
+    return 1000/PARTY_ROAM_POSE_HZ;
+  }
+  /** City party: what goes with the next pose: the cars you knocked, and the traffic around you if the server asked. */
+  partyTrafficOut(){
+    const traffic=this.world.traffic;if(!traffic||!this.partyRace?.city)return undefined;
+    const knocks=traffic.takeKnocks(),p=this.sim.car.translation();
+    const seed=this.partySeedWanted?traffic.seed(new Vector3(p.x,p.y,p.z)).slice(0,80):undefined;this.partySeedWanted=false;
+    return knocks.length||seed?{...(knocks.length?{knocks}:{}),...(seed?{seed}:{})}:undefined;
+  }
+  /** City party: the server's traffic update (or its request for yours). */
+  partyTraffic(packet?:PartyTrafficPacket){
+    if(!packet||!this.partyRace?.city)return;
+    if(packet.seed){this.partySeedWanted=true;return;}
+    this.world.traffic?.follow(packet,Math.max(0,(this.serverTime()-packet.at)/1000));
   }
   /**
    * Race order, first to last: finishers by finishing time, then drivers still racing by lap, gates passed and
@@ -766,7 +809,7 @@ export class Game {
     if(this.freeRoam&&this.state.mode==='racing'&&this.state.trackReady){
       const zone=this.state.track.lot?.startZone,p=this.sim.car.translation();
       // In the city, any street race's start box.
-      const race=this.state.track.night?CITY_RACES.find(r=>Math.abs(p.y-r.street!.zone.y)<4&&inStartZone(r.street!.zone,p.x,p.z)):undefined;
+      const race=this.state.track.night&&!this.partyRace?CITY_RACES.find(r=>Math.abs(p.y-r.street!.zone.y)<4&&inStartZone(r.street!.zone,p.x,p.z)):undefined;
       const inside=!!race||!!zone&&Math.abs(p.x-zone.x)<zone.w/2&&Math.abs(p.z-zone.z)<zone.l/2;
       if(inside!==this.state.atStart||race?.id!==this.state.atRace)this.emit({atStart:inside,atRace:race?.id});
     }else if(this.state.atStart)this.emit({atStart:false,atRace:undefined});

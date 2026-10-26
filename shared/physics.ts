@@ -34,8 +34,8 @@ const GROUP = { floor: 0x0002, wall: 0x0004, chassis: 0x0008, safety: 0x0010, op
  * driver's own screen, which runs the same stand-in for this car, gives their car its half of it.
  */
 type Opponent = { body: RAPIER.RigidBody; p: Vec3; q: Quat; v: Vec3; ticks: number };
-/** A stand-in's box and mass when it is not one of the game's cars (city traffic). */
-export type ObstacleBody = { widthM: number; heightM: number; lengthM: number; massKg: number };
+import type { ObstacleBody } from './obstacle';
+export type { ObstacleBody };
 /** Seconds for a stand-in to close a gap to its network path; short, so it never drifts far from where the driver is. */
 const OPPONENT_RETURN = .12;
 /**

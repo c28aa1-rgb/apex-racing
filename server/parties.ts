@@ -2,14 +2,16 @@ import type { FastifyInstance } from 'fastify';
 import type { Store } from './store';
 import type { PartyMember } from '../shared/party';
 import { Parties, settingsSchema, carSchema, createSchema, joinSchema, updateSchema } from '../shared/party-room';
-import { PARTY_MESSAGES_PER_SECOND } from '../shared/party-network';
+import { PARTY_MESSAGES_PER_SECOND, PARTY_MESSAGE_BYTES, PARTY_TRAFFIC_TICK_MS } from '../shared/party-network';
 export { Parties, PARTY_PRESENCE_MS } from '../shared/party-room';
 type Identity = Pick<PartyMember, 'id' | 'nickname'>;
 type CircuitConfig = Parameters<Parties['start']>[1];
 
 export async function registerParties(app: FastifyInstance, store: Store, parties = new Parties()) {
   const cleanup = setInterval(() => parties.sweep(), 30_000); cleanup.unref();
-  app.addHook('onClose', async () => { clearInterval(cleanup); });
+  // City parties' traffic moves on in real time between drivers' updates.
+  const traffic = setInterval(() => parties.tick(), PARTY_TRAFFIC_TICK_MS); traffic.unref();
+  app.addHook('onClose', async () => { clearInterval(cleanup); clearInterval(traffic); });
   await app.register(async routes => {
     routes.addHook('preHandler', async (request, reply) => {
       const token = request.headers.authorization?.replace(/^Bearer /, '') ?? '';
@@ -35,9 +37,9 @@ export async function registerParties(app: FastifyInstance, store: Store, partie
     routes.delete('/api/parties/me', { config }, async request => { parties.leave(request.partyPlayer!); return { lobby: null }; });
     routes.post('/api/parties/start', { config }, async request => ({ lobby: parties.start(request.partyPlayer!, await store.circuitConfig() as CircuitConfig) }));
     routes.post('/api/parties/reopen', { config }, async request => ({ lobby: parties.reopen(request.partyPlayer!) }));
-    routes.post('/api/parties/race', { config: { rateLimit: { ...config.rateLimit, max: PARTY_MESSAGES_PER_SECOND * 60 } }, bodyLimit: 2048 }, async request => {
+    routes.post('/api/parties/race', { config: { rateLimit: { ...config.rateLimit, max: PARTY_MESSAGES_PER_SECOND * 60 } }, bodyLimit: PARTY_MESSAGE_BYTES }, async request => {
       const update = updateSchema.parse(request.body);
-      return parties.update(request.partyPlayer!, update.raceId, update.ready, update.pose);
+      return parties.update(request.partyPlayer!, update.raceId, update.ready, update.pose, update.traffic);
     });
   });
 }

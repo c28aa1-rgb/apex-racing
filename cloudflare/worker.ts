@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { Parties, createSchema, joinSchema, carSchema, settingsSchema, updateSchema, PARTY_PRESENCE_MS } from '../shared/party-room';
 import type { PartyMember, PartyPose } from '../shared/party';
 import { savePlayer, times } from './times';
-import { PARTY_BROADCAST_MS, PARTY_MESSAGES_PER_SECOND } from '../shared/party-network';
+import { PARTY_BROADCAST_MS, PARTY_MESSAGES_PER_SECOND, PARTY_MESSAGE_BYTES, PARTY_TRAFFIC_TICK_MS } from '../shared/party-network';
 import { roomLocationHint } from './room-placement';
 
 type Identity = Pick<PartyMember, 'id' | 'nickname'>;
@@ -106,6 +106,15 @@ export default {
 export class RaceRoom extends DurableObject<Env> {
   private parties = new Parties();
   private raceBroadcast?: ReturnType<typeof setTimeout>;
+  /**
+   * City party traffic moves on 20 times a second while it runs (two or more drivers in the city). Only then does
+   * the room stay awake between messages; otherwise it can hibernate as before.
+   */
+  private trafficTimer?: ReturnType<typeof setInterval>;
+  private runTraffic() {
+    if (this.parties.trafficRunning && this.trafficTimer === undefined)
+      { const timer = setInterval(() => { this.parties.tick(); if (!this.parties.trafficRunning) { clearInterval(timer); this.trafficTimer = undefined; } }, PARTY_TRAFFIC_TICK_MS); this.trafficTimer = timer; }
+  }
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     ctx.blockConcurrencyWhile(async () => {
@@ -167,7 +176,7 @@ export class RaceRoom extends DurableObject<Env> {
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer) {
     let id: number | undefined;
     try {
-      if (typeof message !== 'string' || new TextEncoder().encode(message).length > 2048) { ws.close(1009, 'Message too large'); return; }
+      if (typeof message !== 'string' || new TextEncoder().encode(message).length > PARTY_MESSAGE_BYTES) { ws.close(1009, 'Message too large'); return; }
       const saved = ws.deserializeAttachment() as Attachment;
       if (Date.now() - saved.window >= 1000) { saved.window = Date.now(); saved.count = 0; }
       if (++saved.count > PARTY_MESSAGES_PER_SECOND) { ws.close(1008, 'Too many messages'); return; }
@@ -183,7 +192,8 @@ export class RaceRoom extends DurableObject<Env> {
       else if (data.path === '/reopen' && data.method === 'POST') result = { lobby: this.parties.reopen(player) };
       else if (data.path === '/race' && data.method === 'POST') {
         const update = updateSchema.parse(data.body), before = this.parties.exportState()[0]?.revision;
-        result = this.parties.update(player, update.raceId, update.ready, update.pose);
+        result = this.parties.update(player, update.raceId, update.ready, update.pose, update.traffic);
+        this.runTraffic();
         saved.raceId = update.raceId;
         saved.pose = (result as ReturnType<Parties['update']>).race.racers.find(r => r.id === player.id)?.pose;
         changed = before !== this.parties.exportState()[0]?.revision;
