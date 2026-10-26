@@ -12,7 +12,7 @@ export async function savePlayer(db: D1Database, player: Player) {
 async function leaderboard(db: D1Database, trackId: string, version: number) {
   const { results } = await db.prepare(`SELECT s.id, s.player_id AS playerId, p.nickname, s.car_id AS carId, s.time_ms AS timeMs,
     json_extract(s.replay,'$.manual') AS manual,
-    ROW_NUMBER() OVER (ORDER BY s.time_ms,s.created_at,s.id) AS rank
+    RANK() OVER (ORDER BY s.time_ms) AS rank
     FROM scores s JOIN players p ON p.id=s.player_id
     WHERE s.track_id=? AND s.track_version=? AND s.physics_version=?
     ORDER BY s.time_ms,s.created_at,s.id LIMIT 50`).bind(trackId, version, PHYSICS_VERSION).all();

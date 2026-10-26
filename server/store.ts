@@ -67,7 +67,7 @@ export class Store {
   }
   async leaderboard(trackId: string, version: number) {
     return this.query(`SELECT s.id, p.id AS "playerId", p.nickname, s.car_id AS "carId", s.time_ms AS "timeMs", s.manual,
-      ROW_NUMBER() OVER (ORDER BY s.time_ms, s.created_at, s.id)::integer AS rank
+      RANK() OVER (ORDER BY s.time_ms)::integer AS rank
       FROM scores s JOIN players p ON p.id=s.player_id
       WHERE s.track_id=$1 AND s.track_version=$2 AND s.physics_version=$3
       ORDER BY s.time_ms,s.created_at,s.id LIMIT 50`, [trackId, version, PHYSICS_VERSION]);

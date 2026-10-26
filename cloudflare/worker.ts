@@ -1,6 +1,6 @@
 import { DurableObject } from 'cloudflare:workers';
 import { z } from 'zod';
-import { Parties, createSchema, joinSchema, carSchema, settingsSchema, updateSchema, PARTY_PRESENCE_MS } from '../shared/party-room';
+import { Parties, createSchema, joinSchema, carSchema, settingsSchema, updateSchema, kickSchema, PARTY_PRESENCE_MS } from '../shared/party-room';
 import type { PartyMember, PartyPose } from '../shared/party';
 import { savePlayer, times } from './times';
 import { PARTY_BROADCAST_MS, PARTY_MESSAGES_PER_SECOND, PARTY_MESSAGE_BYTES, PARTY_TRAFFIC_TICK_MS } from '../shared/party-network';
@@ -18,7 +18,7 @@ function restoreAttachment(state: ReturnType<Parties['exportState']>, saved: Att
   }
 }
 const nickname = z.object({ nickname: z.string().trim().min(2).max(18).regex(/^[\p{L}\p{N} _-]+$/u) }).strict();
-const command = z.object({ id: z.number().int().nonnegative(), path: z.enum(['/current', '/me', '/settings', '/start', '/reopen', '/race']), method: z.enum(['GET', 'POST', 'PATCH', 'DELETE']), body: z.unknown().optional() }).strict();
+const command = z.object({ id: z.number().int().nonnegative(), path: z.enum(['/current', '/me', '/settings', '/start', '/reopen', '/race', '/kick']), method: z.enum(['GET', 'POST', 'PATCH', 'DELETE']), body: z.unknown().optional() }).strict();
 const codePattern = /^[A-HJ-NP-Z2-9]{6}$/;
 const json = (data: unknown, status = 200) => Response.json(data, { status, headers: { 'Cache-Control': 'no-store' } });
 const fail = (statusCode: number, message: string): never => { throw Object.assign(new Error(message), { statusCode }); };
@@ -132,7 +132,7 @@ export class RaceRoom extends DurableObject<Env> {
     if (this.raceBroadcast !== undefined) { clearTimeout(this.raceBroadcast); this.raceBroadcast = undefined; }
     const room = this.parties.exportState()[0];
     if (!room) return;
-    const { seen, ...lobby } = room;
+    const { seen, kicked, ...lobby } = room;
     const message = JSON.stringify(raceOnly && lobby.race ? { type: 'race', race: this.compact(lobby.race), serverNow: Date.now() } : { type: 'lobby', lobby, serverNow: Date.now() });
     // ponytail: batch up to eight poses; field-level deltas if measured bandwidth requires it.
     for (const ws of this.ctx.getWebSockets()) {
@@ -184,12 +184,16 @@ export class RaceRoom extends DurableObject<Env> {
       const data = command.parse(JSON.parse(message)); id = data.id;
       const player = saved.player;
       let result: unknown, changed = true;
-      if (data.path === '/current' && data.method === 'GET') { result = { lobby: this.parties.current(player) }; changed = false; }
+      if (data.path === '/current' && data.method === 'GET') {
+        const lobby = this.parties.current(player);
+        result = { lobby, ...(!lobby && this.parties.takeRemovedNotice(player.id) ? { removed: true } : {}) }; changed = false;
+      }
       else if (data.path === '/me' && data.method === 'DELETE') { this.parties.leave(player); result = { lobby: null }; }
       else if (data.path === '/me' && data.method === 'PATCH') result = { lobby: this.parties.car(player, carSchema.parse(data.body).carId) };
       else if (data.path === '/settings' && data.method === 'PATCH') result = { lobby: this.parties.settings(player, settingsSchema.partial().parse(data.body)) };
       else if (data.path === '/start' && data.method === 'POST') result = { lobby: this.parties.start(player, {}) };
       else if (data.path === '/reopen' && data.method === 'POST') result = { lobby: this.parties.reopen(player) };
+      else if (data.path === '/kick' && data.method === 'POST') result = { lobby: this.parties.kick(player, kickSchema.parse(data.body).id) };
       else if (data.path === '/race' && data.method === 'POST') {
         const update = updateSchema.parse(data.body), before = this.parties.exportState()[0]?.revision;
         result = this.parties.update(player, update.raceId, update.ready, update.pose, update.traffic);

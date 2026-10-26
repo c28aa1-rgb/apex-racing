@@ -11,11 +11,12 @@ import {Store} from '../server/store';
 import {createApp} from '../server/app';
 import {ENGINE_VOICES} from '../src/race-audio';
 
-test('finishes and best medals are recorded per circuit; every car has its own engine voice',()=>{
-  const track=TRACKS[0],first=recordFinish({finishes:0,medals:{}},track,track.medals[2]+1000);
-  assert.deepEqual(first,{finishes:1,medals:{[track.id]:0}});
-  const gold=recordFinish(first,track,track.medals[0]);assert.equal(gold.medals[track.id],3);
-  assert.equal(recordFinish(gold,track,track.medals[2]+1000).medals[track.id],3,'a slower finish keeps the best medal');
+test('finishes count without new medals or erasing legacy progress; every car has its own engine voice',()=>{
+  const first=recordFinish({finishes:0,medals:{}});
+  assert.deepEqual(first,{finishes:1,medals:{}});
+  const legacy={finishes:8,medals:{bugatti:3}};
+  assert.deepEqual(recordFinish(legacy),{finishes:9,medals:{bugatti:3}});
+  assert.deepEqual(legacy,{finishes:8,medals:{bugatti:3}});
   assert.deepEqual(Object.keys(ENGINE_VOICES).sort(),[...CAR_IDS].sort());
   assert.notDeepEqual(ENGINE_VOICES['red-bull-rb19'],ENGINE_VOICES['nascar-camry']);
 });

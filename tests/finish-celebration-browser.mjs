@@ -8,16 +8,28 @@ const browser=await chromium.launch({channel:'chrome',headless:true});
 const page=await browser.newPage({viewport:{width:1440,height:900}});
 const errors=[];
 page.on('pageerror',error=>errors.push(error.message));
+const boards=[];let boardMode='filled';
+await page.route('**/api/leaderboards/*',route=>{
+  boards.push(new URL(route.request().url()).pathname.split('/').at(-1));
+  return route.fulfill({status:boardMode==='offline'?503:200,json:boardMode==='offline'?{error:'Offline'}:{entries:boardMode==='empty'?[]:[
+    {id:'test-fastest',playerId:'test-alpha',nickname:'Alpha',rank:1,carId:'porsche-911-gt3',timeMs:60000},
+    {id:'test-second',playerId:'test-bravo',nickname:'Bravo',rank:2,carId:'red-bull-rb19',timeMs:65000},
+  ]}});
+});
 try{
   await page.goto(gameUrl('/'));
   await gameReady(page);
+  await page.getByRole('button',{name:'Leaderboards',exact:true}).click();
+  await page.getByLabel('Circuit',{exact:true}).selectOption('spa');
+  await page.getByRole('dialog',{name:'Leaderboards',exact:true}).getByRole('button',{name:'Close dialog'}).click();
+  await page.getByRole('dialog').waitFor({state:'detached'});
   const started=await page.evaluate(()=>{
     const game=window.__apex,cues=[];
     game.setSettings({pointerLock:false,reducedMotion:false});game.start(false);
     const gate=game.state.track.finish;
     game.sim.car.setTranslation({...gate.position,y:gate.position.y+1},true);game.sim.car.setRotation(gate.rotation,true);
     for(let i=0;i<60;i++)game.sim.step(0);
-    game.sim.car.setLinvel({x:gate.forward.x*35,y:0,z:gate.forward.z*35},true);game.sim.finished=true;game.world.chase(game.sim,0,true);
+    game.sim.car.setLinvel({x:gate.forward.x*35,y:0,z:gate.forward.z*35},true);game.sim.ticks=3874;game.sim.finished=true;game.world.chase(game.sim,0,true);
     game.sound.cue=kind=>cues.push(kind);
     const physical={...game.sim.car.translation()},visual=game.world.car.position.toArray();
     game.finish();
@@ -25,33 +37,49 @@ try{
     for(let i=0;i<30;i++)game.finishDriver.step(game.sim);
     game.world.chase(game.sim,.5,false,undefined,false);game.world.celebrateFinish(.5);
     const revealDelay=game.finishRevealAt-performance.now();game.finishRevealAt=performance.now()+10000;
-    return {mode:game.state.mode,physical,visual,confetti:game.world.finishConfetti.mesh.visible,cues,revealDelay,ticks,speed,afterSpeed:game.sim.speed};
+    return {mode:game.state.mode,physical,visual,confetti:game.world.finishConfetti.mesh.visible,cues,revealDelay,ticks,speed,afterSpeed:game.sim.speed,brake:game.sim.brake};
   });
   assert.equal(started.mode,'celebrating');
   assert.equal(started.confetti,true);
   assert.deepEqual(started.cues,['finish']);
-  assert.ok(started.afterSpeed>started.speed*.9,'finish must not apply artificial deceleration');
+  assert.ok(started.afterSpeed<started.speed-2&&started.brake>0,'finish immediately brakes toward a controlled cruise');
   assert.ok(started.revealDelay>3000&&started.revealDelay<=3200);
-  await page.getByText('Finish',{exact:true}).waitFor();
+  await page.locator('.finish-callout').getByText('Finish',{exact:true}).waitFor();
   await page.waitForTimeout(650);
-  const moving=await page.evaluate(()=>({mode:window.__apex.state.mode,physical:{...window.__apex.sim.car.translation()},visual:window.__apex.world.car.position.toArray(),camera:window.__apex.world.camera.position.toArray(),ticks:window.__apex.sim.ticks,grounded:window.__apex.sim.grounded,solid:!window.__apex.sim.car.collider(0).isSensor()}));
+  const moving=await page.evaluate(()=>({mode:window.__apex.state.mode,physical:{...window.__apex.sim.car.translation()},display:window.__apex.finishFrame().p,visual:window.__apex.world.car.position.toArray(),camera:window.__apex.world.camera.position.toArray(),ticks:window.__apex.sim.ticks,grounded:window.__apex.sim.grounded,solid:!window.__apex.sim.car.collider(0).isSensor()}));
   assert.equal(moving.mode,'celebrating');
   assert.notDeepEqual(moving.physical,started.physical,'authoritative car continues after finish');assert.equal(moving.ticks,started.ticks);assert.ok(moving.grounded&&moving.solid);
-  assert.ok(Math.hypot(moving.physical.x-moving.visual[0],moving.physical.z-moving.visual[2])<.1,'model follows physical car');
+  assert.ok(Math.hypot(moving.display.x-moving.visual[0],moving.display.z-moving.visual[2])<.1,'model follows the interpolated physics frame');
   assert.ok(Math.hypot(...moving.visual.map((value,index)=>value-started.visual[index]))>2,'visual car should coast beyond the line');
   await page.screenshot({path:'work/finish-celebration/celebrating.png'});
   await page.evaluate(()=>{window.__apex.finishRevealAt=performance.now();});
   await page.waitForFunction(()=>window.__apex.state.mode==='finished',null,{timeout:5000});
   assert.equal(await page.locator('.result-card').isVisible(),true);
+  assert.equal(await page.getByText(/^(Gold|Silver|Bronze)( medal)?$/).count(),0,'results no longer award medals');
   const resultPosition=await page.evaluate(()=>({...window.__apex.sim.car.translation()}));await page.waitForTimeout(300);
   assert.notDeepEqual(await page.evaluate(()=>({...window.__apex.sim.car.translation()})),resultPosition,'autopilot continues behind results');
+  const result=await page.evaluate(()=>({track:window.__apex.state.track.id,time:window.__apex.state.time,ticks:window.__apex.sim.ticks,run:window.__apex.state.run}));
+  boards.length=0;
+  await page.getByRole('button',{name:'Standings',exact:true}).click();
+  const standings=page.getByRole('dialog',{name:'Standings',exact:true});
+  await standings.getByRole('table').waitFor();
+  await standings.locator('.board-selector').getByText('Bugatti Circuit',{exact:true}).waitFor();
+  assert.equal(await standings.getByRole('combobox').count(),0,'finish standings stay on this circuit');
+  assert.ok(boards.length&&boards.every(id=>id===result.track),'previous menu selection cannot show another circuit');
+  await standings.getByText('Your run',{exact:true}).waitFor();
+  assert.equal(await standings.locator('tbody tr').count(),2);
+  await page.screenshot({path:'work/finish-celebration/solo-standings-desktop.png'});
+  await standings.getByRole('button',{name:'Back to results',exact:true}).click();
+  await standings.waitFor({state:'detached'});
+  assert.deepEqual(await page.evaluate(()=>({track:window.__apex.state.track.id,time:window.__apex.state.time,ticks:window.__apex.sim.ticks,run:window.__apex.state.run})),result,'viewing standings preserves the finished run');
+  assert.equal(await page.evaluate(()=>window.__apex.state.mode),'finished');
   await page.setViewportSize({width:390,height:844});
   const reducedDelay=await page.evaluate(()=>{
-    const game=window.__apex;game.setSettings({reducedMotion:true});game.restart();game.sim.car.setLinvel({x:0,y:0,z:20},true);game.sim.finished=true;game.finish();
+    const game=window.__apex;game.setSettings({reducedMotion:true});game.restart();game.sim.car.setLinvel({x:0,y:0,z:20},true);game.sim.ticks=3874;game.sim.finished=true;game.finish();
     const delay=game.finishRevealAt-performance.now();game.finishRevealAt=performance.now()+10000;return delay;
   });
   assert.ok(reducedDelay>1000&&reducedDelay<=1200);
-  await page.getByText('Finish',{exact:true}).waitFor();
+  await page.locator('.finish-callout').getByText('Finish',{exact:true}).waitFor();
   await page.locator('.overlay').waitFor({state:'detached'});
   assert.equal(await page.evaluate(()=>window.__apex.world.finishConfetti.mesh.visible),false);
   const bounds=await page.locator('.finish-callout').boundingBox();
@@ -59,6 +87,20 @@ try{
   await page.screenshot({path:'work/finish-celebration/mobile-reduced.png'});
   await page.evaluate(()=>{window.__apex.finishRevealAt=performance.now();});
   await page.waitForFunction(()=>window.__apex.state.mode==='finished',null,{timeout:2200});
+  await page.locator('.finish-callout').waitFor({state:'detached'});await page.waitForTimeout(350);
+  await page.screenshot({path:'work/finish-celebration/mobile-results.png'});
+  const standingsButton=page.getByRole('button',{name:'Standings',exact:true}),buttonBounds=await standingsButton.boundingBox();
+  assert.ok(buttonBounds&&buttonBounds.x>=0&&buttonBounds.x+buttonBounds.width<=390);
+  await standingsButton.click();await standings.getByRole('table').waitFor();
+  const standingsBounds=await standings.boundingBox();
+  assert.ok(standingsBounds&&standingsBounds.x>=0&&standingsBounds.x+standingsBounds.width<=390,'solo standings fit mobile');
+  await page.screenshot({path:'work/finish-celebration/solo-standings-mobile.png'});
+  boardMode='empty';await standings.getByRole('button',{name:'Refresh',exact:true}).click();
+  await standings.getByText('No times yet. Set the first one.',{exact:true}).waitFor();
+  boardMode='offline';await standings.getByRole('button',{name:'Refresh',exact:true}).click();
+  await standings.getByText('Leaderboard offline. You can still race and save your best locally.',{exact:true}).waitFor();
+  await standings.getByRole('button',{name:'Back to results',exact:true}).click();await standings.waitFor({state:'detached'});
+  assert.equal(await page.evaluate(()=>window.__apex.state.mode),'finished','offline standings do not leave the results');
   assert.deepEqual(errors,[]);
-  console.log('Finish keeps physical driving and collisions active, freezes scoring, follows with the camera, reveals results, and respects reduced motion.');
+  console.log('Finish driving, frozen scoring, reduced motion, and desktop/mobile solo standings pass, including current-circuit selection, empty/offline states, and returning without leaving.');
 }finally{await browser.close();}

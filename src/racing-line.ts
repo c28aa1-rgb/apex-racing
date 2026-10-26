@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import type { Simulation } from '../shared/physics';
-import type { Track } from '../shared/tracks';
+import type { Track, Vec3 } from '../shared/tracks';
 import { brakingEnvelope, LINE_TUNING, nearestStation, predictZones, racingLine, Zone, type RacingLine } from '../shared/racing-line';
 import { WEATHER_GRIP } from '../shared/physics';
 
@@ -37,6 +37,11 @@ export class RacingLineGuide {
   private station = -1;
   /** Stations coloured last frame (start index and count), cleared before the next window is drawn. */
   private drawn: [number, number] = [0, 0];
+
+  get path(): Vec3[] | undefined {
+    const line = this.line;
+    return line && Array.from({ length: line.n }, (_, i) => ({ x: line.x[i], y: line.y[i], z: line.z[i] }));
+  }
 
   constructor() {
     this.mesh = new THREE.Mesh(this.geometry, new THREE.MeshBasicMaterial({

@@ -70,6 +70,14 @@ test('Cloudflare rooms synchronize, isolate, validate, reconnect and cleanly lea
     const board = await (await request(`/api/leaderboards/${track.id}`)).json() as any;
     assert.equal(board.verified, false); assert.deepEqual(board.entries.map((e: any) => [e.playerId,e.rank,e.timeMs,e.nickname]), [[guest.id,1,1000,'Guest'],[host.id,2,1500,'Renamed Host']]);
     assert.equal(board.entries[0].verified, false); assert.equal(board.entries[0].manual, true);
+    const tied = await (await request('/api/runs', other.token, { ...run, inputs: Array(60).fill(1), steering: Array(60).fill(1), drift: Array(60).fill(.5), timeMs: 1000 })).json() as any;
+    assert.deepEqual(tied.entries.map((e: any) => e.rank), [1,1,3], 'equal fastest times share first and the next driver is third');
+    assert.deepEqual(tied.entries.slice(0,2).map((e: any) => e.playerId), [guest.id,other.id], 'ties keep their original display order');
+    await request('/api/runs', third.token, run);
+    const secondTie = await (await request('/api/runs', third.token, faster)).json() as any;
+    assert.deepEqual(secondTie.entries.map((e: any) => e.rank), [1,1,3,3]);
+    const tiedBoard = await (await request(`/api/leaderboards/${track.id}`)).json() as any;
+    assert.deepEqual(tiedBoard.entries.map((e: any) => [e.playerId,e.rank]), [[guest.id,1],[other.id,1],[host.id,3],[third.id,3]], 'GET and submission responses use the same shared ranks');
     assert.equal((await request('/api/replays/00000000-0000-4000-8000-000000000000')).status, 404);
     assert.equal((await request('/api/leaderboards/missing')).status, 404);
     assert.equal((await request('/api/runs', host.token, { ...run, inputs: Array(18000).fill(1), steering: Array(18000).fill(1.77777777777777), drift: Array(18000).fill(1.55555555555555), timeMs: 300000 })).status, 413);

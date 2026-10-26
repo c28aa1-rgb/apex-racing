@@ -30,10 +30,14 @@ const CITY_GRID = Array.from({ length: 8 }, (_, i) => ({ position: { x: -703.5 +
 const CITY_PARTY_MS = 6 * 3_600_000;
 type Placement = { position: Vec3; heading: number };
 type CircuitConfig = { starts?: Record<string, Placement>; finishes?: Record<string, Placement>; checkpoints?: Record<string, Placement[]> };
+export const kickSchema = z.object({ id: z.string().min(1).max(64) }).strict();
 export const joinSchema = carSchema.extend({ code: z.string().trim().toUpperCase().regex(/^[A-HJ-NP-Z2-9]{6}$/, 'Enter the six-character lobby code.') });
 type Identity = Pick<PartyMember, 'id' | 'nickname'>;
-/** A lobby as the server keeps it: when each member was last heard from, and a city party's traffic while it runs. */
-type LiveLobby = PartyLobby & { seen: Map<string, number>; traffic?: PartyTraffic; seedFrom?: string; seedAsked?: number };
+/**
+ * A lobby as the server keeps it: when each member was last heard from, a city party's traffic while it runs, and
+ * kicked: drivers the host removed, who may not rejoin this lobby. Server-side only, never in a snapshot.
+ */
+type LiveLobby = PartyLobby & { seen: Map<string, number>; traffic?: PartyTraffic; seedFrom?: string; seedAsked?: number; kicked?: string[] };
 /** Drivers in a city party heard from this recently (ms) count as there: two or more run the server's traffic. */
 const PRESENT_MS = 4000;
 const fail = (statusCode: number, message: string): never => { throw Object.assign(new Error(message), { statusCode }); };
@@ -43,7 +47,9 @@ export class Parties {
   private rooms = new Map<string, LiveLobby>();
   private membership = new Map<string, string>();
   constructor(private now = Date.now, private random = Math.random) {}
-  exportState() { return [...this.rooms.values()].map(room => ({ ...this.snapshot(room), seen: [...room.seen] })); }
+  /** Drivers removed by a host who have not yet been told (see takeRemovedNotice). */
+  private removedNotices = new Set<string>();
+  exportState() { return [...this.rooms.values()].map(room => ({ ...this.snapshot(room), seen: [...room.seen], kicked: room.kicked ?? [] })); }
   restoreState(state: ReturnType<Parties['exportState']>) {
     this.rooms.clear(); this.membership.clear();
     for (const saved of state) {
@@ -120,6 +126,7 @@ export class Parties {
     const current = this.room(player.id);
     if (current && current !== room) return fail(409, 'Leave your current lobby before joining another.');
     if (current === room) { this.touch(room, player); return this.snapshot(room); }
+    if (room.kicked?.includes(player.id)) return fail(403, 'The host removed you from this lobby.');
     const joining = room.race && isCityParty(room.settings) && !room.race.ended;
     if (room.race && !joining) return fail(409, 'Race in progress. Wait for the host to reopen the lobby.');
     if (room.members.length >= room.settings.maxPlayers) return fail(409, 'This lobby is full. Ask the host to open another place.');
@@ -153,6 +160,21 @@ export class Parties {
     room.settings = { ...room.settings, ...patch }; room.revision++;
     return this.snapshot(room);
   }
+  /** The host removes another driver between races; they are told once and may not rejoin this lobby. */
+  kick(player: Identity, targetId: string) {
+    this.sweep();
+    const room = this.room(player.id);
+    if (!room) return fail(404, 'Your lobby has closed. Create or join a lobby.');
+    if (room.hostId !== player.id) return fail(403, 'Only the host can remove drivers.');
+    if (targetId === player.id) return fail(400, 'Leave the lobby instead of removing yourself.');
+    if (room.race) return fail(409, 'Drivers can be removed between races.');
+    if (!room.members.some(member => member.id === targetId)) return fail(404, 'That driver has already left.');
+    this.touch(room, player); this.remove(room, targetId);
+    room.kicked = [...(room.kicked ?? []), targetId]; this.removedNotices.add(targetId);
+    return this.snapshot(room);
+  }
+  /** True once for a driver whose host has just removed them, so their screen can say why their lobby went away. */
+  takeRemovedNotice(id: string) { return this.removedNotices.delete(id) && !this.room(id); }
   leave(player: Identity) {
     const room = this.room(player.id);
     if (room) this.remove(room, player.id);

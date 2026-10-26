@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { AnimatePresence, motion } from 'framer-motion';
-import { Crown, UserRound, RotateCcw } from 'lucide-react';
+import { Crown, UserRound, RotateCcw, X } from 'lucide-react';
 import { carById } from '../shared/cars';
 import type { PartyMember } from '../shared/party';
 import type { RaceWorld } from './world';
@@ -11,8 +11,10 @@ import { chosenLivery, dressedCar } from './storage';
 type Slot = { x: number; y: number; width: number };
 type Stage = { update: (members: PartyMember[], capacity: number) => void; retry: () => void; orbit: (dx: number) => void };
 
-export function PartyStage({ members, capacity, hostId, selfId, world, reduced, entrance = false }: {
+export function PartyStage({ members, capacity, hostId, selfId, world, reduced, entrance = false, onKick }: {
   members: PartyMember[]; capacity: number; hostId?: string; selfId?: string; world: RaceWorld; reduced: boolean; entrance?: boolean;
+  /** Host only: removes another driver from the lobby (asks first). */
+  onKick?: (member: PartyMember) => void;
 }) {
   const root = useRef<HTMLDivElement>(null), canvas = useRef<HTMLCanvasElement>(null), stage = useRef<Stage | null>(null);
   const [slots, setSlots] = useState<Slot[]>([]), [loaded, setLoaded] = useState<Record<string, string>>({}), [failed, setFailed] = useState<string[]>([]);
@@ -168,7 +170,7 @@ export function PartyStage({ members, capacity, hostId, selfId, world, reduced, 
           const member = members[index], slot = slots[index]; if (!slot) return null;
           return <li key={member?.id ?? `empty-${index}`} style={{ left: slot.x, top: slot.y, width: slot.width }} className={member ? 'occupied' : 'vacant'}>
             <motion.div initial={{ opacity: 0, y: reduced ? 0 : 5 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: reduced ? 0 : .22 }}>
-              {member ? <><strong>{member.id === hostId && <Crown size={13} aria-label="Host"/>}<span className="party-driver-name" title={member.nickname}>{member.nickname}</span>{member.id === selfId && <small>You</small>}</strong><span title={(member.id === selfId ? dressedCar(member.carId) : carById(member.carId)).name}>{(member.id === selfId ? dressedCar(member.carId) : carById(member.carId)).shortName}</span>{failed.includes(member.id) ? <button className="party-model-retry" onClick={() => stage.current?.retry()}><RotateCcw size={12}/> Retry model</button> : loaded[member.id] !== member.carId && <small className="party-model-loading" role="status">Loading car...</small>}</> : <><UserRound size={15}/><span>Open place</span></>}
+              {member ? <><strong>{member.id === hostId && <Crown size={13} aria-label="Host"/>}<span className="party-driver-name" title={member.nickname}>{member.nickname}</span>{member.id === selfId && <small>You</small>}{onKick && member.id !== selfId && <button className="party-kick" onClick={() => onKick(member)} aria-label={`Remove ${member.nickname} from the lobby`} title="Remove from lobby"><X size={13}/></button>}</strong><span title={(member.id === selfId ? dressedCar(member.carId) : carById(member.carId)).name}>{(member.id === selfId ? dressedCar(member.carId) : carById(member.carId)).shortName}</span>{failed.includes(member.id) ? <button className="party-model-retry" onClick={() => stage.current?.retry()}><RotateCcw size={12}/> Retry model</button> : loaded[member.id] !== member.carId && <small className="party-model-loading" role="status">Loading car...</small>}</> : <><UserRound size={15}/><span>Open place</span></>}
             </motion.div>
           </li>;
         })}

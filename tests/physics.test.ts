@@ -1,7 +1,7 @@
 import { before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { initPhysics, Simulation, Input, MAX_TICKS, PHYSICS_VERSION, rotate } from '../shared/physics';
-import { TRACKS, formatTime, medalFor, trackById } from '../shared/tracks';
+import { TRACKS, formatTime, trackById } from '../shared/tracks';
 import { buildRoadMesh } from '../shared/road';
 import { runSchema, validateReplay } from '../shared/replay';
 import { CARS } from '../shared/cars';
@@ -134,8 +134,7 @@ test('validator rejects forged times, extra inputs, old versions and unfinished 
   assert.equal(runSchema.safeParse({...run,inputs:[NaN]}).success,false);
   assert.equal(runSchema.safeParse({...run,extra:true}).success,false);
 });
-test('timer and medal boundaries are consistent',()=>{
+test('timer formatting and physics version are consistent',()=>{
   assert.equal(formatTime(61234),'01:01.234');assert.equal(formatTime(0),'00:00.000');
-  assert.equal(medalFor(TRACKS[0],TRACKS[0].medals[0]),'Gold');assert.equal(medalFor(TRACKS[0],TRACKS[0].medals[0]+1),'Silver');
   assert.equal(PHYSICS_VERSION,'apex-rapier0193-v36');
 });

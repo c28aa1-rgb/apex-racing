@@ -24,7 +24,8 @@ export type PartyLobby = {
   members: PartyMember[];
   race?: PartyRace;
 };
-export type PartyResponse = { lobby: PartyLobby | null };
+/** removed: this player was just removed from their lobby by its host (said once, when their lobby disappears). */
+export type PartyResponse = { lobby: PartyLobby | null; removed?: boolean };
 export const DEFAULT_PARTY_SETTINGS: PartySettings = { trackId: 'bugatti', weather: 'clear', laps: 3, maxPlayers: 4 };
 /** A city party: free roam together in Racing City (no laps or finish; friends can join while it runs). */
 export const CITY_PARTY_TRACK = 'racing-city';
