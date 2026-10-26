@@ -14,7 +14,7 @@ const fade: Variants = { hidden: { opacity: 0 }, shown: { opacity: 1, transition
 const still: Variants = { hidden: { opacity: 0 }, shown: { opacity: 1, transition: { duration: 0 } }, exit: { opacity: 0, transition: { duration: 0 } } };
 import { ArrowRight, Check, Copy, Crown, DoorOpen, Eye, Flag, Hash, ListOrdered, Minus, Plus, Sun, CloudRain, Snowflake, CloudFog, UsersRound, Wifi, WifiOff, X } from 'lucide-react';
 import { CARS, DEFAULT_CAR, carById } from '../shared/cars';
-import { CITY, TRACKS, formatTime } from '../shared/tracks';
+import { CITY, CITY_RACES, TRACKS, formatTime } from '../shared/tracks';
 import { DEFAULT_PARTY_SETTINGS, PARTY_WEATHER, isCityParty, type PartyWeather, type PartyRace, type PartyTrafficPacket } from '../shared/party';
 import { Game } from './game';
 import { api, dressedCar, write, type Player } from './storage';
@@ -130,9 +130,13 @@ export function PartyPanel({ game, active, player, onPlayer, reduced }: {
   const busy = party.busy || identityBusy || party.checking;
   const host = lobby?.hostId === player?.id;
   const settings = lobby?.settings ?? DEFAULT_PARTY_SETTINGS;
-  const city = isCityParty(settings);
-  const track = city ? CITY : TRACKS.find(track => track.id === settings.trackId)!;
-  const art = city ? 'art/free-roam-city.jpg' : `art/${track.id}.png`;
+  const city = isCityParty(settings), street = CITY_RACES.find(race => race.id === settings.trackId);
+  const track = city ? CITY : street ?? TRACKS.find(track => track.id === settings.trackId)!;
+  const art = city || street ? 'art/free-roam-city.jpg' : `art/${track.id}.png`;
+  /** A street race's own shape: its laps (built in) and length. */
+  /** A street race's own lap, from the gates passed (its gates go round all its laps). */
+  const streetLap = (checkpoint: number) => street ? Math.min(street.street!.laps, Math.floor(checkpoint * street.street!.laps / (street.checkpoints.length + 1)) + 1) : 1;
+  const streetFacts = street && <span>{street.street!.laps > 1 ? `${street.street!.laps} laps` : 'Sprint'}<i>/</i>{(street.length / 1609.344).toFixed(1)} mi<i>/</i>Police roadblocks</span>;
   const me = lobby?.members.find(member => member.id === player?.id);
   const selectedCar = carById(me?.carId ?? game.state.car.id);
   // Party grids use the same garage ownership as time trials; a locked garage preview joins in the starter car.
@@ -178,7 +182,7 @@ export function PartyPanel({ game, active, player, onPlayer, reduced }: {
     if (loading) return <section className="party-loading" role="status" aria-live="polite" aria-label="Joining race">
       <img src={assetUrl(art)} alt=""/>
       <div className="party-loading-card">
-        <span className="party-loading-kicker">{city ? 'City party · free roam together' : `Party race · ${settings.laps} ${settings.laps === 1 ? 'lap' : 'laps'} · ${weatherNames[settings.weather]}`}</span>
+        <span className="party-loading-kicker">{city ? 'City party · free roam together' : street ? `Street race · ${street.street!.laps > 1 ? `${street.street!.laps} laps` : 'sprint'} · Racing City` : `Party race · ${settings.laps} ${settings.laps === 1 ? 'lap' : 'laps'} · ${weatherNames[settings.weather]}`}</span>
         <h2>{track.name}</h2>
         <div className="party-loading-step">{!(raceError || error) && <span className="party-loading-spinner" aria-hidden="true"/>}<strong>{raceError || error || step}</strong></div>
         <ul className="party-loading-drivers">{raceState.racers.map(r => <li key={r.id} className={r.ready ? 'is-ready' : ''}><span>{r.nickname}{r.id === player?.id ? ' (you)' : ''}</span><small>{r.disconnected ? 'Left' : r.ready ? 'Ready' : 'Loading…'}</small></li>)}</ul>
@@ -196,7 +200,7 @@ export function PartyPanel({ game, active, player, onPlayer, reduced }: {
       <div className="party-race-actions">{host && <button className="party-leave" disabled={busy} onClick={() => void party.reopen()}><Flag size={17}/>Back to lobby</button>}<button className="party-leave" disabled={busy} onClick={() => void party.leave()}><DoorOpen size={17}/>Leave</button></div>
     </section>;
     return <section className={`party-race ${showResults ? 'shows-results' : ''}`} aria-label="Party race">
-      {showResults && <PartyResults race={raceState} racers={racers} selfId={player?.id} bestLap={bestLap} laps={settings.laps}
+      {showResults && <PartyResults race={raceState} racers={racers} selfId={player?.id} bestLap={bestLap} laps={street ? street.street!.laps : settings.laps}
         host={host} hostName={hostName} busy={busy} reduced={reduced} onClose={() => setResultsClosed(true)}
         onLobby={() => void party.reopen()} onLeave={() => void party.leave()}/>}
       {spectating && <div className="party-spectate" role="group" aria-label="Spectator camera" data-watching={watchedName ? "true" : undefined}>
@@ -208,12 +212,12 @@ export function PartyPanel({ game, active, player, onPlayer, reduced }: {
         {!watchable.length && <small>Everyone has finished</small>}
       </div>}
       <div className="party-race-status">{raceState.startAt && place > 0 && !raceState.racers.find(r => r.id === player?.id)?.disconnected && <b className="party-position" aria-label={`Position ${place} of ${field}`}>P{place}<small>/{field}</small></b>}
-        <div><strong>{raceState.ended ? 'Race results' : !game.partyRace?.ready ? 'Preparing grid' : !raceState.startAt ? 'Waiting for drivers' : game.partyRace.finished ? 'Finished' : `Lap ${game.partyRace.lap} / ${settings.laps}`}</strong><span>{track.name} · {weatherNames[settings.weather]}</span></div></div>
+        <div><strong>{raceState.ended ? 'Race results' : !game.partyRace?.ready ? 'Preparing grid' : !raceState.startAt ? 'Waiting for drivers' : game.partyRace.finished ? 'Finished' : street ? `Lap ${streetLap(game.sim.checkpoint)} / ${street.street!.laps}` : `Lap ${game.partyRace.lap} / ${settings.laps}`}</strong><span>{track.name} · {street ? 'Night' : weatherNames[settings.weather]}</span></div></div>
       <ol className="party-race-order">{racers.map((racer, i) => {
         const best = bestLap(racer), finished = !!racer.finishedAt || raceState.ended;
         return <li key={racer.id} className={racer.id === player?.id ? 'is-you' : ''}>
           <b className="party-place">{racer.disconnected ? '–' : `P${i + 1}`}</b><span>{racer.nickname}</span>
-          <strong>{racer.disconnected ? 'DNF' : racer.finishedAt ? formatTime(racer.finishedAt - raceState.startAt!) : !racer.ready ? 'Loading' : !raceState.startAt ? 'Ready' : `Lap ${racer.id === player?.id ? game.partyRace?.lap ?? 1 : racer.pose?.lap ?? 1}`}</strong>
+          <strong>{racer.disconnected ? 'DNF' : racer.finishedAt ? formatTime(racer.finishedAt - raceState.startAt!) : !racer.ready ? 'Loading' : !raceState.startAt ? 'Ready' : `Lap ${street ? streetLap(racer.id === player?.id ? game.sim.checkpoint : racer.pose?.checkpoint ?? 0) : racer.id === player?.id ? game.partyRace?.lap ?? 1 : racer.pose?.lap ?? 1}`}</strong>
           {finished && best && <small className={best === fastest ? 'party-best fastest' : 'party-best'}>{best === fastest ? 'Fastest lap ' : 'Best lap '}{formatTime(best)}</small>}
         </li>;
       })}</ol>
@@ -246,15 +250,15 @@ export function PartyPanel({ game, active, player, onPlayer, reduced }: {
           <span className="party-car-drive">{selectedCar.physics.drivetrain}</span>
         </div>
         <div className="party-section-title"><h2>Race setup</h2><span><Crown size={14}/>{host ? 'You are host' : `${hostName} hosts`}</span></div>
-        <div className="party-track-art"><img src={assetUrl(art)} alt={city ? 'Racing City' : `${track.name} circuit map`}/><span>{city ? 'Free roam together' : track.subtitle}</span></div>
-        <label className="party-field"><span>Circuit</span>{host ? <select aria-label="Circuit" value={settings.trackId} disabled={busy || !party.connected} onChange={event => void party.configure({ trackId: event.target.value })}>{TRACKS.map(track => <option key={track.id} value={track.id}>{track.name}</option>)}<option value={CITY.id}>Racing City · free roam</option></select> : <strong data-testid="party-track">{city ? 'Racing City · free roam' : track.name}</strong>}</label>
-        {!city && <><fieldset className="party-weather" disabled={!host || busy || !party.connected}><legend>Weather</legend><div>{PARTY_WEATHER.map(weather => {
+        <div className="party-track-art"><img src={assetUrl(art)} alt={city ? 'Racing City' : `${track.name} circuit map`}/><span>{city ? 'Free roam together' : street ? `Racing City · ${track.subtitle}` : track.subtitle}</span></div>
+        <label className="party-field"><span>Circuit</span>{host ? <select aria-label="Circuit" value={settings.trackId} disabled={busy || !party.connected} onChange={event => void party.configure({ trackId: event.target.value })}><optgroup label="Circuits">{TRACKS.map(track => <option key={track.id} value={track.id}>{track.name}</option>)}</optgroup><optgroup label="Racing City">{CITY_RACES.map(race => <option key={race.id} value={race.id}>{race.name} · street race</option>)}<option value={CITY.id}>Free roam together</option></optgroup></select> : <strong data-testid="party-track">{city ? 'Racing City · free roam' : street ? `${track.name} · street race` : track.name}</strong>}</label>
+        {!city && !street && <><fieldset className="party-weather" disabled={!host || busy || !party.connected}><legend>Weather</legend><div>{PARTY_WEATHER.map(weather => {
           const WeatherIcon = weatherIcons[weather];
           return <label key={weather} title={weatherNames[weather]} className={settings.weather === weather ? 'selected' : ''}><input type="radio" aria-label={weatherNames[weather]} name="party-weather" value={weather} checked={settings.weather === weather} onChange={() => void party.configure({ weather })}/><WeatherIcon size={20}/><span>{weatherNames[weather]}</span></label>;
         })}</div></fieldset>
         <div className="party-setting-row"><label htmlFor="party-laps">Laps</label>{host ? <Laps value={settings.laps} disabled={busy || !party.connected} onChange={laps => void party.configure({ laps })}/> : <strong data-testid="party-laps">{settings.laps}</strong>}</div></>}
         <div className="party-setting-row"><label htmlFor="party-capacity">Player limit</label>{host ? <select id="party-capacity" value={settings.maxPlayers} disabled={busy || !party.connected} onChange={event => void party.configure({ maxPlayers: Number(event.target.value) })}>{[2,3,4,5,6,7,8].map(n => <option key={n} value={n} disabled={n < lobby.members.length}>{n} drivers</option>)}</select> : <strong>{settings.maxPlayers} drivers</strong>}</div>
-        <div className="party-session-summary" aria-live="polite"><Flag size={17}/>{city ? <span>Night city<i>/</i>Shared traffic<i>/</i>Friends can join any time</span> : <span>{settings.laps} {settings.laps === 1 ? 'lap' : 'laps'}<i>/</i>{weatherNames[settings.weather]}<i>/</i>{(track.length * settings.laps / 1609.344).toFixed(1)} mi</span>}</div>
+        <div className="party-session-summary" aria-live="polite"><Flag size={17}/>{city ? <span>Night city<i>/</i>Shared traffic<i>/</i>Friends can join any time</span> : streetFacts ? streetFacts : <span>{settings.laps} {settings.laps === 1 ? 'lap' : 'laps'}<i>/</i>{weatherNames[settings.weather]}<i>/</i>{(track.length * settings.laps / 1609.344).toFixed(1)} mi</span>}</div>
         {host ? <button className="party-primary" disabled={busy || !party.connected} onClick={() => void party.start()}><Flag size={18}/>{city ? 'Drive together' : 'Start race'}</button> : <p className="party-lobby-status">Waiting for host<span>{lobby.members.length} of {settings.maxPlayers} places filled</span></p>}
       </motion.aside> : <motion.aside className="party-entry" aria-label="Create or join a lobby" variants={reduced ? still : fromRight}>
         <label className="party-field" htmlFor="party-nickname"><span>Driver name</span><input id="party-nickname" autoComplete="nickname" placeholder="Your name" minLength={2} maxLength={18} value={nickname} onChange={event => setNickname(event.target.value)} aria-describedby="party-name-hint"/></label>

@@ -554,7 +554,8 @@ export class Game {
     this.partyOriginalTrack=this.state.track;this.partySelf=selfId;this.partyPlace=undefined;
     // A city party is free roam together in the city: no laps, no finish, traffic shared through the server.
     const city=isCityParty(lobby.settings);
-    const track=structuredClone(city?CITY:TRACKS.find(t=>t.id===lobby.settings.trackId)!);
+    // A street race in the city is raced like a circuit, with its own roadblocks and its own traffic on each screen.
+    const track=structuredClone(city?CITY:CITY_RACES.find(t=>t.id===lobby.settings.trackId)??TRACKS.find(t=>t.id===lobby.settings.trackId)!);
     track.spawn=structuredClone(race.grid[me.slot]);track.checkpoints=structuredClone(race.checkpoints);track.finish=structuredClone(race.finish);
     this.partyFinishDriver=undefined;this.spectating=undefined;this.partySeedWanted=false;
     this.partyRace={id:race.id,lap:me.pose?.lap??1,laps:lobby.settings.laps,ready:false,started:false,finished:!!(me.finishedAt||me.disconnected||race.ended),city};
@@ -562,8 +563,8 @@ export class Game {
     this.inputs=[];this.steeringInputs=[];this.driftInputs=[];this.accumulator=0;this.previousFrame=undefined;
     this.lastCheckpoint=0;this.lastRespawns=0;this.queuedRespawn=false;this.queuedFlip=false;this.pendingShifts=0;this.seenBlockedShifts=0;
     this.ghostSim?.dispose();this.ghostSim=undefined;this.ghostRun=undefined;this.chosenGhost=undefined;this.world.ghostFrame(undefined);this.world.endFinish();
-    this.partyWeather=lobby.settings.weather;this.world.setTrack(track);this.world.setWeather(lobby.settings.weather);if(city)this.world.setHeadlights(true);
-    this.partyLoadStep=city?'Loading the city':'Loading circuit';
+    this.partyWeather=lobby.settings.weather;this.world.setTrack(track);this.world.setWeather(lobby.settings.weather);if(track.night)this.world.setHeadlights(true);
+    this.partyLoadStep=track.night?'Loading the city':'Loading circuit';
     const myCar=dressed(me.carId);this.sound.look=lookOf(myCar);
     this.emit({mode:'party-loading',track,car:myCar,trackReady:false,modelReady:false,time:0,speed:0,checkpoint:0,run:undefined,newBest:false,notice:'',ghostSplit:undefined,ghostTiming:undefined});
     await initPhysics(track);
@@ -576,7 +577,7 @@ export class Game {
     if(this.partyRace?.id!==race.id)return;
     if(!loaded)throw new Error('Your car could not load. Return to lobby and retry.');
     if(this.world.venueLoadError)throw new Error(this.world.venueLoadError);
-    if(city){
+    if(track.night){
       this.partyLoadStep='Starting traffic';this.emit();
       const p=this.sim.car.translation();await this.world.startTraffic(new Vector3(p.x,p.y,p.z));
       if(this.partyRace?.id!==race.id)return;

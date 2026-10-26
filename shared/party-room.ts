@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { CAR_IDS, type CarId } from './cars';
-import { CITY, trackById, placementGate, type Vec3 } from './tracks';
+import { CITY, trackById, placementGate, type Track, type Vec3 } from './tracks';
 import { CITY_PARTY_TRACK, DEFAULT_PARTY_SETTINGS, PARTY_WEATHER, isCityParty, type PartyLobby, type PartyMember, type PartySettings, type PartyPose, type PartyTrafficPacket } from './party';
 import { PARTY_GRIDS } from './party-grids';
 import { PartyTraffic, MAX_SEED, type TrafficKnock } from './city-party-traffic';
@@ -8,7 +8,7 @@ import { PartyTraffic, MAX_SEED, type TrafficKnock } from './city-party-traffic'
 const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 export const PARTY_PRESENCE_MS = 120_000;
 export const settingsSchema = z.object({
-  trackId: z.string().refine(id => id === CITY_PARTY_TRACK || Boolean(trackById(id) && !trackById(id)!.lot && !trackById(id)!.street), 'Choose an available circuit.'),
+  trackId: z.string().refine(id => id === CITY_PARTY_TRACK || Boolean(trackById(id) && !trackById(id)!.lot), 'Choose an available circuit.'),
   weather: z.enum(PARTY_WEATHER),
   laps: z.number().int().min(1).max(99),
   maxPlayers: z.number().int().min(2).max(8),
@@ -26,6 +26,28 @@ const trafficSchema = z.object({ knocks: z.array(knockSchema).max(8).optional(),
 export const updateSchema = z.object({ raceId: z.string().uuid(), ready: z.boolean(), pose: poseSchema.optional(), traffic: trafficSchema.optional() }).strict();
 /** Where a city party's drivers start: two columns on the acceleration strip by the city's spawn, 10 m apart. */
 const CITY_GRID = Array.from({ length: 8 }, (_, i) => ({ position: { x: -703.5 + (i % 2) * 7, y: 0, z: -285 + Math.floor(i / 2) * 11 }, heading: 0 }));
+/**
+ * Eight grid places for a street race: in twos, 3.5 m either side of the road's centre line, from 8 m behind the
+ * start line back in rows 9 m apart, each facing along the road where it stands.
+ */
+function streetGrid(track: Track) {
+  const route = track.street!.route, start = track.start, n = route.length;
+  let index = 0, best = Infinity;
+  route.forEach((p, i) => { const d = Math.hypot(p[0] - start.position.x, p[2] - start.position.z); if (d < best) { best = d; index = i; } });
+  // The route point `s` metres from its first point (round a loop; straight on before the start of a sprint).
+  const pointAt = (s: number) => {
+    const span = n * 5;
+    if (track.street!.closed) s = ((s % span) + span) % span;
+    const i = Math.max(0, Math.min(n - 2, Math.floor(s / 5))), t = s / 5 - i;
+    const a = route[i], b = route[track.street!.closed ? (i + 1) % n : i + 1], dx = b[0] - a[0], dz = b[2] - a[2], l = Math.hypot(dx, dz) || 1;
+    return { x: a[0] + dx * t, y: a[1] + (b[1] - a[1]) * Math.max(0, t), z: a[2] + dz * t, fx: dx / l, fz: dz / l };
+  };
+  const behind = (back: number) => pointAt(index * 5 - back);
+  return Array.from({ length: 8 }, (_, slot) => {
+    const p = behind(8 + Math.floor(slot / 2) * 9), side = slot % 2 ? 3.5 : -3.5, right = { x: -p.fz, z: p.fx };
+    return placementGate(track, { position: { x: p.x + right.x * side, y: p.y, z: p.z + right.z * side }, heading: Math.atan2(p.fx, p.fz) });
+  });
+}
 /** A city party runs this long at most; races end after an hour. */
 const CITY_PARTY_MS = 6 * 3_600_000;
 type Placement = { position: Vec3; heading: number };
@@ -158,6 +180,8 @@ export class Parties {
     if (patch.maxPlayers !== undefined && patch.maxPlayers < room.members.length) return fail(409, 'Player limit cannot be lower than the current lineup.');
     this.touch(room, player);
     room.settings = { ...room.settings, ...patch }; room.revision++;
+    // A street race has its laps built in (its gates go round them all): the party counts it as one.
+    if (trackById(room.settings.trackId)?.street) room.settings.laps = 1;
     return this.snapshot(room);
   }
   /** The host removes another driver between races; they are told once and may not rejoin this lobby. */
@@ -192,6 +216,16 @@ export class Parties {
       return this.snapshot(room);
     }
     const track = trackById(room.settings.trackId)!, layout = PARTY_GRIDS[track.id as keyof typeof PARTY_GRIDS];
+    if (track.street) {
+      // A city street race: drivers line up in twos behind its start line, following the road.
+      room.settings.laps = 1;
+      const order = room.members.map((_, i) => i);
+      for (let i = order.length - 1; i > 0; i--) { const j = Math.floor(this.random() * (i + 1)); [order[i], order[j]] = [order[j], order[i]]; }
+      room.race = { id: crypto.randomUUID(), createdAt: this.now(), startAt: null, ended: false, grid: streetGrid(track), checkpoints: structuredClone(track.checkpoints), finish: structuredClone(track.finish),
+        racers: room.members.map((member, i) => ({ ...member, slot: order[i], ready: false })) };
+      this.touch(room, player); room.revision++;
+      return this.snapshot(room);
+    }
     const saved = config.starts?.[track.id];
     if (saved && (Math.hypot(saved.position.x - layout.anchor.position.x, saved.position.y - layout.anchor.position.y, saved.position.z - layout.anchor.position.z) > .1 || Math.abs(saved.heading - layout.anchor.heading) > .01)) return fail(409, 'This start position changed. Revalidate the eight grid slots before racing.');
     const order = room.members.map((_, i) => i);
