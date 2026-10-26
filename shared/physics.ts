@@ -100,6 +100,15 @@ export async function collisionGeometry(track: Track) {
   if (!geometry) throw new Error(`Missing physical geometry for ${track.name}.`);
   return geometry;
 }
+/**
+ * Street race gates span the whole road (its width plus 2 m a side), not just the up-to-23 m of asphalt the fitting
+ * measures: city avenues are wider than that, and a car in a curb lane would cross a gate without it counting.
+ */
+function streetGates(track: Track, gates: { checkpoints: FittedGate[]; finish: FittedGate }) {
+  if (track.kind !== 'street') return gates;
+  const widen = (gate: FittedGate, source: Gate) => ({ ...gate, roadLeft: Math.min(gate.roadLeft, -source.width / 2), roadRight: Math.max(gate.roadRight, source.width / 2) });
+  return { checkpoints: gates.checkpoints.map((gate, i) => widen(gate, track.checkpoints[i])), finish: widen(gates.finish, track.finish) };
+}
 export type Frame = { p: Vec3; q: Quat };
 export function rotate(q: Quat, a: Vec3): Vec3 {
   const tx = 2 * (q.y * a.z - q.z * a.y), ty = 2 * (q.z * a.x - q.x * a.z), tz = 2 * (q.x * a.y - q.y * a.x);
@@ -204,7 +213,7 @@ export class Simulation {
   get gates() {
     const { checkpoints, finish } = this.track;
     if (this.gateSource?.checkpoints !== checkpoints || this.gateSource.finish !== finish)
-      this.gateSource = { checkpoints, finish, gates: fittedGates(this.track, collisionMeshes.get(meshKey(this.track))) };
+      this.gateSource = { checkpoints, finish, gates: streetGates(this.track, fittedGates(this.track, collisionMeshes.get(meshKey(this.track)))) };
     return this.gateSource.gates;
   }
   /** Pose the car starts from, and returns to when it is respawned before the first checkpoint. */

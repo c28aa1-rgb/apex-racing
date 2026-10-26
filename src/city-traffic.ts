@@ -735,6 +735,7 @@ export class CityTraffic {
     this.solid(sim, player);
     if (dt > 0) this.props?.update(dt, sim, player);
     this.syncPuppets(sim);
+    this.race.showGates(sim, this.camera ? this.eye : undefined);
     this.render();
   }
 
