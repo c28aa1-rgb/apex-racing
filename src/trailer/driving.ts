@@ -81,7 +81,7 @@ export class DriveSession {
   }
   private build(pose?:Pose) {
     this.sim?.dispose();
-    this.sim=new Simulation(this.track,this.carId);
+    this.sim=new Simulation(this.track,this.carId);this.sim.manual=loadSettings().advancedDriving;
     if(pose)this.place(pose);
     this.travel=0;this.accumulator=0;this.last.copy(this.sim.car.translation() as THREE.Vector3);
   }
@@ -99,7 +99,7 @@ export class DriveSession {
     if((event.target as HTMLElement).closest?.('input,textarea,select'))return;
     const action=(Object.keys(this.bindings) as Action[]).find(a=>this.bindings[a].includes(event.code));
     if(!action)return;
-    if(!['throttle','brake','left','right','drift','recover','flip','restart'].includes(action))return;
+    if(!['throttle','brake','left','right','drift','shiftUp','shiftDown','recover','flip','restart'].includes(action))return;
     event.preventDefault();this.keys.add(event.code);
     if(event.repeat)return;
     if(action==='recover')this.queuedRespawn=true;
@@ -115,7 +115,9 @@ export class DriveSession {
     if(this.held('brake'))input|=Input.Brake;
     if(this.held('left'))input|=Input.Left;
     if(this.held('right'))input|=Input.Right;
-    if(this.held('drift'))input|=Input.Drift;
+    if(!this.sim.manual&&this.held('drift'))input|=Input.Drift;
+    if(this.held('shiftUp'))input|=Input.ShiftUp;
+    if(this.held('shiftDown'))input|=Input.ShiftDown;
     if(this.queuedRespawn)input|=Input.Respawn;
     if(this.queuedFlip)input|=Input.Flip;
     this.queuedRespawn=this.queuedFlip=false;

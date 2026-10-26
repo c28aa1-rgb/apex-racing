@@ -267,7 +267,7 @@ button:disabled{cursor:not-allowed}select:focus-visible{outline:2px solid #a8dad
 .reduce-motion .volume-popover{transition:none;transform:none}
 @media(prefers-reduced-motion:reduce){.volume-popover{transition:none;transform:none}}
 
-.track-loading{position:fixed;inset:0;z-index:30;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px;text-align:center;background:radial-gradient(ellipse at 50% 45%,#16384af2,#091923fa);backdrop-filter:blur(10px)}.track-loading strong{font-family:Shoulders;font-size:44px;line-height:1.1;letter-spacing:.04em;text-transform:uppercase}.track-loading span{font-size:15px;color:#d6ecef}.track-loading small{font-size:11px;color:#a6c3cb}
+.track-loading{position:fixed;inset:0;z-index:30;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px;text-align:center;background:radial-gradient(ellipse at 50% 45%,#16384af2,#091923fa);backdrop-filter:blur(10px);pointer-events:auto}.track-loading strong{font-family:Shoulders;font-size:44px;line-height:1.1;letter-spacing:.04em;text-transform:uppercase}.track-loading span{font-size:15px;color:#d6ecef}.track-loading small{font-size:11px;color:#a6c3cb}
 /* Car purchases: affordable cars glow in the roster; buying plays the unlock moment. */
 /* Nickname pit board: hangs from the nickname button on a cord after a race. */
 .profile-anchor{position:relative;display:flex}

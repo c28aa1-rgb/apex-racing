@@ -41,6 +41,7 @@ export class Store {
     await this.query('ALTER TABLE scores ADD COLUMN IF NOT EXISTS steering JSONB');
     await this.query('ALTER TABLE scores ADD COLUMN IF NOT EXISTS drift JSONB');
     await this.query('ALTER TABLE scores ADD COLUMN IF NOT EXISTS manual BOOLEAN');
+    await this.query('ALTER TABLE scores ADD COLUMN IF NOT EXISTS gear_drift BOOLEAN');
     // Weather the run was driven in (fog, rain, snow); null is clear. Every weather shares one leaderboard.
     await this.query('ALTER TABLE scores ADD COLUMN IF NOT EXISTS weather TEXT');
   }
@@ -55,12 +56,12 @@ export class Store {
   }
   async rename(id: string, nickname: string) { await this.query('UPDATE players SET nickname=$2 WHERE id=$1', [id, nickname]); }
   async save(playerId: string, run: Run) {
-    const rows = await this.query(`INSERT INTO scores(id,player_id,track_id,track_version,physics_version,car_id,time_ms,inputs,steering,drift,manual,weather)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb,$10::jsonb,$11,$12)
+    const rows = await this.query(`INSERT INTO scores(id,player_id,track_id,track_version,physics_version,car_id,time_ms,inputs,steering,drift,manual,weather,gear_drift)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb,$10::jsonb,$11,$12,$13)
       ON CONFLICT(player_id,track_id,track_version,physics_version) DO UPDATE
-      SET car_id=EXCLUDED.car_id, time_ms=EXCLUDED.time_ms, inputs=EXCLUDED.inputs, steering=EXCLUDED.steering, drift=EXCLUDED.drift, manual=EXCLUDED.manual, weather=EXCLUDED.weather, created_at=NOW()
+      SET car_id=EXCLUDED.car_id, time_ms=EXCLUDED.time_ms, inputs=EXCLUDED.inputs, steering=EXCLUDED.steering, drift=EXCLUDED.drift, manual=EXCLUDED.manual, weather=EXCLUDED.weather, gear_drift=EXCLUDED.gear_drift, created_at=NOW()
       WHERE EXCLUDED.time_ms < scores.time_ms RETURNING id`,
-    [randomUUID(), playerId, run.trackId, run.trackVersion, run.physicsVersion, run.carId, run.timeMs, JSON.stringify(run.inputs), run.steering ? JSON.stringify(run.steering) : null,run.drift?JSON.stringify(run.drift):null,run.manual??null,run.weather??null]);
+    [randomUUID(), playerId, run.trackId, run.trackVersion, run.physicsVersion, run.carId, run.timeMs, JSON.stringify(run.inputs), run.steering ? JSON.stringify(run.steering) : null,run.drift?JSON.stringify(run.drift):null,run.manual??null,run.weather??null,run.gearDrift??null]);
     return { improved: rows.length > 0 };
   }
   async leaderboard(trackId: string, version: number) {
@@ -72,10 +73,11 @@ export class Store {
   }
   async replay(id: string) {
     const row = (await this.query(`SELECT track_id AS "trackId", track_version AS "trackVersion",
-      physics_version AS "physicsVersion", car_id AS "carId", time_ms AS "timeMs", inputs, steering, drift, manual, weather FROM scores WHERE id=$1`, [id]))[0];
+      physics_version AS "physicsVersion", car_id AS "carId", time_ms AS "timeMs", inputs, steering, drift, manual, weather, gear_drift AS "gearDrift" FROM scores WHERE id=$1`, [id]))[0];
     if (row?.steering == null && row) delete row.steering;
     if(row?.drift==null&&row)delete row.drift;
     if(row?.manual==null&&row)delete row.manual;
+    if(row?.gearDrift==null&&row)delete row.gearDrift;
     if(row?.weather==null&&row)delete row.weather;
     return row;
   }

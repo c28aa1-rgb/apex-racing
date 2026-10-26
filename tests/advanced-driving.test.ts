@@ -22,7 +22,7 @@ test('manual cars require upshifts, obey their limiter and replay deterministica
   for(const car of CARS){const track=handlingTrack(),low=new Simulation(track,car.id),shifted=new Simulation(track,car.id),replay=new Simulation(track,car.id),inputs:number[]=[];low.manual=shifted.manual=true;
     try{for(let i=0;i<900;i++){let input:number=Input.Throttle;if(i%20===0&&shifted.engine.load>.89)input|=Input.ShiftUp;inputs.push(input);low.step(Input.Throttle);shifted.step(input);}
       assert.equal(low.gear,1,car.id);assert.ok(low.speed<engineState(car,0,1).top*1.05,`${car.id} first-gear limiter`);assert.ok(shifted.gear>1,`${car.id} can upshift`);assert.ok(shifted.speed>low.speed*1.6,`${car.id} shifting unlocks speed`);
-      const run:Run={trackId:track.id,trackVersion:track.version,physicsVersion:PHYSICS_VERSION,carId:car.id,timeMs:shifted.timeMs,inputs,manual:true};assert.ok(runSchema.safeParse(run).success);
+      const run:Run={trackId:track.id,trackVersion:track.version,physicsVersion:PHYSICS_VERSION,carId:car.id,timeMs:shifted.timeMs,inputs,manual:true,gearDrift:true};assert.ok(runSchema.safeParse(run).success);
       inputs.forEach(()=>stepReplay(replay,run));assert.deepEqual(shifted.world.takeSnapshot(),replay.world.takeSnapshot(),car.id);assert.equal(shifted.gear,replay.gear);assert.equal(shifted.engine.rpm,replay.engine.rpm);
     }finally{low.dispose();shifted.dispose();replay.dispose();}
   }
@@ -79,7 +79,7 @@ test('key rebinding preserves alternates, allows shared keys with a warning, and
 
 test('optional manual replay data survives idempotent database expansion; legacy rows stay unchanged',async()=>{
   const store=new Store();await store.init();await store.init();
-  try{const player=await store.createPlayer('Manual driver'),track=handlingTrack(),run:Run={trackId:track.id,trackVersion:track.version,physicsVersion:PHYSICS_VERSION,carId:CARS[0].id,timeMs:50,inputs:[1,129,1],manual:true};await store.save(player.id,run);const rows=await store.leaderboard(track.id,track.version);assert.deepEqual(await store.replay(rows[0].id as string),run);
-    const old=await store.createPlayer('Automatic driver'),legacy={...run,manual:undefined,inputs:[1,1,1]};delete legacy.manual;await store.save(old.id,legacy);const board=await store.leaderboard(track.id,track.version);assert.deepEqual(await store.replay(board.find(r=>r.playerId===old.id)!.id as string),legacy);
+  try{const player=await store.createPlayer('Manual driver'),track=handlingTrack(),run:Run={trackId:track.id,trackVersion:track.version,physicsVersion:PHYSICS_VERSION,carId:CARS[0].id,timeMs:50,inputs:[1,129,1],manual:true,gearDrift:true};await store.save(player.id,run);const rows=await store.leaderboard(track.id,track.version);assert.deepEqual(await store.replay(rows[0].id as string),run);
+    const old=await store.createPlayer('Automatic driver'),legacy={...run,manual:undefined,gearDrift:undefined,inputs:[1,1,1]};delete legacy.manual;delete legacy.gearDrift;await store.save(old.id,legacy);const board=await store.leaderboard(track.id,track.version);assert.deepEqual(await store.replay(board.find(r=>r.playerId===old.id)!.id as string),legacy);
   }finally{await store.close();}
 });

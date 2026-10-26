@@ -48,7 +48,7 @@ test('Cloudflare rooms synchronize, isolate, validate, reconnect and cleanly lea
     const identities = await Promise.all(['Host', 'Guest', 'Other', 'Third'].map(async nickname => (await request('/api/players', undefined, { nickname })).json() as Promise<{ id: string; token: string }>));
     const [host, guest, other, third] = identities;
     const track = TRACKS[0];
-    const run = { trackId: track.id, trackVersion: track.version, physicsVersion: PHYSICS_VERSION, carId: 'celica-gt4', timeMs: 2000, inputs: Array(120).fill(1), steering: Array(120).fill(1), drift: Array(120).fill(.5), manual: true };
+    const run = { trackId: track.id, trackVersion: track.version, physicsVersion: PHYSICS_VERSION, carId: 'celica-gt4', timeMs: 2000, inputs: Array(120).fill(1), steering: Array(120).fill(1), drift: Array(120).fill(.5), manual: true, gearDrift: true };
     assert.equal((await request('/api/runs', undefined, run)).status, 401);
     assert.equal((await request('/api/runs', host.token, { ...run, physicsVersion: 'obsolete' })).status, 422);
     assert.equal((await request('/api/runs', host.token, { ...run, timeMs: 1 })).status, 422);

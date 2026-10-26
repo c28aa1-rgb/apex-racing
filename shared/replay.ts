@@ -8,6 +8,7 @@ export type ReplayResult = { timeMs: number; ticks: number; checkpoints: number;
 /** Reproduce live tuner changes as well as keys, on both server and browser. */
 export function stepReplay(sim: Simulation, run: Run) {
   sim.manual=run.manual??false;
+  sim.gearDrift=run.gearDrift??false;
   sim.weather=run.weather??'clear';
   sim.steeringStrength=run.steering?.[sim.ticks]??1;
   sim.driftStrength=run.drift?.[sim.ticks]??1;

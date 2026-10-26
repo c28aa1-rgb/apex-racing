@@ -203,7 +203,7 @@ export class Game {
     // Send one queued shift per gearbox-ready tick, with a released tick between presses.
     let shift=0;
     if(this.pendingShifts&&this.sim.shiftReady&&!(this.sim.previousInput&(Input.ShiftUp|Input.ShiftDown))){shift=this.pendingShifts>0?Input.ShiftUp:Input.ShiftDown;this.pendingShifts-=Math.sign(this.pendingShifts);}
-    return (this.held('throttle')&&(performance.now()>=this.bogUntil||this.sim.ticks%3===0)?Input.Throttle:0)|(this.held('brake')?Input.Brake:0)|(this.held('left')?Input.Left:0)|(this.held('right')?Input.Right:0)|(this.held('drift')?Input.Drift:0)|(respawn?Input.Respawn:0)|(flip?Input.Flip:0)|shift;
+    return (this.held('throttle')&&(performance.now()>=this.bogUntil||this.sim.ticks%3===0)?Input.Throttle:0)|(this.held('brake')?Input.Brake:0)|(this.held('left')?Input.Left:0)|(this.held('right')?Input.Right:0)|(!this.sim.manual&&this.held('drift')?Input.Drift:0)|(respawn?Input.Respawn:0)|(flip?Input.Flip:0)|shift;
   }
   /** When the throttle was last pressed (continuously held since), and until when a false start keeps the engine bogged down. */
   private throttleDownAt=-1;private bogUntil=0;
@@ -419,7 +419,7 @@ export class Game {
     if(Math.round(combo)!==Math.round(this.state.driftCombo)||best!==this.state.driftBest)this.emit({driftCombo:combo,driftBest:best});
   }
   private finish() {
-    const run:Run={trackId:this.state.track.id,trackVersion:this.state.track.version,physicsVersion:PHYSICS_VERSION,carId:this.state.car.id,timeMs:this.sim.timeMs,inputs:[...this.inputs],steering:[...this.steeringInputs],drift:[...this.driftInputs],...(this.runManual?{manual:true}:{}),...(this.runWeather!=='clear'?{weather:this.runWeather}:{}),...(this.runOrigin&&this.state.track.kind==='cones'?{origin:this.runOrigin}:{})};
+    const run:Run={trackId:this.state.track.id,trackVersion:this.state.track.version,physicsVersion:PHYSICS_VERSION,carId:this.state.car.id,timeMs:this.sim.timeMs,inputs:[...this.inputs],gearDrift:true,steering:[...this.steeringInputs],drift:[...this.driftInputs],...(this.runManual?{manual:true}:{}),...(this.runWeather!=='clear'?{weather:this.runWeather}:{}),...(this.runOrigin&&this.state.track.kind==='cones'?{origin:this.runOrigin}:{})};
     const custom=hasLocalStartPlacement(this.state.track);
     const best=bestRun(this.state.track);const newBest=!best||run.timeMs<best.timeMs;
     if(this.state.track.kind==='cones'){this.finishConeRun(run,newBest,best?.timeMs);return;}
