@@ -42,6 +42,7 @@ export function tireStress(sim:Simulation) {
 const SAMPLES={idleGt3:'idle-porsche-gt3',idleRally:'idle-rally',squeal:'tire-squeal',impact:'impact-hard',impactFast:'impact-fast',crash:'crash',light:'light',go:'go',click:'ui-click',hover:'ui-hover',confirm:'ui-confirm',back:'ui-back',select:'ui-select',shiftUp:'shift-up',shiftDown:'shift-down'} as const;
 type SampleKey=keyof typeof SAMPLES;
 export type UiCue='click'|'hover'|'confirm'|'back'|'select';
+export type RevealCue='power'|'flash'|'chirp'|'riser'|'hit'|'shimmer'|'stamp'|'tick'|'go'|'close';
 // Safari before 14.1 cannot play Ogg Vorbis, so every sample also ships as AAC (.m4a).
 const AUDIO_EXT=(()=>{try{return document.createElement('audio').canPlayType('audio/ogg; codecs="vorbis"')?'ogg':'m4a';}catch{return 'ogg';}})();
 const MUSIC_DIR='audio/music/';
@@ -83,7 +84,7 @@ export class RaceAudio {
   private lastImpact=0;
   private shiftUntil=0;private blipUntil=0;
   private lastThrottle=0;private airSince=-1;private wasBoosting=false;
-  private muted=false;
+  private muted=false;private duckUntil=0;
   /**
    * Opening the audio device takes hundreds of milliseconds on some systems.
    * Build the graph while the menu is idle; it stays suspended until start()
@@ -147,25 +148,25 @@ export class RaceAudio {
     source.connect(gain).connect(bus);source.onended=()=>{source.disconnect();gain.disconnect();};source.start();return true;
   }
   /** Short filtered noise burst: exhaust pops, gear clunks and blow-off. */
-  private burst(start:number,volume:number,frequency:number,duration:number,q=1.2,type:BiquadFilterType='bandpass') {
-    const c=this.context;if(!c||!this.noise||!this.master||volume<=0)return;
+  private burst(start:number,volume:number,frequency:number,duration:number,q=1.2,type:BiquadFilterType='bandpass',bus:AudioNode|undefined=this.master) {
+    const c=this.context;if(!c||!this.noise||!bus||volume<=0)return;
     const source=c.createBufferSource(),filter=c.createBiquadFilter(),gain=c.createGain();
     source.buffer=this.noise;filter.type=type;filter.frequency.value=frequency;filter.Q.value=q;
     gain.gain.setValueAtTime(.0001,start);gain.gain.exponentialRampToValueAtTime(volume,start+.006);gain.gain.exponentialRampToValueAtTime(.0001,start+duration);
-    source.connect(filter).connect(gain).connect(this.master);source.start(start,Math.random()*1.5,duration+.02);source.onended=()=>{source.disconnect();filter.disconnect();gain.disconnect();};
+    source.connect(filter).connect(gain).connect(bus);source.start(start,Math.random()*1.5,duration+.02);source.onended=()=>{source.disconnect();filter.disconnect();gain.disconnect();};
   }
   private pops(count:number,volume:number) {
     const c=this.context;if(!c)return;let at=c.currentTime+.02;
     for(let i=0;i<count;i++){at+=.04+Math.random()*.1;this.burst(at,volume*(.5+Math.random()*.5),160+Math.random()*320,.07+Math.random()*.05,1.4);this.burst(at,volume*.35,2400+Math.random()*900,.03,.8);}
   }
   /** Ringing partials that fade out: the clang of struck metal. */
-  private ring(start:number,volume:number,frequencies:number[],decay:number) {
-    const c=this.context;if(!c||!this.master||volume<=0)return;
+  private ring(start:number,volume:number,frequencies:number[],decay:number,bus:AudioNode|undefined=this.master) {
+    const c=this.context;if(!c||!bus||volume<=0)return;
     for(const [i,frequency] of frequencies.entries()){
       const osc=c.createOscillator(),gain=c.createGain();osc.frequency.value=frequency*(.97+Math.random()*.06);
       const level=volume/(1+i*.8),length=decay/(1+i*.45);
       gain.gain.setValueAtTime(.0001,start);gain.gain.exponentialRampToValueAtTime(level,start+.004);gain.gain.exponentialRampToValueAtTime(.0001,start+length);
-      osc.connect(gain).connect(this.master);osc.start(start);osc.stop(start+length+.02);osc.onended=()=>{osc.disconnect();gain.disconnect();};
+      osc.connect(gain).connect(bus);osc.start(start);osc.stop(start+length+.02);osc.onended=()=>{osc.disconnect();gain.disconnect();};
     }
   }
   /** A prop knocked over at this speed (m/s): a clang for metal, a hollow thunk for plastic, a splintering crunch for wood. */
@@ -209,13 +210,73 @@ export class RaceAudio {
     if(this.muted||!this.uiBus||this.context?.state!=='running')return;
     this.play(kind,kind==='hover'?.35:.7,kind==='hover'?1:.97+Math.random()*.06,this.uiBus);
   }
+  /**
+   * The what's-new card's reveal (src/UpdateCard.tsx), synthesized on the interface bus so it plays in the menu:
+   * the lightbar powering on, its strobes, two siren chirps, a riser into the hit as the picture opens, then a shimmer.
+   */
+  reveal(cue:RevealCue,index=0) {
+    const c=this.context,bus=this.uiBus;if(this.muted||!c||!bus||!this.noise||c.state!=='running')return;
+    const now=c.currentTime+.01;
+    if(cue==='power'){
+      this.duckMusic(5.5);
+      // An electric hum winding up as the bar stretches across the frame.
+      this.tone(now,.08,'sawtooth',[[0,70],[.55,240]],.62,1400);
+      this.sweep(now,.07,400,3200,.55,1.4,'bandpass');
+      this.burst(now,.12,2600,.04,.9,'highpass',bus);
+    }else if(cue==='flash'){
+      // A dry relay click per strobe, pitched a little apart for red and blue.
+      this.burst(now,.2,index%2?3400:2800,.035,2.2,'bandpass',bus);
+      this.burst(now,.05,140,.05,.8,'lowpass',bus);
+    }else if(cue==='chirp'){
+      // A patrol car's whoop: a fast sweep up and back down.
+      this.tone(now,.15,'sawtooth',[[0,520],[.16,1320],[.3,760]],.34,2600);
+      this.tone(now,.09,'square',[[0,262],[.16,662],[.3,380]],.34,1800);
+    }else if(cue==='riser'){
+      const length=Math.max(.3,index);
+      this.sweep(now,.11,180,5200,length,.9,'bandpass',true);
+      this.tone(now,.05,'sine',[[0,110],[length,330]],length,900,true);
+    }else if(cue==='hit'){
+      // The picture opens: a deep trailer hit and a wide whoosh.
+      this.tone(now,.32,'sine',[[0,82],[.9,30]],1.7,400);
+      this.burst(now,.22,160,.7,.7,'lowpass',bus);
+      this.play('impact',.45,.5,bus);
+      this.sweep(now+.02,.08,2600,320,1.1,.7,'bandpass');
+    }else if(cue==='shimmer'){
+      this.sweep(now,.08,3200,9000,1.2,1.1,'bandpass');
+      this.ring(now+.1,.03,[2093,3136,4186,5274],1.5,bus);
+    }else if(cue==='stamp')this.play('select',.5,1.05,bus);
+    else if(cue==='tick')this.play('hover',.24,1.04+index*.05,bus);
+    else if(cue==='go'){this.play('confirm',.6,1,bus);this.sweep(now,.05,500,2600,.45,.8,'bandpass');}
+    else if(cue==='close')this.play('back',.6,1,bus);
+  }
+  /** One oscillator on the interface bus, gliding through (time, Hz) points, through a lowpass at cutoff. */
+  private tone(start:number,volume:number,type:OscillatorType,glide:[number,number][],duration:number,cutoff:number,swell=false) {
+    const c=this.context!,osc=c.createOscillator(),filter=c.createBiquadFilter(),gain=c.createGain();
+    osc.type=type;filter.type='lowpass';filter.frequency.value=cutoff;
+    for(const [i,[at,hz]] of glide.entries())i?osc.frequency.exponentialRampToValueAtTime(hz,start+at):osc.frequency.setValueAtTime(hz,start+at);
+    gain.gain.setValueAtTime(.0001,start);
+    if(swell){gain.gain.exponentialRampToValueAtTime(volume,start+duration*.96);gain.gain.linearRampToValueAtTime(0,start+duration);}
+    else{gain.gain.exponentialRampToValueAtTime(volume,start+Math.min(.05,duration*.2));gain.gain.exponentialRampToValueAtTime(.0001,start+duration);}
+    osc.connect(filter).connect(gain).connect(this.uiBus!);osc.start(start);osc.stop(start+duration+.02);osc.onended=()=>{osc.disconnect();filter.disconnect();gain.disconnect();};
+  }
+  /** Noise through a filter whose frequency sweeps from one Hz to another: whooshes and risers. A swell builds to a hard stop. */
+  private sweep(start:number,volume:number,from:number,to:number,duration:number,q:number,type:BiquadFilterType,swell=false) {
+    const c=this.context!,source=c.createBufferSource(),filter=c.createBiquadFilter(),gain=c.createGain();
+    source.buffer=this.noise!;filter.type=type;filter.Q.value=q;filter.frequency.setValueAtTime(from,start);filter.frequency.exponentialRampToValueAtTime(to,start+duration);
+    gain.gain.setValueAtTime(.0001,start);
+    if(swell){gain.gain.exponentialRampToValueAtTime(volume,start+duration*.97);gain.gain.linearRampToValueAtTime(0,start+duration);}
+    else{gain.gain.exponentialRampToValueAtTime(volume,start+duration*.3);gain.gain.exponentialRampToValueAtTime(.0001,start+duration);}
+    source.connect(filter).connect(gain).connect(this.uiBus!);source.start(start,Math.random(),duration+.02);source.onended=()=>{source.disconnect();filter.disconnect();gain.disconnect();};
+  }
+  /** Lowers the menu music for a while, so a moment like the card's reveal sits on top of it. */
+  duckMusic(seconds:number) {const c=this.context;if(c)this.duckUntil=c.currentTime+seconds;}
   /** Called every frame, including menus: keeps UI/music levels current and fades menu music in and out. */
   frame(menuMusic:boolean,muted:boolean,settings:Settings) {
     const c=this.context;this.muted=muted;if(!c||!this.uiBus||!this.musicBus)return;
     this.uiBus.gain.setTargetAtTime(muted?0:settings.volume*settings.effectsVolume*2.2,c.currentTime,.03);
     const wanted=menuMusic&&!muted&&settings.musicVolume>0&&c.state==='running';
     if(wanted)this.startMusic(c);
-    this.musicBus.gain.setTargetAtTime(wanted?settings.volume*settings.musicVolume*.6:0,c.currentTime,wanted?.8:.35);
+    this.musicBus.gain.setTargetAtTime(wanted?settings.volume*settings.musicVolume*.6*(c.currentTime<this.duckUntil?.3:1):0,c.currentTime,wanted?(c.currentTime<this.duckUntil?.2:.8):.35);
     if(!wanted&&this.musicEl&&!this.musicEl.paused&&this.musicBus.gain.value<.002)this.musicEl.pause();
   }
   /** Starts or resumes the shuffled menu playlist; each track streams, so memory stays small. */

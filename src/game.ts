@@ -6,7 +6,7 @@ import { CAMERA_LABELS, RaceWorld, type CameraMode, type CockpitOffset } from '.
 import { cameraModesFor } from './camera-modes';
 import { bestRun, dressedCar as dressed, layoutKey, read, saveBestRun, write } from './storage';
 import { loadCockpitOffsets, hasLocalStartPlacement } from './dev-spawns';
-import { RaceAudio } from './race-audio';
+import { RaceAudio, type RevealCue } from './race-audio';
 import { loadSettings, type Settings } from './settings';
 import { GRAPHICS_PRESETS, PRESET_LABELS, isPreset, sanitizeGraphics, type GraphicsOptions, type GraphicsPreset, type GraphicsQuality } from './graphics';
 import { loadCareer, recordFinish, saveCareer, type Career } from './progression';
@@ -545,6 +545,8 @@ export class Game {
     this.world.confettiBurst();this.sound.cue('finish',this.settings.effectsVolume);
     this.emit({track:TRAINING_GROUNDS,trackReady:true,mode:'racing',run,newBest,personalBest:undefined,penalties:0,checkpoint:0,driftCombo:0,coneResult:result,notice:'',ghostSplit:undefined,ghostTiming:undefined});
   }
+  /** The what's-new card's reveal sounds (src/UpdateCard.tsx). */
+  revealSound(cue:RevealCue,index=0) {this.sound.reveal(cue,index);}
   private prepareAudio() {
     if(!this.state.muted)this.sound.start();
   }

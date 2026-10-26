@@ -409,7 +409,7 @@ export function App({game}:{game:Game}) {
         </motion.section></motion.div>}
       </AnimatePresence>
       {/* What's new: once per player, after the loading screen. */}
-      {state.mode==='menu'&&<UpdateCard onExplore={()=>changeView('roam')}/>}
+      {state.mode==='menu'&&<UpdateCard onExplore={()=>changeView('roam')} sound={(cue,index)=>game.revealSound(cue,index)}/>}
       <AnimatePresence>{state.venueLoad&&<motion.div key="venue-loading" className="venue-loading" role="status" aria-live="polite" initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0,transition:{duration:still?0:.45}}}>
         <img src={assetUrl('art/free-roam-city.jpg')} alt=""/>
         <div className="venue-loading-card">
