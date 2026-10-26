@@ -19,6 +19,7 @@ import { deletedRunNotices, dismissDeletedRun } from './deleted-runs';
 import { PartyPanel } from './PartyPanel';
 import { LotMap } from './LotMap';
 import { CityMap, CityFullMap } from './CityMap';
+import { UpdateCard } from './UpdateCard';
 import { FreeRoam } from './FreeRoam';
 import { CAMERA_LABELS } from './camera-modes';
 import { CameraWheel } from './CameraWheel';
@@ -407,6 +408,8 @@ export function App({game}:{game:Game}) {
           {submission&&<p className="form-message" role="status">{submission}</p>}{state.notice&&<p className="form-message">{state.notice}</p>}{track.kind==='cones'&&<button className="secondary-button" onClick={()=>void game.enterTraining()}>Back to free roam</button>}<button className="text-button" onClick={()=>game.menu()}>{track.lot?'Leave the Training Grounds':'Back to tracks'}</button>
         </motion.section></motion.div>}
       </AnimatePresence>
+      {/* What's new: once per player, after the loading screen. */}
+      {state.mode==='menu'&&<UpdateCard onExplore={()=>changeView('roam')}/>}
       <AnimatePresence>{state.venueLoad&&<motion.div key="venue-loading" className="venue-loading" role="status" aria-live="polite" initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0,transition:{duration:still?0:.45}}}>
         <img src={assetUrl('art/free-roam-city.jpg')} alt=""/>
         <div className="venue-loading-card">

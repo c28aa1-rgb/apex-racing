@@ -352,3 +352,42 @@ button:disabled{cursor:not-allowed}select:focus-visible{outline:2px solid #a8dad
 
 /* Free roam: the city's vehicle credits under the car you are driving. */
 .roam-credit{display:inline-block;margin-top:14px;font-size:11px;color:var(--foam);text-decoration:none;opacity:.8}.roam-credit:hover{text-decoration:underline;opacity:1}
+
+/* What's new (src/UpdateCard.tsx): a widescreen picture that opens out of a police lightbar, over the menu, once. */
+.update-scrim{--dusk:#0b0816;--lamp-red:#ff3b4f;--lamp-blue:#3d7bff;position:fixed;inset:0;z-index:50;display:grid;place-items:center;padding:28px;overflow:auto;pointer-events:auto;
+  background:radial-gradient(120% 90% at 50% 35%,#1a1430e6 0%,#0b0816f2 70%);backdrop-filter:blur(10px) saturate(1.1);perspective:1400px}
+.update-wash{position:fixed;top:-10%;bottom:-10%;width:46vw;pointer-events:none;filter:blur(60px)}
+.update-wash.is-red{left:-22vw;background:radial-gradient(closest-side,var(--lamp-red),transparent)}
+.update-wash.is-blue{right:-22vw;background:radial-gradient(closest-side,var(--lamp-blue),transparent)}
+.update-card{position:relative;width:min(1080px,100%);border-radius:14px;overflow:hidden;transform-origin:50% 60%;
+  background:linear-gradient(180deg,#141b2c 0%,#0f1422 100%);border:1px solid #ffffff14;box-shadow:0 40px 120px #000000a6,0 0 0 1px #00000040}
+.update-frame{position:relative;aspect-ratio:2048/858;background:#05040a}
+.update-film{position:absolute;inset:0;overflow:hidden}
+.update-film img{width:100%;height:100%;object-fit:cover;display:block;transform-origin:62% 58%}
+.update-sweep{position:absolute;top:-20%;bottom:-20%;left:0;width:22%;transform:skewX(-18deg);pointer-events:none;mix-blend-mode:screen;
+  background:linear-gradient(90deg,transparent,#ffe7cf3a 45%,#ffffff55 50%,#ffe7cf3a 55%,transparent)}
+.update-lightbar{position:absolute;left:6%;right:6%;top:50%;height:6px;margin-top:-3px;display:flex;gap:6px;border-radius:3px;transform-origin:50% 50%}
+.update-lightbar i{flex:1;border-radius:3px}
+.update-lightbar .is-red{background:var(--lamp-red);box-shadow:0 0 14px 3px var(--lamp-red),0 0 60px 10px #ff3b4f80}
+.update-lightbar .is-blue{background:var(--lamp-blue);box-shadow:0 0 14px 3px var(--lamp-blue),0 0 60px 10px #3d7bff80}
+.update-stamp{position:absolute;top:18px;right:18px;display:flex;align-items:center;gap:10px;padding:7px 12px 7px 14px;border-radius:999px;
+  background:#0b0816b8;backdrop-filter:blur(6px);border:1px solid #ffffff1f;font-size:11px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:#f1faee}
+.update-stamp b{font-weight:400;letter-spacing:.06em;color:var(--muted);text-transform:none}
+.update-stamp:before{content:'';width:7px;height:7px;border-radius:50%;background:var(--orange);box-shadow:0 0 10px var(--orange)}
+.update-body{display:grid;grid-template-columns:1.3fr 1fr;gap:44px;padding:30px 36px 34px}
+.update-lead h2{font-family:Shoulders,sans-serif;font-size:46px;line-height:1;letter-spacing:-.5px;margin:0 0 12px;color:#fff}
+.update-lead p{margin:0;max-width:46ch;font-size:15px;line-height:1.65;color:#c9d8de}
+.update-actions{display:flex;align-items:center;gap:12px;margin-top:24px;flex-wrap:wrap}
+.update-go{display:inline-flex;align-items:center;gap:12px;min-height:50px;padding:0 20px;border-radius:6px;background:var(--orange);color:#1a1020;font-weight:700;font-size:15px;
+  box-shadow:0 10px 30px #ff784c40}
+.update-go:hover{background:#ff8b65}
+.update-close{display:inline-flex;align-items:center;gap:10px;min-height:50px;padding:0 16px;border-radius:6px;border:1px solid #ffffff26;color:#dbe7ea;font-size:14px}
+.update-close:hover{background:#ffffff0d}
+.update-close kbd{font-size:10px}
+.update-go:focus-visible,.update-close:focus-visible{outline:2px solid #fff;outline-offset:3px}
+.update-features{list-style:none;margin:4px 0 0;padding:0;display:grid;gap:16px;align-content:start}
+.update-features li{display:grid;gap:4px;padding-left:16px;border-left:2px solid #ff784c80}
+.update-features strong{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:#fff}
+.update-features span{font-size:14px;line-height:1.5;color:#a9bfc8}
+@media(max-width:760px){.update-scrim{padding:14px;align-items:start}.update-body{grid-template-columns:1fr;gap:24px;padding:22px 20px 24px}.update-lead h2{font-size:38px}.update-stamp{top:8px;right:8px;gap:6px;padding:4px 8px 4px 9px;font-size:9px}.update-stamp:before{width:5px;height:5px}.update-actions{gap:10px}}
+.update-card:focus{outline:none}

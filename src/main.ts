@@ -44,7 +44,8 @@ const booting=boot();
 if(!location.pathname.startsWith('/dev')){
   const host=document.createElement('div');host.id='loader';document.body.append(host);
   const loader=createRoot(host);
-  loader.render(createElement(LoadingScreen,{ready:booting,onContinue:()=>{loader.unmount();host.remove();}}));
+  // The menu shows what's new once the player has passed the loading screen (src/UpdateCard.tsx).
+  loader.render(createElement(LoadingScreen,{ready:booting,onContinue:()=>{loader.unmount();host.remove();(window as unknown as {__apexContinued?:boolean}).__apexContinued=true;window.dispatchEvent(new Event('apex:continued'));}}));
 }
 booting.catch(error=>{
   console.error(error);const root=document.getElementById('app')!;root.replaceChildren();
