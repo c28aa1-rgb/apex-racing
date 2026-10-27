@@ -124,8 +124,10 @@ export class Game {
     const rtt=receivedAt-sentAt;this.serverOffsetRtt+=.5;
     if(rtt>=0&&rtt<=this.serverOffsetRtt){
       this.serverOffsetRtt=rtt;const offset=serverNow+rtt/2-receivedAt;
-      // Asymmetric replies must not jump the pose or playback timeline mid-race.
-      this.serverOffset=this.serverOffset===undefined?offset:this.serverOffset+Math.max(-.5,Math.min(.5,offset-this.serverOffset));
+      // A better reading moves the clock at most CLOCK_STEP_MS an update: no visible jump in poses or the start
+      // lights, yet a poor first reading (often taken while the city loads) is gone within a second or two. At half
+      // a millisecond a step it took minutes, and every other car was drawn metres from where it really was.
+      this.serverOffset=this.serverOffset===undefined?offset:this.serverOffset+Math.max(-CLOCK_STEP_MS,Math.min(CLOCK_STEP_MS,offset-this.serverOffset));
     }
   }
   /** The shared server clock, as best this machine can tell. Both drivers time poses and the start lights against it. */
@@ -999,6 +1001,8 @@ export class Game {
     if(!cap||sinceRender*1000>=1000/cap-2){this.frameCount++;this.lastRender=now;this.world.updateWeather(Math.min(sinceRender,.1));this.world.render();}
   };
 }
+/** The most the estimate of the party server's clock moves on one reply (ms). */
+const CLOCK_STEP_MS=5;
 /** How often a driver with nobody to share the city with checks in with the party server. */
 const PARTY_CHECK_IN_MS=3500;
 function loadCityTime():GameState['cityTime'] {
