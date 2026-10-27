@@ -27,9 +27,12 @@ export class PartyUpdates<T> {
     error: (cause: unknown) => void;
   }) {}
   tick(now = performance.now()) {
-    if (this.stopped || now < this.nextAt) return;
+    if (this.stopped) return;
     const ready = this.options.ready();
     const interval = ready ? this.options.interval?.() ?? POSE_INTERVAL_MS : 500;
+    // A shorter interval than the last one (another driver just arrived) takes effect now, not after the long wait.
+    if (this.lastSent !== undefined && this.lastSent + interval < this.nextAt) this.nextAt = this.lastSent + interval;
+    if (now < this.nextAt) return;
     // Keep the timer's phase: resetting from each receipt of a timer tick skips slots on small clock variations.
     this.nextAt = now - this.nextAt >= interval ? now + interval : this.nextAt + interval;
     if (this.inFlight >= (ready ? PARTY_MAX_IN_FLIGHT : 1)) { this.skipped++; return; }

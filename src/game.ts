@@ -99,6 +99,8 @@ export class Game {
   private partyAway?: { race: NonNullable<Game['partyRace']>; weather?: PartyWeather };
   /** Set by the party panel: leaves the party (the city's own way out while racing away from it). */
   leaveParty?: () => void;
+  /** Other drivers out in the city with this one (not away, not disconnected), as of the last update. */
+  private partyOthers=0;
   /** Other drivers' cars still loading (late arrivals in a city party). */
   private remoteLoading=new Set<string>();
   /** City party: the server asked for the traffic around this driver, to start its own from. */
@@ -651,6 +653,7 @@ export class Game {
   }
   syncParty(race:PartyRace,serverNow:number) {
     const local=this.partyRace;if(!local||local.id!==race.id)return;
+    this.partyOthers=race.racers.filter(racer=>racer.id!==this.partySelf&&!racer.disconnected&&!racer.away).length;
     // A city party: friends arrive and leave while it runs.
     if(local.city&&local.ready){
       for(const racer of race.racers)if(racer.id!==this.partySelf&&!racer.disconnected&&!this.remoteCars.has(racer.id))void this.addRemote(race,racer);
@@ -689,11 +692,10 @@ export class Game {
    * near (within PARTY_CLOSE_M, or closing on you within PARTY_CLOSE_S), where contact needs every pose.
    */
   partyPoseInterval(){
-    // Away racing a street race: only enough to stay in the public city.
-    if(this.partyAway)return 1000;
+    // Away racing a street race, or alone in the city: no driving to share, only a check-in now and then so the
+    // server keeps this driver (and counts them present: PRESENT_MS). Someone arriving brings the full rate back.
+    if(this.partyAway||this.partyRace?.city&&!this.partyOthers)return PARTY_CHECK_IN_MS;
     if(!this.partyRace?.city)return 1000/PARTY_POSE_HZ;
-    // Nobody else out driving: twice a second keeps this car in the city for anyone arriving.
-    if(![...this.remoteCars.values()].some(remote=>remote.group.visible))return 500;
     const p=this.sim.car.translation(),v=this.sim.car.linvel();
     for(const remote of this.remoteCars.values()){
       if(!remote.group.visible)continue;
@@ -774,7 +776,7 @@ export class Game {
   }
   endParty() {
     if(this.partyAway){this.partyRace=this.partyAway.race;this.partyAway=undefined;}
-    this.remoteLoading.clear();
+    this.remoteLoading.clear();this.partyOthers=0;
     this.sound.update(this.sim,false,this.state.muted,this.settings);this.partyPlace=undefined;this.partyFinishedAt=0;this.world.endFinish();
     this.spectating=undefined;
     for(const [id,remote] of this.remoteCars)this.sim.setObstacle(id,remote.carId,undefined);this.partyFinishDriver=undefined;
@@ -957,6 +959,8 @@ export class Game {
     if(!cap||sinceRender*1000>=1000/cap-2){this.frameCount++;this.lastRender=now;this.world.updateWeather(Math.min(sinceRender,.1));this.world.render();}
   };
 }
+/** How often a driver with nobody to share the city with checks in with the party server. */
+const PARTY_CHECK_IN_MS=3500;
 const fromQuaternion=new Quaternion(),toQuaternion=new Quaternion();
 type RemoteCar={group:Group;carId:CarId;name:string;target?:Frame;sequence:number;motion:RemoteMotion;
   /** Wheel, steering and brake-lamp rig; poses carry no inputs, so these are inferred from the drawn motion. */
