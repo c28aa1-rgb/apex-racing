@@ -89,6 +89,9 @@ const DEMAND_REACH = 60;
  * of lane); the expressway is busier and much faster, the outer ridge roads quieter. */
 const DISTRICT_SPEED: Record<string, number> = { Highway: 29, Outer: 20, Industrial: 15, Commercial: 15, Downtown: 13, Training: 15 };
 const DISTRICT_SPACING: Record<string, number> = { Highway: 80, Outer: 190, Industrial: 150, Commercial: 130, Downtown: 140, Training: 135 };
+/** A roadblock this far (m) from the end of a lane's shut stretch belongs to it; and the half-depth of its line of
+ * police cars (angled across the road) plus a little room, so waiting traffic stops clear of them. */
+const POLICE_REACH = 25, POLICE_DEPTH = 1.5;
 /** Painted lane width (m). */
 const LANE_WIDTH = 3.5;
 /** Chance a car turns off onto a side road it passes. */
@@ -883,8 +886,10 @@ export class TrafficSim {
   /**
    * Closes a street race's route to free-roam traffic (or opens it again): the stretches of every lane inside the
    * route are marked shut, cars already in there are taken away, and cars coming up to them wait at the roadblock.
+   * A side road's shut stretch reaches out to its line of police cars, so traffic queues before the police (not in
+   * among them, or past them on the race's side, where a race's scenery cars could be driven through).
    */
-  close(street: { route: readonly (readonly number[])[]; closed: boolean } | undefined) {
+  close(street: { route: readonly (readonly number[])[]; closed: boolean; roadblocks?: readonly { x: number; y: number; z: number; road: string }[] } | undefined) {
     for (const lane of this.lanes) lane.shut = undefined;
     const route = street?.route; if (!route) return;
     const CELL = 20, grid = new Map<string, number[]>(), segments = street!.closed ? route.length : route.length - 1;
@@ -905,6 +910,16 @@ export class TrafficSim {
         const j = (i % count) * 3, isIn = inside(p[j], p[j + 1], p[j + 2]);
         if (isIn && from < 0) from = lane.s[i];
         if ((!isIn || i === lane.s.length - 1) && from >= 0) { shut.push([from, lane.s[i]]); from = -1; }
+      }
+      // Out to the police: a roadblock on this lane's road just outside a shut stretch moves its end there.
+      for (const block of street!.roadblocks ?? []) {
+        if (block.road !== lane.road || !shut.length) continue;
+        const at = this.nearest(lane, new THREE.Vector3(block.x, block.y, block.z));
+        if (at.distance > lane.width / 2 + 2) continue;
+        for (const stretch of shut) {
+          if (stretch[0] - at.s > 0 && stretch[0] - at.s < POLICE_REACH) stretch[0] = Math.max(0, at.s - POLICE_DEPTH);
+          if (at.s - stretch[1] > 0 && at.s - stretch[1] < POLICE_REACH) stretch[1] = Math.min(lane.length, at.s + POLICE_DEPTH);
+        }
       }
       if (shut.length) lane.shut = shut;
     }
