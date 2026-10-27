@@ -7,6 +7,7 @@ import { cameraModesFor } from './camera-modes';
 import { bestRun, dressedCar as dressed, layoutKey, read, saveBestRun, write } from './storage';
 import { loadCockpitOffsets, hasLocalStartPlacement } from './dev-spawns';
 import { RaceAudio, type RevealCue } from './race-audio';
+import { CITY_HOURS_PER_SECOND, DEFAULT_CITY_HOUR } from './city-time';
 import { loadSettings, type Settings } from './settings';
 import { GRAPHICS_PRESETS, PRESET_LABELS, isPreset, sanitizeGraphics, type GraphicsOptions, type GraphicsPreset, type GraphicsQuality } from './graphics';
 import { loadCareer, recordFinish, saveCareer, type Career } from './progression';
@@ -42,7 +43,9 @@ export type GameState={mode:Mode;track:Track;trackReady:boolean;trackLoading?:bo
   /** Whole-city map overlay (M); driving is frozen while it is open. */
   mapOpen?:boolean;
   /** Loading a night venue (the city): the step shown and progress 0-1. Driving is frozen until it is gone. */
-  venueLoad?:{step:string;progress:number}};
+  venueLoad?:{step:string;progress:number};
+  /** Racing City's time of day (0-24) and whether the clock runs (src/city-time.ts). Each player's own. */
+  cityTime:{hour:number;cycle:boolean}};
 export class Game {
   world:RaceWorld;sim:Simulation;state:GameState;private coarse!:GameState;
   settings=loadSettings();career:Career=loadCareer();
@@ -151,10 +154,11 @@ export class Game {
     const selectedCar=dressed(read<CarId>('car',DEFAULT_CAR.id));this.sound.look=lookOf(selectedCar);
     this.world=new RaceWorld(canvas);this.sim=new Simulation(location.pathname.startsWith('/dev')?TRACKS[0]:TRAINING_GROUNDS,selectedCar.id);
     if(location.pathname.startsWith('/dev'))this.world.setTrack(TRACKS[0]);
+    this.world.setCityHour(loadCityTime().hour);
     this.world.setCockpitOffset(loadCockpitOffsets()[selectedCar.id]);
     this.applySettings();
     this.sim.steeringStrength=this.steeringStrength;
-    this.state={mode:'menu',track:TRACKS[0],trackReady:location.pathname.startsWith('/dev'),car:selectedCar,modelReady:false,time:0,speed:0,checkpoint:0,countdown:3,boost:false,drifting:false,ghost:read('ghost',true),muted:read('muted',false),driftStrength:this.driftStrength,personalBest:bestRun(TRACKS[0])?.timeMs,newBest:false,notice:'',worstFrame:0,fps:60,penalties:0,driftCombo:0,driftBest:0,atStart:false};
+    this.state={mode:'menu',track:TRACKS[0],trackReady:location.pathname.startsWith('/dev'),car:selectedCar,modelReady:false,time:0,speed:0,checkpoint:0,countdown:3,boost:false,drifting:false,ghost:read('ghost',true),muted:read('muted',false),cityTime:loadCityTime(),driftStrength:this.driftStrength,personalBest:bestRun(TRACKS[0])?.timeMs,newBest:false,notice:'',worstFrame:0,fps:60,penalties:0,driftCombo:0,driftBest:0,atStart:false};
     this.coarse=this.state;
     void this.world.setCar(selectedCar.id,selectedCar.look).then(modelReady=>{if(this.carToken!==0)return;this.modelError=modelReady?'':'Car could not load. Check your connection and retry.';this.emit({modelReady});});
     addEventListener('keydown',this.keyDown);addEventListener('keyup',event=>{this.keys.delete(event.code);if(this.settings.bindings.camera.includes(event.code))this.cameraKeyUp();});
@@ -382,7 +386,7 @@ export class Game {
     if(this.partyView||this.partyRace)return;
     const token=++this.selectionToken;this.keys.clear();this.garageView=false;this.runOrigin=undefined;
     this.ghostSim?.dispose();this.ghostSim=undefined;this.ghostRun=undefined;this.world.ghostFrame(undefined);
-    this.world.setTrack(track);this.world.setHeadlights(!!track.night);
+    this.world.setTrack(track);this.world.setHeadlights(!!track.night&&this.world.cityDark);this.cityWasDark=this.world.cityDark;
     this.emit({track,mapOpen:false,trackReady:false,run:undefined,newBest:false,personalBest:undefined,penalties:0,atStart:false,coneResult:undefined,notice:'',ghostSplit:undefined,ghostTiming:undefined,
       venueLoad:track.night?{step:'Loading the city',progress:.03}:undefined});
     // The city is heavy: a loading screen covers it until the streets, physics and traffic are all in place.
@@ -576,6 +580,31 @@ export class Game {
     this.world.confettiBurst();this.sound.cue('finish',this.settings.effectsVolume);
     this.emit({track:TRAINING_GROUNDS,trackReady:true,mode:'racing',run,newBest,personalBest:undefined,penalties:0,checkpoint:0,driftCombo:0,coneResult:result,notice:'',ghostSplit:undefined,ghostTiming:undefined});
   }
+  /** Racing City's time of day: set the hour (0-24) and whether it passes on its own. Remembered on this device. */
+  setCityTime(patch:Partial<GameState['cityTime']>) {
+    const next={...this.state.cityTime,...patch};next.hour=((next.hour%24)+24)%24;
+    write('cityTime',next);this.world.setCityHour(next.hour);this.cityClockShown=next.hour;this.followDusk();this.emit({cityTime:next});
+  }
+  private cityWasDark=true;private cityClockShown=0;
+  /** The city's clock, when it runs: a game hour a real minute. Headlamps follow dusk and dawn. */
+  private runCityClock(elapsed:number) {
+    const time=this.state.cityTime;
+    if(!time.cycle||!this.state.track.night||!this.state.trackReady||this.state.venueLoad||!['racing','countdown','party-finished'].includes(this.state.mode))return;
+    const hour=(time.hour+elapsed*CITY_HOURS_PER_SECOND)%24;
+    this.state={...this.state,cityTime:{...time,hour}};
+    // Relit every half game minute; the map's clock updates every game minute; saved now and then.
+    if(Math.abs(hour-this.cityClockShown)>1/120||hour<this.cityClockShown){
+      this.world.setCityHour(hour);
+      this.followDusk();
+      if(Math.floor(hour*60)!==Math.floor(this.cityClockShown*60)){this.emit({cityTime:{...time,hour}});if(Math.floor(hour*60)%10===0)write('cityTime',{...time,hour});}
+      this.cityClockShown=hour;
+    }
+  }
+  /** In the city, headlamps come on as it gets dark and go off in daylight (the player can still switch them). */
+  private followDusk() {
+    if(!this.state.track.night)return;
+    const dark=this.world.cityDark;if(dark!==this.cityWasDark){this.cityWasDark=dark;this.world.setHeadlights(dark);}
+  }
   /** The what's-new card's reveal sounds (src/UpdateCard.tsx). */
   revealSound(cue:RevealCue,index=0) {this.sound.reveal(cue,index);}
   private prepareAudio() {
@@ -596,7 +625,7 @@ export class Game {
     this.inputs=[];this.steeringInputs=[];this.driftInputs=[];this.accumulator=0;this.previousFrame=undefined;
     this.lastCheckpoint=0;this.lastRespawns=0;this.queuedRespawn=false;this.queuedFlip=false;this.pendingShifts=0;this.seenBlockedShifts=0;
     this.ghostSim?.dispose();this.ghostSim=undefined;this.ghostRun=undefined;this.chosenGhost=undefined;this.world.ghostFrame(undefined);this.world.endFinish();
-    this.partyWeather=lobby.settings.weather;this.world.setTrack(track);this.world.setWeather(lobby.settings.weather);if(track.night)this.world.setHeadlights(true);
+    this.partyWeather=lobby.settings.weather;this.world.setTrack(track);this.world.setWeather(lobby.settings.weather);if(track.night){this.world.setHeadlights(this.world.cityDark);this.cityWasDark=this.world.cityDark;}
     this.partyLoadStep=track.night?'Loading the city':'Loading circuit';
     const myCar=dressed(me.carId);this.sound.look=lookOf(myCar);
     this.emit({mode:'party-loading',track,car:myCar,trackReady:false,modelReady:false,time:0,speed:0,checkpoint:0,run:undefined,newBest:false,notice:'',ghostSplit:undefined,ghostTiming:undefined});
@@ -863,6 +892,7 @@ export class Game {
       }
     }
     if(this.state.mode==='celebrating'&&now>=this.finishRevealAt)this.emit({mode:'finished'});
+    this.runCityClock(elapsed);
     if(this.state.mode==='racing'||this.state.mode==='replay') {
       if(this.awaitingPedal&&(this.held('throttle')||this.held('brake'))){this.awaitingPedal=false;this.emit({notice:''});}
       if((!this.awaitingPedal||this.state.mode==='replay')&&!this.state.mapOpen&&!this.state.venueLoad)this.accumulator+=elapsed;
@@ -961,6 +991,10 @@ export class Game {
 }
 /** How often a driver with nobody to share the city with checks in with the party server. */
 const PARTY_CHECK_IN_MS=3500;
+function loadCityTime():GameState['cityTime'] {
+  const saved=read<Partial<GameState['cityTime']>>('cityTime',{});
+  return {hour:typeof saved.hour==='number'&&Number.isFinite(saved.hour)?((saved.hour%24)+24)%24:DEFAULT_CITY_HOUR,cycle:saved.cycle===true};
+}
 const fromQuaternion=new Quaternion(),toQuaternion=new Quaternion();
 type RemoteCar={group:Group;carId:CarId;name:string;target?:Frame;sequence:number;motion:RemoteMotion;
   /** Wheel, steering and brake-lamp rig; poses carry no inputs, so these are inferred from the drawn motion. */

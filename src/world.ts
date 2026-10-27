@@ -10,6 +10,7 @@ import { buildRoadMesh, interpolateRoad, type RoadPoint } from '../shared/road';
 import { carById, DEFAULT_CAR, isFormula, lookOf, withLivery, type CarDefinition, type CarId, type LookId } from '../shared/cars';
 import { CarRig, prepareCarModel } from './car-rig';
 import { CityNight } from './city-night';
+import { DEFAULT_CITY_HOUR, cityLight, type CityLight } from './city-time';
 import { CityTraffic } from './city-traffic';
 import { CarDamage } from './car-damage';
 import { FinishConfetti, SkidMarks, StartLight } from './race-effects';
@@ -61,6 +62,12 @@ export class RaceWorld {
   weather = new Weather();
   /** Street lamps and lit windows for venues driven at night (Track.night). */
   private cityNight = new CityNight();
+  /** The city's time of day (0-24) and its lighting then (see city-time.ts). */
+  private cityHour = DEFAULT_CITY_HOUR; private cityLit?: CityLight;
+  /** The city model the lamps and windows were last dressed on (dressing walks the whole model: once per load). */
+  private dressedVenue?: THREE.Object3D;
+  /** The sky the reflections were last made from: the sun direction, and the venue's own (day) one. */
+  private environmentSun = new THREE.Vector3(); private daySun = new THREE.Vector3();
   /** Headlamp beams: two spot lights riding on the car, created on first use. */
   private beams?: THREE.Group;
   private lightsOn = false;
@@ -230,10 +237,9 @@ export class RaceWorld {
     sky.material.uniforms.rayleigh.value=1.4;
     sky.material.uniforms.sunPosition.value.copy(this.shadow.position).normalize();
     this.scene.add(sky);
-    const environmentScene=new THREE.Scene();environmentScene.add(sky.clone());
-    const pmrem=new THREE.PMREMGenerator(this.renderer);
-    this.scene.environment=pmrem.fromScene(environmentScene,.04,.1,20000).texture;
-    this.scene.environmentIntensity=.45;pmrem.dispose();
+    this.daySun.copy(sky.material.uniforms.sunPosition.value);
+    this.refreshEnvironment(this.daySun);
+    this.scene.environmentIntensity=.45;
     // Built after the renderer and environment exist. Created earlier, its lit
     // materials rendered as a flat white silhouette under the reversed depth buffer.
     this.startLight=new StartLight();this.scene.add(this.startLight);
@@ -331,26 +337,51 @@ export class RaceWorld {
     // Warm the exact shader variant for the selected renderer settings.
     void this.compileInBackground(this.finishConfetti.mesh,this.scene);
   }
+  /** Reflections from the sky dome with the sun here (redone only when the sun has moved enough to show). */
+  private refreshEnvironment(sun:THREE.Vector3) {
+    if(this.scene.environment&&sun.distanceTo(this.environmentSun)<.03)return;
+    const sky=this.scene.getObjectByName('apex-sky') as Sky,copy=sky.clone();copy.visible=true;
+    copy.material=sky.material.clone();copy.material.uniforms.sunPosition.value.copy(sun);
+    const scene=new THREE.Scene();scene.add(copy);
+    const pmrem=new THREE.PMREMGenerator(this.renderer),previous=this.scene.environment;
+    this.scene.environment=pmrem.fromScene(scene,.04,.1,20000).texture;pmrem.dispose();copy.material.dispose();
+    previous?.dispose();this.environmentSun.copy(sun);
+  }
+  /** The city's time of day, 0-24: relights it now if the city is the venue. */
+  setCityHour(hour:number) {
+    this.cityHour=((hour%24)+24)%24;
+    if(this.currentTrack?.night)this.applyCityTime();
+  }
+  /** Whether the city at its current hour is dark enough for headlamps. */
+  get cityDark(){return cityLight(this.cityHour,WEATHER.clear,true).lamps>.5;}
   /**
-   * Night over the current weather: a dark blue sky and fog, a faint moon in place of the sun, and the day sky's
-   * reflections dimmed. Lamp glows and lit windows come from CityNight.
+   * The city at its time of day, over the current weather: the sun (or a faint blue moon) and its sky, fog and
+   * reflections, and the street lamps and lit windows (CityNight) coming on as the sun goes down.
    */
-  private applyNight() {
-    const sky=0x070d1a;
-    (this.scene.background as THREE.Color).setHex(sky);
-    (this.scene.fog as THREE.Fog).color.setHex(sky);
-    this.scene.getObjectByName('apex-sky')!.visible=false;
-    this.shadow.color.setHex(0x8ea6ff);this.shadow.intensity=.22;
-    this.scene.children.forEach(object=>{if(object instanceof THREE.HemisphereLight)object.intensity=.14;});
-    this.scene.environmentIntensity=.05;this.renderer.toneMappingExposure=1.15;
-    this.cityNight.apply(this.venueGroup);if(this.cityNight.group.parent!==this.scene)this.scene.add(this.cityNight.group);
+  private applyCityTime() {
+    const preset=this.weather.preset,lit=this.cityLit=cityLight(this.cityHour,WEATHER[preset],preset==='clear');
+    (this.scene.background as THREE.Color).copy(lit.horizon);
+    (this.scene.fog as THREE.Fog).color.copy(lit.horizon);
+    const sky=this.scene.getObjectByName('apex-sky') as Sky;
+    sky.visible=lit.sky;sky.material.uniforms.sunPosition.value.copy(lit.sun);
+    this.shadow.color.copy(lit.light.color);this.shadow.intensity=lit.light.intensity;
+    this.scene.children.forEach(object=>{if(object instanceof THREE.HemisphereLight){object.intensity=lit.ambient;object.color.copy(lit.skyTint);}});
+    this.scene.environmentIntensity=lit.environment;this.renderer.toneMappingExposure=lit.exposure;
+    this.refreshEnvironment(lit.sun);
+    const range=this.fogRange(preset),fog=this.scene.fog as THREE.Fog;fog.near=range.near;fog.far=range.far;
+    const model=this.venueGroup.children[0];
+    if(model&&model!==this.dressedVenue){this.cityNight.apply(this.venueGroup);this.dressedVenue=model;}
+    this.cityNight.setLevel(lit.lamps);
+    if(this.cityNight.group.parent!==this.scene)this.scene.add(this.cityNight.group);
   }
   /** Fog range for a weather preset; clear weather follows the player's draw distance. */
   private fogRange(preset:WeatherPreset){
     const base=WEATHER[preset],distance=this.options?.drawDistance??GRAPHICS_PRESETS.balanced.drawDistance;
     const range=preset==='clear'?{near:distance*.31,far:distance}:{near:base.near,far:base.far};
-    // Night haze closes in sooner: the dark fog hides the city's far edge and the lamp-less hills.
-    return this.currentTrack?.night?{near:Math.min(range.near,90),far:Math.min(range.far,1300)}:range;
+    // Night haze closes in sooner: the dark fog hides the city's far edge and the lamp-less hills. By day it opens out.
+    if(!this.currentTrack?.night)return range;
+    const day=this.cityLit?.day??0;
+    return {near:THREE.MathUtils.lerp(Math.min(range.near,90),range.near,day),far:THREE.MathUtils.lerp(Math.min(range.far,1300),range.far,day)};
   }
   /** Headlamps: the model's lamp glass glows, the tail lamps brighten, and two spot lights light the road ahead. */
   setHeadlights(on:boolean) {
@@ -370,6 +401,11 @@ export class RaceWorld {
     this.weather.preset=preset;
     const settings=WEATHER[preset];
     this.shadow.color.setHex(0xfff2dc);this.scene.environmentIntensity=.45;this.renderer.toneMappingExposure=1.05;
+    // Away from the city the sky and its reflections go back to the venues' own sun.
+    if(!this.currentTrack?.night){
+      (this.scene.getObjectByName('apex-sky') as Sky).material.uniforms.sunPosition.value.copy(this.daySun);this.refreshEnvironment(this.daySun);this.cityLit=undefined;
+      this.scene.children.forEach(object=>{if(object instanceof THREE.HemisphereLight)object.color.setHex(0xe3efff);});
+    }
     (this.scene.background as THREE.Color).setHex(settings.color);
     const fog=this.scene.fog as THREE.Fog;const range=this.fogRange(preset);fog.color.setHex(settings.color);fog.near=range.near;fog.far=range.far;
     this.scene.getObjectByName('apex-sky')!.visible=preset==='clear';
@@ -386,7 +422,7 @@ export class RaceWorld {
       material.roughness=preset==='rain'?Math.min(original.roughness,.38):original.roughness;
       material.color.copy(original.color);if(preset==='rain')material.color.multiplyScalar(.7);
     }
-    if(this.currentTrack?.night)this.applyNight();else if(this.cityNight.group.parent){this.cityNight.clear();this.scene.remove(this.cityNight.group);}
+    if(this.currentTrack?.night)this.applyCityTime();else if(this.cityNight.group.parent){this.cityNight.clear();this.scene.remove(this.cityNight.group);this.dressedVenue=undefined;}
   }
   updateWeather(dt:number){this.weather.update(dt,this.camera,this.options?.weatherDensity??.6,this.reducedMotion,this.garageGroup.visible||this.wideView);}
   adaptResolution(fps:number) {
@@ -1396,6 +1432,8 @@ export class RaceWorld {
     this.shadow.target.position.copy(this.car.position);
     this.shadow.position.set(this.car.position.x-16,this.car.position.y+30,this.car.position.z+8);
     if(sunDirection)this.shadow.position.copy(this.car.position).addScaledVector(sunDirection,35);
+    // The city's shadows fall away from its sun (or moon) at the time of day.
+    else if(this.currentTrack?.night&&this.cityLit)this.shadow.position.copy(this.car.position).addScaledVector(this.cityLit.light.direction,35);
     if(this.composer)this.composer.render();else this.renderer.render(this.scene,this.camera);
   }
 }

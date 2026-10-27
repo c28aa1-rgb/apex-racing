@@ -18,6 +18,10 @@ export class CityNight {
   readonly group = new THREE.Group();
   private glow = glowTexture();
   private done = new WeakSet<THREE.Material>();
+  /** Every material lit here, with its full night glow; and the lamp effects. Scaled by setLevel. */
+  private lit = new Map<THREE.MeshStandardMaterial, number>();
+  private effects: { material: THREE.MeshBasicMaterial; opacity: number }[] = [];
+  private level = 1;
   constructor() { this.group.name = 'apex-city-night'; }
   /** Applies night materials and builds the lamp effects for a freshly loaded venue. Safe to call again. */
   apply(venue: THREE.Object3D) {
@@ -43,6 +47,7 @@ export class CityNight {
         // The ModelMaker building atlas paints its windows in: a faint self-lit copy of it reads as lit rooms.
         else if (material.name === 'Atlas' && material.map) { material.emissiveMap = material.map; material.emissive.set(0xffd9a3); material.emissiveIntensity = .07; }
         else continue;
+        this.lit.set(material, material.emissiveIntensity); material.emissiveIntensity *= this.level;
         material.needsUpdate = true;
       }
     });
@@ -69,8 +74,18 @@ export class CityNight {
     };
     pools.computeBoundingSphere(); halos.computeBoundingSphere(); halos.frustumCulled = false;
     this.group.add(pools, halos);
+    this.effects = [pools, halos].map(mesh => ({ material: mesh.material as THREE.MeshBasicMaterial, opacity: (mesh.material as THREE.MeshBasicMaterial).opacity }));
+    this.setLevel(this.level);
+  }
+  /** How lit the city is, 0 (daylight: lamps off, windows dark) to 1 (night). */
+  setLevel(level: number) {
+    this.level = level;
+    for (const [material, full] of this.lit) material.emissiveIntensity = full * level;
+    for (const { material, opacity } of this.effects) material.opacity = opacity * level;
+    this.group.visible = level > .01;
   }
   clear() {
+    this.effects = [];
     for (const child of [...this.group.children]) { if (child instanceof THREE.Mesh) { child.geometry.dispose(); (child.material as THREE.Material).dispose(); } this.group.remove(child); }
   }
 }
