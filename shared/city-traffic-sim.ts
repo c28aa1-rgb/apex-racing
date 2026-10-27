@@ -205,6 +205,13 @@ export class TrafficSim {
         if (!car.wreck) car.drift.copy(before).sub(car.position).setY(0);
       } else car.s += gap * .35;
       car.v = v;
+      // The machine running the traffic decides turns and lights: a car it has past the point where this copy meant
+      // to turn off, or past a stop line, carries on (its own record says where it went next).
+      if (car.lane === lane) {
+        if (car.plan && target > car.plan.at + .5) { car.plan = car.considered = undefined; car.joinWait = 0; }
+        const line = lane.stops.find(stop => target + car!.kind.front > stop.s && target - car!.kind.body.lengthM <= stop.exit);
+        if (line) car.committed = line;
+      }
     }
     car.seen = this.time;
     if (flags & 2) {
