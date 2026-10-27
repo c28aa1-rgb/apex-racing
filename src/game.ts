@@ -23,6 +23,8 @@ import { ghostCheckpointTimes, ghostGap } from './ghost-timing';
 
 export type Mode='menu'|'countdown'|'racing'|'paused'|'celebrating'|'finished'|'replay'|'party-loading'|'party-finished';
 const LIVE_KEYS=new Set<keyof GameState>(['time','speed','boost','drifting','driftCombo']);
+/** One second of Enter immunity after the loading screen closes (see Game.enterStarts). */
+const ENTER_GRACE_MS=1000;
 export type GameState={mode:Mode;track:Track;trackReady:boolean;trackLoading?:boolean;car:CarDefinition;modelReady:boolean;time:number;speed:number;checkpoint:number;countdown:number;boost:boolean;drifting:boolean;drafting?:boolean;ghost:boolean;muted:boolean;driftStrength:number;run?:Run;personalBest?:number;newBest:boolean;notice:string;fps:number;worstFrame:number;
   /** Training Grounds: cones touched this cone run, the live drift combo and the session's best combo. */
   penalties:number;driftCombo:number;driftBest:number;
@@ -157,6 +159,7 @@ export class Game {
     this.state={mode:'menu',track:TRACKS[0],trackReady:location.pathname.startsWith('/dev'),car:selectedCar,modelReady:false,time:0,speed:0,checkpoint:0,countdown:3,boost:false,drifting:false,ghost:read('ghost',true),muted:read('muted',false),driftStrength:this.driftStrength,personalBest:bestRun(TRACKS[0])?.timeMs,newBest:false,notice:'',worstFrame:0,fps:60,penalties:0,driftCombo:0,driftBest:0,atStart:false};
     this.coarse=this.state;
     void this.world.setCar(selectedCar.id,selectedCar.look).then(modelReady=>{if(this.carToken!==0)return;this.modelError=modelReady?'':'Car could not load. Check your connection and retry.';this.emit({modelReady});});
+    addEventListener('apex:continued',()=>{this.enterAfter=performance.now()+ENTER_GRACE_MS;});
     addEventListener('keydown',this.keyDown);addEventListener('keyup',event=>{this.keys.delete(event.code);if(this.settings.bindings.camera.includes(event.code))this.cameraKeyUp();});
     addEventListener('blur',()=>this.pause());document.addEventListener('visibilitychange',()=>{if(document.hidden)this.pause();});
     document.addEventListener('pointerlockchange',()=>{if(!document.pointerLockElement)this.pause();});
@@ -217,8 +220,15 @@ export class Game {
     if(has('shiftDown')&&this.state.mode==='racing')this.pendingShifts=Math.max(-8,Math.min(0,this.pendingShifts)-1);
     if(event.code==='Escape'&&this.state.mapOpen)this.toggleMap();
     else if(event.code==='Escape'||has('pause'))this.state.mode==='paused'?this.resume():this.pause();
-    if(event.code==='Enter'){if(this.state.mode==='menu'||this.state.mode==='finished')this.start();else if(this.state.mode==='paused')this.resume();else this.requestConeRun();}
+    if(event.code==='Enter'){if(this.state.mode==='menu'||this.state.mode==='finished'){if(this.enterStarts())this.start();}else if(this.state.mode==='paused')this.resume();else this.requestConeRun();}
   };
+  /** When Enter may start a race again: set as the loading screen closes (see enterStarts). */
+  private enterAfter=0;
+  /**
+   * Enter starts nothing while the loading screen is up, nor for ENTER_GRACE_MS after it closes: the press that closes
+   * it (or a quick second press) would otherwise land on the menu and start a race.
+   */
+  private enterStarts(){return !document.getElementById('loader')&&performance.now()>=this.enterAfter;}
   private input() {
     const respawn=this.queuedRespawn,flip=this.queuedFlip;this.queuedRespawn=false;this.queuedFlip=false;
     // A refused downshift cancels the rest of the queue so the driver can react.
