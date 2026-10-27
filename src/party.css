@@ -111,3 +111,21 @@ body:has(.is-party){overflow:auto}#app:has(.is-party){height:auto;min-height:100
   .party-results li>.party-results-best{grid-column:2/4;flex-direction:row;gap:6px;align-items:baseline;text-align:left}
   .party-position{font-size:26px;padding-right:8px}.party-race-status{gap:8px}
 }
+/* Into the online city for the first time: a driver name, then straight in. */
+.city-name{position:fixed;inset:auto;top:50%;left:50%;translate:-50% -50%;margin:0;width:min(440px,calc(100% - 32px));max-width:none;pointer-events:auto;background:#132b3bf2;color:#f1faee;border:1px solid #a8dadc70;border-radius:6px;box-shadow:0 24px 80px #07192255;padding:26px 24px 20px;backdrop-filter:blur(6px)}
+.city-name::backdrop{background:#0b151b80;backdrop-filter:blur(2px)}
+.city-name::before{content:"";position:absolute;top:0;left:0;right:0;height:4px;border-radius:6px 6px 0 0;background:linear-gradient(90deg,#ff3b4f 0 50%,#3d7bff 50%)}
+.city-name form{display:flex;flex-direction:column}
+.city-name form>span{font-size:12px;color:#a8dadc}
+.city-name h2{font-family:Shoulders,sans-serif;font-size:36px;line-height:1.05;margin:2px 0 8px}
+.city-name form>p{margin:0 0 18px;font-size:14px;line-height:1.5;color:#c9d8de}
+.city-name label{font-size:12px;color:#a8dadc;margin-bottom:6px}
+.city-name input{background:#0b1d27;border:1px solid #506567;border-radius:4px;color:#fff;font-size:16px;padding:12px 14px}
+.city-name input:focus{outline:2px solid #84e1d4;outline-offset:1px}
+.city-name small{font-size:11px;color:#a8c4c7;margin-top:6px}
+.city-name .city-name-error{margin:12px 0 0;font-size:13px;color:#ffb4a2}
+.city-name footer{display:flex;align-items:center;gap:10px;margin-top:20px}
+.city-name footer .party-primary{flex:1}
+.city-name footer button[type=button]{background:#1d3640;color:#fff;border:1px solid #506567;border-radius:4px;padding:12px 16px;font-size:14px}
+.city-name footer button[type=button]:hover:not(:disabled){background:#264652}
+.party-race-order .party-city-private{display:block;margin-top:4px;padding:8px 0 2px;border-top:1px solid #a8dadc26;font-size:11px;line-height:1.4;color:#a8c4c7}

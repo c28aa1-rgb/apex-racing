@@ -9,7 +9,7 @@ type Destination = { track: Track; art: ReactNode; facts: [string, string][] };
 const DESTINATIONS: Destination[] = [
   // Card art is rendered in the game itself (work/art capture): the night skyline from above the Founders Loop,
   // and the car park from its corner, so the cards show exactly what the player drives into.
-  { track: CITY, facts: [['Districts', '5'], ['Roads', '13'], ['Traffic', 'Live']], art: <img src={assetUrl('art/free-roam-city.jpg')} alt="" /> },
+  { track: CITY, facts: [['Districts', '5'], ['Traffic', 'Live'], ['Online', 'Up to 8']], art: <img src={assetUrl('art/free-roam-city.jpg')} alt="" /> },
   { track: TRAINING_GROUNDS, facts: [['Surface', 'Flat'], ['Cones', 'Yes'], ['Secret', '1']], art: <img src={assetUrl('art/free-roam-training.jpg')} alt="" /> },
 ];
 

@@ -6,7 +6,8 @@ import type { Gate, Vec3, Quat } from './tracks';
  * can place the other car at the same moment); best is the sender's fastest completed lap in ms.
  */
 export type PartyPose = { sequence: number; p: Vec3; q: Quat; v?: Vec3; lap: number; checkpoint: number; finished: boolean; t?: number; best?: number };
-export type PartyRacer = PartyMember & { slot: number; ready: boolean; pose?: PartyPose; finishedAt?: number; disconnected?: boolean };
+/** away: in the public city, off racing a street race on their own; hidden and not solid until they come back. */
+export type PartyRacer = PartyMember & { slot: number; ready: boolean; pose?: PartyPose; finishedAt?: number; disconnected?: boolean; away?: boolean };
 export type PartyRace = {
   id: string; createdAt: number; startAt: number | null; ended: boolean;
   grid: Gate[]; checkpoints: Gate[]; finish: Gate; racers: PartyRacer[];
@@ -23,6 +24,8 @@ export type PartyLobby = {
   settings: PartySettings;
   members: PartyMember[];
   race?: PartyRace;
+  /** The public city: anyone driving into Racing City lands here. No host controls; it runs while anyone is in it. */
+  public?: boolean;
 };
 /** removed: this player was just removed from their lobby by its host (said once, when their lobby disappears). */
 export type PartyResponse = { lobby: PartyLobby | null; removed?: boolean };
@@ -30,5 +33,11 @@ export const DEFAULT_PARTY_SETTINGS: PartySettings = { trackId: 'bugatti', weath
 /** A city party: free roam together in Racing City (no laps or finish; friends can join while it runs). */
 export const CITY_PARTY_TRACK = 'racing-city';
 export const isCityParty = (settings: Pick<PartySettings, 'trackId'>) => settings.trackId === CITY_PARTY_TRACK;
+/**
+ * The public city's rooms, filled in order: everyone entering Racing City joins the first with a free place. Codes use
+ * the lobby alphabet (no I, O, 0 or 1), so they also work typed into Join a lobby.
+ */
+export const PUBLIC_CITY_CODES = Array.from('ABCDEFGHJKLMNPQRSTUVWXYZ23456789', c => `PUBLC${c}`);
+export const isPublicCityCode = (code: string) => code.length === 6 && code.startsWith('PUBLC');
 /** A city party's traffic update for one driver (see shared/city-party-traffic.ts and CityTraffic.follow). */
 export type PartyTrafficPacket = { at: number; cars: number[][]; signals: number[]; handoff?: boolean; seed?: boolean };

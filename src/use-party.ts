@@ -23,9 +23,11 @@ export function useParty(player: Player | null, active: boolean) {
   const [checking, setChecking] = useState(false);
   const [busy, setBusy] = useState(false);
   const visited = useRef(false), activeRef = useRef(active), generation = useRef(0), mutating = useRef(false);
+  // Joining the public city (from Free roam) also starts keeping the lobby current.
+  const [inCity, setInCity] = useState(false);
   activeRef.current = active;
   if (active) visited.current = true;
-  const enabled = visited.current;
+  const enabled = visited.current || inCity;
   const accept = useCallback((next: PartyLobby | null) => {
     setLobby(previous => previous && next?.code === previous.code && next.revision < previous.revision ? previous : next);
   }, []);
@@ -77,8 +79,16 @@ export function useParty(player: Player | null, active: boolean) {
       if (cause instanceof PartyError && cause.status === 404 && path !== '/join') setLobby(null);
     } finally { generation.current++; mutating.current = false; setBusy(false); }
   };
+  /** Into the public city. Throws when it cannot be reached, so the caller can drive the city alone instead. */
+  const joinCity = async (identity: Player, carId: CarId) => {
+    mutating.current = true; generation.current++; setBusy(true); setError('');
+    try {
+      const result = await requestParty('/city', identity.token, 'POST', { carId });
+      accept(result.lobby); setConnected(true); setInCity(true);
+    } finally { generation.current++; mutating.current = false; setBusy(false); }
+  };
   return {
-    lobby, error, connected, checking, busy, clearError: () => setError(''),
+    lobby, error, connected, checking, busy, clearError: () => setError(''), joinCity,
     create: (identity: Player, carId: CarId, settings: Partial<PartySettings>) => mutate('', 'POST', { carId, settings }, identity),
     join: (identity: Player, carId: CarId, code: string) => mutate('/join', 'POST', { carId, code }, identity),
     chooseCar: (carId: CarId) => mutate('/me', 'PATCH', { carId }),

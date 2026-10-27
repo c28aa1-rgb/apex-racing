@@ -91,7 +91,16 @@ export class Game {
   onLeaveTraining?:()=>void;
   /** Your finishing position in the current party race, once the server confirms it. */
   partyPlace?:number;
-  partyRace?: { id: string; lap: number; laps: number; ready: boolean; started: boolean; finished: boolean; city?: boolean };
+  partyRace?: { id: string; lap: number; laps: number; ready: boolean; started: boolean; finished: boolean; city?: boolean; public?: boolean };
+  /**
+   * The public city while this driver races a street race alone: the party is set aside (the race runs like any solo
+   * race, others stop seeing this car) and comes back when the race is left. See goAway and comeBack.
+   */
+  private partyAway?: { race: NonNullable<Game['partyRace']>; weather?: PartyWeather };
+  /** Set by the party panel: leaves the party (the city's own way out while racing away from it). */
+  leaveParty?: () => void;
+  /** Other drivers' cars still loading (late arrivals in a city party). */
+  private remoteLoading=new Set<string>();
   /** City party: the server asked for the traffic around this driver, to start its own from. */
   private partySeedWanted=false;
   private partySequence=0;
@@ -398,7 +407,7 @@ export class Game {
     if(this.sim.speed>2){this.emit({notice:'Stop the car in the box first'});this.noticeUntil=performance.now()+1400;return;}
     const p=this.sim.car.translation(),forward=rotate(this.sim.car.rotation(),{x:0,y:0,z:1}),round=(value:number)=>Math.round(value*1000)/1000;
     const origin={x:round(p.x),z:round(p.z),heading:round(Math.atan2(forward.x,forward.z))},race=CITY_RACES.find(r=>r.id===this.state.atRace);
-    if(race){void this.startStreetRace(race,origin);return;}
+    if(race){if(this.partyRace?.public)this.goAway();void this.startStreetRace(race,origin);return;}
     void this.startConeRun(origin);
   }
   /**
@@ -431,10 +440,30 @@ export class Game {
     this.runOrigin=undefined;this.previousFrame=undefined;this.inputs=[];this.steeringInputs=[];this.driftInputs=[];this.lastPenalties=0;this.lastHits=this.sim.hitCount;this.accumulator=0;
     this.ghostSim?.dispose();this.ghostSim=undefined;this.ghostRun=undefined;this.world.ghostFrame(undefined);
   }
+  /**
+   * The public city, off to race a street race alone: the race runs exactly like a solo one (its own traffic, no other
+   * drivers, nothing from the party touching the simulation), and the party waits until it is left (comeBack).
+   */
+  private goAway() {
+    const race=this.partyRace;if(!race)return;
+    this.partyAway={race,weather:this.partyWeather};this.partyRace=undefined;this.partyWeather=undefined;
+    for(const [id,remote] of this.remoteCars){remote.group.visible=false;this.sim.setObstacle(id,remote.carId,undefined);}
+    // Free-roam cars carry on here while away; the server's come back with the party.
+    this.world.traffic?.standalone();
+  }
+  private comeBack() {
+    const away=this.partyAway;if(!away)return;
+    this.partyAway=undefined;this.partyRace=away.race;this.partyWeather=away.weather;this.sim.maxTicks=Infinity;
+    if(away.weather){this.sim.weather=away.weather;this.world.setWeather(away.weather);}
+  }
+  /** A message across the top of the screen for a few seconds. */
+  notify(text:string,ms=4000){this.emit({notice:text});this.noticeUntil=performance.now()+ms;}
+  /** Whether this driver is away from the public city, racing a street race. */
+  get partyIsAway(){return !!this.partyAway;}
   /** Back to city free roam from a street race (the pause menu). */
   leaveStreetRace() {
     if(this.state.track.kind!=='street')return;
-    this.carryOnInCity(false);this.keys.clear();this.world.setMouseLook(true);this.world.lockMouse();
+    this.carryOnInCity(false);this.comeBack();this.keys.clear();this.world.setMouseLook(true);this.world.lockMouse();
     this.emit({track:CITY,trackReady:true,mode:'racing',run:undefined,newBest:false,personalBest:undefined,penalties:0,checkpoint:0,driftCombo:0,notice:''});
   }
   /** A street race never stops the car either: the run is saved and posted, and city free roam carries on. */
@@ -442,7 +471,7 @@ export class Game {
     const track=this.state.track;
     if(newBest&&saveBestRun(track,run))void this.world.setGhostCar(run.carId);
     const result={run,timeMs:run.timeMs,newBest,previousBest,penalties:0,offCourse:0,at:performance.now(),name:track.name};
-    this.carryOnInCity(true);
+    this.carryOnInCity(true);this.comeBack();
     this.world.confettiBurst();this.sound.cue('finish',this.settings.effectsVolume);
     this.emit({track:CITY,trackReady:true,mode:'racing',run,newBest,personalBest:undefined,penalties:0,checkpoint:0,driftCombo:0,coneResult:result,notice:''});
   }
@@ -453,7 +482,7 @@ export class Game {
     await initPhysics(CONE_TRACK);if(token!==this.selectionToken)return;
     this.emit({trackReady:true});this.start(true);
   }
-  menu() {this.closeCameraWheel();if(this.partyRace)return;this.chosenGhost=undefined;
+  menu() {this.closeCameraWheel();if(this.partyAway){this.leaveParty?.();return;}if(this.partyRace)return;this.chosenGhost=undefined;
     if(this.carBeforeReplay){const own=this.carBeforeReplay;this.carBeforeReplay=undefined;void this.selectCar(own);}
     // Leaving free roam goes back to the Garage, where it is opened from.
     if(this.state.track.lot||this.freeRoam||this.state.track.kind==='street'){this.world.setHeadlights(false);this.emit({mapOpen:false,venueLoad:undefined});
@@ -560,7 +589,7 @@ export class Game {
     const track=structuredClone(city?CITY:CITY_RACES.find(t=>t.id===lobby.settings.trackId)??TRACKS.find(t=>t.id===lobby.settings.trackId)!);
     track.spawn=structuredClone(race.grid[me.slot]);track.checkpoints=structuredClone(race.checkpoints);track.finish=structuredClone(race.finish);
     this.partyFinishDriver=undefined;this.spectating=undefined;this.partySeedWanted=false;
-    this.partyRace={id:race.id,lap:me.pose?.lap??1,laps:lobby.settings.laps,ready:false,started:false,finished:!!(me.finishedAt||me.disconnected||race.ended),city};
+    this.partyRace={id:race.id,lap:me.pose?.lap??1,laps:lobby.settings.laps,ready:false,started:false,finished:!!(me.finishedAt||me.disconnected||race.ended),city,public:!!lobby.public};this.partyAway=undefined;
     this.partySequence=me.pose?.sequence??0;this.lapStartTick=me.pose?-1:0;this.partyBestLap=me.pose?.best;this.partyView=false;this.keys.clear();this.garageView=false;this.awaitingPedal=false;
     this.inputs=[];this.steeringInputs=[];this.driftInputs=[];this.accumulator=0;this.previousFrame=undefined;
     this.lastCheckpoint=0;this.lastRespawns=0;this.queuedRespawn=false;this.queuedFlip=false;this.pendingShifts=0;this.seenBlockedShifts=0;
@@ -585,16 +614,8 @@ export class Game {
       if(this.partyRace?.id!==race.id)return;
     }
     this.partyLoadStep='Loading other drivers\' cars';this.emit();
-    for(const racer of race.racers.filter(r=>r.id!==selfId)) {
-      const model=await this.world.partyModel(racer.carId);
-      if(this.partyRace?.id!==race.id)return;
-      const group=new Group();group.add(model);const rig=new CarRig(model,carById(racer.carId));
-      const label=document.createElement('canvas');label.width=512;label.height=64;
-      const context=label.getContext('2d')!;context.fillStyle='#132127';context.fillRect(0,0,512,64);context.font='bold 32px sans-serif';context.textAlign='center';context.fillStyle='#ffffff';context.fillText(racer.nickname,256,44,480);
-      const sprite=new Sprite(new SpriteMaterial({map:new CanvasTexture(label),depthTest:false}));sprite.scale.set(4,.5,1);sprite.position.y=2.4;group.add(sprite);
-      const gate=race.grid[racer.slot];group.position.copy(gate.position);group.position.y+=.8;group.quaternion.copy(gate.rotation);
-      this.world.scene.add(group);this.remoteCars.set(racer.id,{group,rig,wheels:{speed:0,steer:0,brake:0},carId:racer.carId,name:racer.nickname,sequence:-1,motion:new RemoteMotion(track.metersPerUnit)});
-    }
+    for(const racer of race.racers.filter(r=>r.id!==selfId&&!r.disconnected))await this.addRemote(race,racer);
+    if(this.partyRace?.id!==race.id)return;
     // Ready means this screen can show the grid: compile every shader and upload every mesh first,
     // then let two frames draw. The server holds the lights until every driver reports ready.
     this.partyLoadStep='Warming up the track';this.emit();
@@ -605,12 +626,41 @@ export class Game {
     this.partyRace.ready=true;this.partyLoadStep='';this.world.skidMarks.clear();this.world.carDamage.reset();this.world.chase(this.sim,0,true);
     this.emit({trackReady:true,modelReady:true,time:me.finishedAt&&race.startAt?me.finishedAt-race.startAt:0});
   }
+  /** Another driver's car, with their name above it, waiting on their grid place until their first position arrives. */
+  private async addRemote(race:PartyRace,racer:PartyRacer) {
+    if(this.remoteCars.has(racer.id)||this.remoteLoading.has(racer.id))return;
+    this.remoteLoading.add(racer.id);
+    try{
+      const model=await this.world.partyModel(racer.carId);
+      if(this.partyRace?.id!==race.id&&this.partyAway?.race.id!==race.id)return;
+      const group=new Group();group.add(model);const rig=new CarRig(model,carById(racer.carId));
+      const label=document.createElement('canvas');label.width=512;label.height=64;
+      const context=label.getContext('2d')!;context.fillStyle='#132127';context.fillRect(0,0,512,64);context.font='bold 32px sans-serif';context.textAlign='center';context.fillStyle='#ffffff';context.fillText(racer.nickname,256,44,480);
+      const sprite=new Sprite(new SpriteMaterial({map:new CanvasTexture(label),depthTest:false}));sprite.scale.set(4,.5,1);sprite.position.y=2.4;group.add(sprite);
+      const gate=race.grid[racer.slot]??race.grid[0];group.position.copy(gate.position);group.position.y+=.8;group.quaternion.copy(gate.rotation);
+      // A city party shows a car once its driver is out driving; a race shows the whole grid.
+      group.visible=!this.partyRace?.city;
+      this.world.scene.add(group);this.remoteCars.set(racer.id,{group,rig,wheels:{speed:0,steer:0,brake:0},carId:racer.carId,name:racer.nickname,sequence:-1,motion:new RemoteMotion(this.state.track.metersPerUnit)});
+    }finally{this.remoteLoading.delete(racer.id);}
+  }
+  private dropRemote(id:string) {
+    const remote=this.remoteCars.get(id);if(!remote)return;
+    this.sim.setObstacle(id,remote.carId,undefined);remote.rig.dispose();this.world.scene.remove(remote.group);
+    remote.group.traverse(object=>{if(object instanceof Sprite){object.material.map?.dispose();object.material.dispose();}});
+    this.remoteCars.delete(id);
+  }
   syncParty(race:PartyRace,serverNow:number) {
     const local=this.partyRace;if(!local||local.id!==race.id)return;
+    // A city party: friends arrive and leave while it runs.
+    if(local.city&&local.ready){
+      for(const racer of race.racers)if(racer.id!==this.partySelf&&!racer.disconnected&&!this.remoteCars.has(racer.id))void this.addRemote(race,racer);
+      for(const id of [...this.remoteCars.keys()])if(!race.racers.some(racer=>racer.id===id))this.dropRemote(id);
+    }
     for(const racer of race.racers){const remote=this.remoteCars.get(racer.id);if(remote){
       if(racer.pose&&racer.pose.sequence>remote.sequence){remote.sequence=racer.pose.sequence;if(remote.motion.add(racer.pose,this.serverTime()))remote.target=racer.pose;}
       if(racer.finishedAt||racer.pose?.finished)remote.finishedAt??=performance.now();
-      if(racer.disconnected)remote.group.visible=false;else if(!remote.finishedAt)remote.group.visible=true;
+      if(local.city)remote.group.visible=!racer.disconnected&&!racer.away&&!!remote.target;
+      else if(racer.disconnected)remote.group.visible=false;else if(!remote.finishedAt)remote.group.visible=true;
     }}
     const mine=race.racers.find(racer=>racer.id===this.partySelf);
     if(mine?.finishedAt){const place=race.racers.filter(racer=>racer.finishedAt&&racer.finishedAt<=mine.finishedAt!).length;if(place!==this.partyPlace){this.partyPlace=place;this.emit();}}
@@ -639,7 +689,11 @@ export class Game {
    * near (within PARTY_CLOSE_M, or closing on you within PARTY_CLOSE_S), where contact needs every pose.
    */
   partyPoseInterval(){
+    // Away racing a street race: only enough to stay in the public city.
+    if(this.partyAway)return 1000;
     if(!this.partyRace?.city)return 1000/PARTY_POSE_HZ;
+    // Nobody else out driving: twice a second keeps this car in the city for anyone arriving.
+    if(![...this.remoteCars.values()].some(remote=>remote.group.visible))return 500;
     const p=this.sim.car.translation(),v=this.sim.car.linvel();
     for(const remote of this.remoteCars.values()){
       if(!remote.group.visible)continue;
@@ -719,6 +773,8 @@ export class Game {
     rig.animate(wheels.steer,travel,wheels.brake);
   }
   endParty() {
+    if(this.partyAway){this.partyRace=this.partyAway.race;this.partyAway=undefined;}
+    this.remoteLoading.clear();
     this.sound.update(this.sim,false,this.state.muted,this.settings);this.partyPlace=undefined;this.partyFinishedAt=0;this.world.endFinish();
     this.spectating=undefined;
     for(const [id,remote] of this.remoteCars)this.sim.setObstacle(id,remote.carId,undefined);this.partyFinishDriver=undefined;
@@ -839,7 +895,7 @@ export class Game {
     if(this.freeRoam&&this.state.mode==='racing'&&this.state.trackReady){
       const zone=this.state.track.lot?.startZone,p=this.sim.car.translation();
       // In the city, any street race's start box.
-      const race=this.state.track.night&&!this.partyRace?CITY_RACES.find(r=>Math.abs(p.y-r.street!.zone.y)<4&&inStartZone(r.street!.zone,p.x,p.z)):undefined;
+      const race=this.state.track.night&&(!this.partyRace||this.partyRace.public&&this.partyRace.started)?CITY_RACES.find(r=>Math.abs(p.y-r.street!.zone.y)<4&&inStartZone(r.street!.zone,p.x,p.z)):undefined;
       const inside=!!race||!!zone&&Math.abs(p.x-zone.x)<zone.w/2&&Math.abs(p.z-zone.z)<zone.l/2;
       if(inside!==this.state.atStart||race?.id!==this.state.atRace)this.emit({atStart:inside,atRace:race?.id});
     }else if(this.state.atStart)this.emit({atStart:false,atRace:undefined});

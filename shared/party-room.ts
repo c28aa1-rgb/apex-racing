@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { CAR_IDS, type CarId } from './cars';
 import { CITY, trackById, placementGate, type Track, type Vec3 } from './tracks';
-import { CITY_PARTY_TRACK, DEFAULT_PARTY_SETTINGS, PARTY_WEATHER, isCityParty, type PartyLobby, type PartyMember, type PartySettings, type PartyPose, type PartyTrafficPacket } from './party';
+import { CITY_PARTY_TRACK, DEFAULT_PARTY_SETTINGS, PARTY_WEATHER, PUBLIC_CITY_CODES, isCityParty, isPublicCityCode, type PartyLobby, type PartyMember, type PartySettings, type PartyPose, type PartyTrafficPacket } from './party';
 import { PARTY_GRIDS } from './party-grids';
 import { PartyTraffic, MAX_SEED, type TrafficKnock } from './city-party-traffic';
 
@@ -23,7 +23,8 @@ const knockSchema = z.object({ id: z.number().int().nonnegative(), p: z.object({
   v: z.object({ x: z.number().finite().min(-200).max(200), z: z.number().finite().min(-200).max(200) }).strict(), w: z.object({ y: z.number().finite().min(-50).max(50) }).strict() }).strict();
 /** City party: cars the driver knocked, and (when the server asked) the driver's own traffic to start from. */
 const trafficSchema = z.object({ knocks: z.array(knockSchema).max(8).optional(), seed: z.array(record).max(MAX_SEED).optional() }).strict();
-export const updateSchema = z.object({ raceId: z.string().uuid(), ready: z.boolean(), pose: poseSchema.optional(), traffic: trafficSchema.optional() }).strict();
+export const updateSchema = z.object({ raceId: z.string().uuid(), ready: z.boolean(), pose: poseSchema.optional(), traffic: trafficSchema.optional(), away: z.boolean().optional() }).strict();
+export const citySchema = carSchema.extend({ code: z.string().refine(isPublicCityCode).optional() }).strict();
 /** Where a city party's drivers start: two columns on the acceleration strip by the city's spawn, 10 m apart. */
 const CITY_GRID = Array.from({ length: 8 }, (_, i) => ({ position: { x: -703.5 + (i % 2) * 7, y: 0, z: -285 + Math.floor(i / 2) * 11 }, heading: 0 }));
 /**
@@ -48,8 +49,10 @@ function streetGrid(track: Track) {
     return placementGate(track, { position: { x: p.x + right.x * side, y: p.y, z: p.z + right.z * side }, heading: Math.atan2(p.fx, p.fz) });
   });
 }
-/** A city party runs this long at most; races end after an hour. */
+/** A city party runs this long at most; races end after an hour. The public city runs for as long as anyone is in it. */
 const CITY_PARTY_MS = 6 * 3_600_000;
+/** The public city's room size: the city grid's places. */
+export const PUBLIC_CITY_SIZE = 8;
 type Placement = { position: Vec3; heading: number };
 type CircuitConfig = { starts?: Record<string, Placement>; finishes?: Record<string, Placement>; checkpoints?: Record<string, Placement[]> };
 export const kickSchema = z.object({ id: z.string().min(1).max(64) }).strict();
@@ -86,7 +89,8 @@ export class Parties {
       const race = room.race;
       if (race && !race.ended) {
         for (const racer of race.racers) if (!racer.disconnected && this.now() - (room.seen.get(racer.id) ?? 0) > 20_000 && race.startAt) { racer.disconnected = true; room.revision++; }
-        if ((!race.startAt && this.now() - race.createdAt > 180_000) || (race.startAt && (this.now() - race.startAt > (isCityParty(room.settings) ? CITY_PARTY_MS : 3_600_000) || race.racers.every(r => r.finishedAt || r.disconnected)))) { race.ended = true; room.revision++; }
+        // The public city never ends: it closes when its last driver leaves.
+        if (!room.public && ((!race.startAt && this.now() - race.createdAt > 180_000) || (race.startAt && (this.now() - race.startAt > (isCityParty(room.settings) ? CITY_PARTY_MS : 3_600_000) || race.racers.every(r => r.finishedAt || r.disconnected))))) { race.ended = true; room.revision++; }
       }
     }
   }
@@ -103,7 +107,7 @@ export class Parties {
   /** Whether any city party's traffic is running (a backend keeps its timer going only then). */
   get trafficRunning() { return [...this.rooms.values()].some(room => !!room.traffic); }
   private snapshot(room: LiveLobby): PartyLobby {
-    return structuredClone({ code: room.code, hostId: room.hostId, revision: room.revision, settings: room.settings, members: room.members, ...(room.race ? { race: room.race } : {}) });
+    return structuredClone({ code: room.code, hostId: room.hostId, revision: room.revision, settings: room.settings, members: room.members, ...(room.race ? { race: room.race } : {}), ...(room.public ? { public: true } : {}) });
   }
   private room(id: string) {
     const code = this.membership.get(id);
@@ -116,12 +120,16 @@ export class Parties {
   }
   private remove(room: LiveLobby, id: string) {
     const racer = room.race?.racers.find(r => r.id === id); if (racer) racer.disconnected = true;
+    // The public city sees drivers come and go all day: its list keeps only who is there.
+    if (room.public && room.race) room.race.racers = room.race.racers.filter(r => r.id !== id);
     room.traffic?.leave(id);
     room.members = room.members.filter(member => member.id !== id);
     room.seen.delete(id); this.membership.delete(id); room.revision++;
     if (!room.members.length) this.rooms.delete(room.code);
     else if (room.hostId === id) room.hostId = room.members[0].id;
   }
+  /** The public city has no host: nobody changes its settings, removes drivers or ends it. */
+  private hosted(room: LiveLobby) { if (room.public) fail(403, 'The public city has no host controls. Make a private lobby in Party to run your own.'); }
   current(player: Identity) {
     this.sweep();
     const room = this.room(player.id);
@@ -136,13 +144,15 @@ export class Parties {
     if (this.rooms.size >= 1000) return fail(503, 'All lobbies are busy. Try again shortly.');
     if (roomCode && this.rooms.has(roomCode)) return fail(409, 'Lobby code collision. Try again.');
     let code: string;
-    do { code = roomCode ?? Array.from({ length: 6 }, () => alphabet[crypto.getRandomValues(new Uint8Array(1))[0] % alphabet.length]).join(''); } while (this.rooms.has(code));
+    do { code = roomCode ?? Array.from({ length: 6 }, () => alphabet[crypto.getRandomValues(new Uint8Array(1))[0] % alphabet.length]).join(''); } while (this.rooms.has(code) || (!roomCode && isPublicCityCode(code)));
+    if (isPublicCityCode(code)) return fail(409, 'Lobby code collision. Try again.');
     const room: LiveLobby = { code, hostId: player.id, revision: 1, settings: { ...DEFAULT_PARTY_SETTINGS, ...settings }, members: [{ ...player, carId }], seen: new Map([[player.id, this.now()]]) };
     this.rooms.set(code, room); this.membership.set(player.id, code);
     return this.snapshot(room);
   }
   join(player: Identity, code: string, carId: CarId) {
     this.sweep();
+    if (isPublicCityCode(code)) return this.joinPublic(player, carId, code);
     const room = this.rooms.get(code);
     if (!room) return fail(404, 'Lobby not found. Check the code with your host.');
     const current = this.room(player.id);
@@ -154,12 +164,59 @@ export class Parties {
     if (room.members.length >= room.settings.maxPlayers) return fail(409, 'This lobby is full. Ask the host to open another place.');
     room.members.push({ ...player, carId }); room.seen.set(player.id, this.now()); room.revision++;
     // A city party carries on while friends join: they start on a free place of the grid.
-    if (joining) {
-      const taken = new Set(room.race!.racers.filter(r => !r.disconnected).map(r => r.slot)), slot = [...Array(8).keys()].find(i => !taken.has(i)) ?? room.race!.racers.length % 8;
-      room.race!.racers.push({ ...player, carId, slot, ready: false });
-    }
+    if (joining) this.seat(room, { ...player, carId });
     this.membership.set(player.id, code);
     return this.snapshot(room);
+  }
+  /** A driver joining a city party that is running: they start on a free place of the grid. */
+  private seat(room: LiveLobby, member: PartyMember) {
+    const race = room.race!, taken = new Set(race.racers.filter(r => !r.disconnected && r.id !== member.id).map(r => r.slot)), slot = [...Array(8).keys()].find(i => !taken.has(i)) ?? race.racers.length % 8;
+    race.racers = race.racers.filter(r => r.id !== member.id);
+    race.racers.push({ ...member, slot, ready: false });
+  }
+  /** A city party's session: the drivers in the lobby on the city grid, in lobby order. */
+  private cityRace(room: LiveLobby) {
+    room.race = { id: crypto.randomUUID(), createdAt: this.now(), startAt: null, ended: false, grid: CITY_GRID.map(p => placementGate(CITY, p)), checkpoints: [], finish: structuredClone(CITY.finish),
+      racers: room.members.map((member, i) => ({ ...member, slot: i, ready: false })) };
+  }
+  /**
+   * Into one public city room (made when its first driver arrives): straight into its running session. A driver
+   * still listed in another public room (a lost tab) is moved; one in a private lobby has to leave it first.
+   */
+  joinPublic(player: Identity, carId: CarId, code: string) {
+    this.sweep();
+    if (!isPublicCityCode(code)) return fail(400, 'Not a public city room.');
+    const current = this.room(player.id);
+    if (current && current.code !== code) { if (!current.public) return fail(409, 'Leave your current lobby before joining another.'); this.remove(current, player.id); }
+    let room = this.rooms.get(code);
+    if (room?.members.some(member => member.id === player.id)) {
+      // Back in after a reload: on the grid again, in the car chosen now.
+      const member = room.members.find(member => member.id === player.id)!;
+      member.carId = carId; this.touch(room, player); room.revision++;
+      if (room.race && !room.race.ended) this.seat(room, member); else this.cityRace(room);
+      return this.snapshot(room);
+    }
+    if (room && room.members.length >= PUBLIC_CITY_SIZE) return fail(409, 'This public city is full.');
+    if (!room) {
+      if (this.rooms.size >= 1000) return fail(503, 'All lobbies are busy. Try again shortly.');
+      room = { code, hostId: player.id, revision: 1, public: true, settings: { ...DEFAULT_PARTY_SETTINGS, trackId: CITY_PARTY_TRACK, maxPlayers: PUBLIC_CITY_SIZE }, members: [], seen: new Map() };
+      this.rooms.set(code, room);
+    }
+    const member = { ...player, carId };
+    room.members.push(member); room.seen.set(player.id, this.now()); this.membership.set(player.id, code); room.revision++;
+    if (!room.race || room.race.ended) this.cityRace(room); else this.seat(room, member);
+    return this.snapshot(room);
+  }
+  /** The public city room with a free place, filling them in order (one backend holding every room). */
+  joinCity(player: Identity, carId: CarId) {
+    const current = this.room(player.id);
+    if (current?.public) return this.joinPublic(player, carId, current.code);
+    if (current) return fail(409, 'Leave your current lobby before joining another.');
+    for (const code of PUBLIC_CITY_CODES) {
+      const room = this.rooms.get(code);
+      if (!room || room.members.length < PUBLIC_CITY_SIZE) return this.joinPublic(player, carId, code);
+    }
+    return fail(503, 'The public city is full. Try again shortly.');
   }
   car(player: Identity, carId: CarId) {
     this.sweep();
@@ -175,6 +232,7 @@ export class Parties {
     this.sweep();
     const room = this.room(player.id);
     if (!room) return fail(404, 'Your lobby has closed. Create or join a lobby.');
+    this.hosted(room);
     if (room.hostId !== player.id) return fail(403, 'Only the host can change race settings.');
     if (room.race) return fail(409, 'Settings are locked during a race.');
     if (patch.maxPlayers !== undefined && patch.maxPlayers < room.members.length) return fail(409, 'Player limit cannot be lower than the current lineup.');
@@ -189,6 +247,7 @@ export class Parties {
     this.sweep();
     const room = this.room(player.id);
     if (!room) return fail(404, 'Your lobby has closed. Create or join a lobby.');
+    this.hosted(room);
     if (room.hostId !== player.id) return fail(403, 'Only the host can remove drivers.');
     if (targetId === player.id) return fail(400, 'Leave the lobby instead of removing yourself.');
     if (room.race) return fail(409, 'Drivers can be removed between races.');
@@ -206,12 +265,11 @@ export class Parties {
   start(player: Identity, config: CircuitConfig) {
     const room = this.room(player.id);
     if (!room) return fail(404, 'Your lobby has closed.');
+    if (room.public) return this.snapshot(room);
     if (room.hostId !== player.id) return fail(403, 'Only the host can start the race.');
     if (room.race) return this.snapshot(room);
     if (isCityParty(room.settings)) {
-      const order = room.members.map((_, i) => i);
-      room.race = { id: crypto.randomUUID(), createdAt: this.now(), startAt: null, ended: false, grid: CITY_GRID.map(p => placementGate(CITY, p)), checkpoints: [], finish: structuredClone(CITY.finish),
-        racers: room.members.map((member, i) => ({ ...member, slot: order[i], ready: false })) };
+      this.cityRace(room);
       this.touch(room, player); room.revision++;
       return this.snapshot(room);
     }
@@ -240,7 +298,7 @@ export class Parties {
     this.touch(room, player); room.revision++;
     return this.snapshot(room);
   }
-  update(player: Identity, raceId: string, ready: boolean, pose?: PartyPose, traffic?: { knocks?: TrafficKnock[]; seed?: number[][] }) {
+  update(player: Identity, raceId: string, ready: boolean, pose?: PartyPose, traffic?: { knocks?: TrafficKnock[]; seed?: number[][] }, away = false) {
     this.sweep();
     const room = this.room(player.id), race = room?.race, city = !!room && isCityParty(room.settings);
     if (!room || !race || race.id !== raceId) return fail(409, 'Race session ended. Return to the lobby.');
@@ -250,6 +308,8 @@ export class Parties {
     if (!racer || racer.disconnected) return fail(409, 'You are no longer in this race.');
     this.touch(room, player);
     if (ready && !racer.ready) { racer.ready = true; room.revision++; }
+    // The public city: off racing a street race alone, and back.
+    if (room.public && away !== !!racer.away) { if (away) racer.away = true; else delete racer.away; room.revision++; }
     // A city party has no lights: driving starts as soon as everyone has loaded.
     if (!race.ended && !race.startAt && race.racers.every(r => r.ready || r.disconnected)) { race.startAt = this.now() + (city ? 300 : 6500); room.revision++; }
     // ponytail: casual client-authoritative driving; never eligible for verified leaderboards.
@@ -260,8 +320,8 @@ export class Parties {
       racer.pose = structuredClone(pose);
       if (pose.finished && racer.finishedAt === undefined) { racer.finishedAt = this.now(); room.revision++; }
     }
-    if (race.racers.every(r => r.finishedAt || r.disconnected)) { race.ended = true; room.revision++; }
-    const packet = city && !race.ended ? this.cityTraffic(room, player.id, ready ? pose : undefined, traffic) : undefined;
+    if (!room.public && race.racers.every(r => r.finishedAt || r.disconnected)) { race.ended = true; room.revision++; }
+    const packet = city && !race.ended ? this.cityTraffic(room, player.id, ready && !racer.away ? pose : undefined, traffic) : undefined;
     return { race: structuredClone(race), serverNow: this.now(), ...(packet ? { traffic: packet } : {}) };
   }
   /**
@@ -272,7 +332,9 @@ export class Parties {
   private cityTraffic(room: LiveLobby, id: string, pose?: PartyPose, traffic?: { knocks?: TrafficKnock[]; seed?: number[][] }): PartyTrafficPacket | undefined {
     // Drivers still loading count too (placed at their grid place until they drive), so they arrive to the server's
     // traffic instead of seeing their own swapped for it.
-    const race = room.race!, now = this.now(), present = race.racers.filter(r => !r.disconnected && now - (room.seen.get(r.id) ?? 0) < PRESENT_MS);
+    const race = room.race!, now = this.now(), present = race.racers.filter(r => !r.disconnected && !r.away && now - (room.seen.get(r.id) ?? 0) < PRESENT_MS);
+    // Away racing a street race: the server's cars stop gathering round them, and they get none.
+    if (!present.some(r => r.id === id)) { room.traffic?.leave(id); if (race.racers.find(r => r.id === id)?.away) return undefined; }
     const at = (r: typeof present[number]) => r.pose && now - (r.pose.t ?? now) < PRESENT_MS ? r.pose : { p: race.grid[r.slot]?.position ?? race.grid[0].position, v: undefined };
     if (!room.traffic && present.length >= 2) {
       room.traffic = new PartyTraffic(this.now);
@@ -296,6 +358,7 @@ export class Parties {
   reopen(player: Identity) {
     const room = this.room(player.id);
     if (!room) return fail(404, 'Your lobby has closed.');
+    this.hosted(room);
     if (room.hostId !== player.id) return fail(403, 'Only the host can reopen the lobby.');
     delete room.race; room.revision++; this.touch(room, player);
     return this.snapshot(room);

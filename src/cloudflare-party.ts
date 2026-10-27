@@ -1,4 +1,4 @@
-import type { PartyLobby, PartyResponse } from '../shared/party';
+import { isPublicCityCode, type PartyLobby, type PartyResponse } from '../shared/party';
 import { multiplayerUrl } from './multiplayer-config';
 
 export class PartyError extends Error {
@@ -62,7 +62,9 @@ async function connect(token: string) {
   return opening;
 }
 export async function requestCloudflareParty<T = PartyResponse>(path: string, token: string, method = 'GET', body?: unknown): Promise<T> {
-  if (path === '' || path === '/join') {
+  if (path === '' || path === '/join' || path === '/city') {
+    // The public city takes back a driver who was in it (a reload): the server puts them in that room again.
+    if (path === '/city' && room && isPublicCityCode(room)) { stop(); body = { ...body as object, code: room }; room = null; }
     if (room) throw new PartyError('Leave your current lobby before joining another.', 409);
     const response = await fetch(multiplayerUrl(`/api/parties${path}`), { method, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify(body), signal: AbortSignal.timeout(12000) });
     const result = await response.json();

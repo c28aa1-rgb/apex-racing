@@ -154,6 +154,19 @@ test('Cloudflare rooms synchronize, isolate, validate, reconnect and cleanly lea
       t.diagnostic(`Eight drivers at ${hz} Hz: ${replies.length} acknowledged poses in ${(performance.now() - loadStart).toFixed(0)} ms; reply p95 ${p95.toFixed(1)} ms; maximum broadcasts ${Math.max(...broadcasts)}.`);
       await sleep(1000);
     }
+    // The public city: drivers entering it share the first room (its own Durable Object), with no host controls.
+    // (From another address: this test has used up its own connection allowance by now.)
+    const fromCity = (path: string, token: string | undefined, data: unknown) => fetch(base + path, { method: 'POST', headers: { 'CF-Connecting-IP': '203.0.113.7', 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify(data) });
+    const [cityA, cityB] = await Promise.all(['City A', 'City B'].map(async nickname => (await fromCity('/api/players', undefined, { nickname })).json() as Promise<{ id: string; token: string }>));
+    const joinedA = await fromCity('/api/parties/city', cityA.token, { carId: 'celica-gt4' }); assert.equal(joinedA.status, 200);
+    const publicA = ((await joinedA.json()) as { lobby: PartyLobby }).lobby;
+    assert.equal(publicA.code, 'PUBLCA'); assert.ok(publicA.public && publicA.race);
+    const publicB = ((await (await fromCity('/api/parties/city', cityB.token, { carId: 'celica-gt4' })).json()) as { lobby: PartyLobby }).lobby;
+    assert.equal(publicB.code, 'PUBLCA'); assert.equal(publicB.race!.racers.length, 2);
+    const cityClient = await client('PUBLCA', cityA.token);
+    const away = await cityClient.send('/race', { raceId: publicA.race!.id, ready: true, away: true });
+    assert.equal(away.data.race.racers.find((r: { id: string }) => r.id === cityA.id).away, true, 'a driver off on a street race shows as away');
+    assert.equal((await cityClient.send('/settings', { laps: 2 }, 'PATCH')).status, 403);
     const flooding = await client(separate.code, other.token);
     const closed = new Promise<CloseEvent>(resolve => flooding.ws.addEventListener('close', resolve, { once: true }));
     for (let id = 0; id <= PARTY_MESSAGES_PER_SECOND; id++) flooding.ws.send(JSON.stringify({ id, path: '/current', method: 'GET' }));

@@ -261,6 +261,8 @@ export class CityTraffic {
     for (const record of packet.cars) this.traffic.apply(record, Math.max(0, Math.min(1, age)));
     if (packet.signals.length) this.traffic.applySignals(packet.signals);
   }
+  /** Runs the traffic here again (away from a city party's server for a while). */
+  standalone() { this.networked = false; }
   /** Whether this machine is following a party server's traffic. */
   get following() { return this.networked; }
   /** The cars near the player, to start the party server's traffic from (so nothing changes when it takes over). */

@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import type { Store } from './store';
 import type { PartyMember } from '../shared/party';
-import { Parties, settingsSchema, carSchema, createSchema, joinSchema, kickSchema, updateSchema } from '../shared/party-room';
+import { Parties, settingsSchema, carSchema, createSchema, joinSchema, kickSchema, updateSchema, citySchema } from '../shared/party-room';
 import { PARTY_MESSAGES_PER_SECOND, PARTY_MESSAGE_BYTES, PARTY_TRAFFIC_TICK_MS } from '../shared/party-network';
 export { Parties, PARTY_PRESENCE_MS } from '../shared/party-room';
 type Identity = Pick<PartyMember, 'id' | 'nickname'>;
@@ -35,6 +35,8 @@ export async function registerParties(app: FastifyInstance, store: Store, partie
       const { code, carId } = joinSchema.parse(request.body);
       return { lobby: parties.join(request.partyPlayer!, code, carId) };
     });
+    // The public city: into the first room with a free place.
+    routes.post('/api/parties/city', { config }, async request => ({ lobby: parties.joinCity(request.partyPlayer!, citySchema.parse(request.body).carId) }));
     routes.patch('/api/parties/me', { config }, async request => ({ lobby: parties.car(request.partyPlayer!, carSchema.parse(request.body).carId) }));
     routes.patch('/api/parties/settings', { config }, async request => ({ lobby: parties.settings(request.partyPlayer!, settingsSchema.partial().parse(request.body)) }));
     routes.delete('/api/parties/me', { config }, async request => { parties.leave(request.partyPlayer!); return { lobby: null }; });
@@ -43,7 +45,7 @@ export async function registerParties(app: FastifyInstance, store: Store, partie
     routes.post('/api/parties/reopen', { config }, async request => ({ lobby: parties.reopen(request.partyPlayer!) }));
     routes.post('/api/parties/race', { config: { rateLimit: { ...config.rateLimit, max: PARTY_MESSAGES_PER_SECOND * 60 } }, bodyLimit: PARTY_MESSAGE_BYTES }, async request => {
       const update = updateSchema.parse(request.body);
-      return parties.update(request.partyPlayer!, update.raceId, update.ready, update.pose, update.traffic);
+      return parties.update(request.partyPlayer!, update.raceId, update.ready, update.pose, update.traffic, update.away);
     });
   });
 }

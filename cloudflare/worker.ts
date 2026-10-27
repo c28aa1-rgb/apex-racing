@@ -1,6 +1,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import { z } from 'zod';
-import { Parties, createSchema, joinSchema, carSchema, settingsSchema, updateSchema, kickSchema, PARTY_PRESENCE_MS } from '../shared/party-room';
+import { Parties, createSchema, joinSchema, carSchema, settingsSchema, updateSchema, kickSchema, citySchema, PARTY_PRESENCE_MS } from '../shared/party-room';
+import { PUBLIC_CITY_CODES, isPublicCityCode } from '../shared/party';
 import type { PartyMember, PartyPose } from '../shared/party';
 import { savePlayer, times } from './times';
 import { PARTY_BROADCAST_MS, PARTY_MESSAGES_PER_SECOND, PARTY_MESSAGE_BYTES, PARTY_TRAFFIC_TICK_MS } from '../shared/party-network';
@@ -84,8 +85,18 @@ export default {
         else if (url.pathname === '/api/parties' && request.method === 'POST') {
           payload = createSchema.parse(await body(request)); action = 'create';
           const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-          code = Array.from(crypto.getRandomValues(new Uint8Array(6)), n => alphabet[n % alphabet.length]).join('');
-        } else if (url.pathname === '/api/parties/join' && request.method === 'POST') { payload = joinSchema.parse(await body(request)); code = (payload as { code: string }).code; action = 'join'; }
+          do code = Array.from(crypto.getRandomValues(new Uint8Array(6)), n => alphabet[n % alphabet.length]).join(''); while (isPublicCityCode(code));
+        } else if (url.pathname === '/api/parties/join' && request.method === 'POST') { payload = joinSchema.parse(await body(request)); code = (payload as { code: string }).code; action = isPublicCityCode(code) ? 'city' : 'join'; }
+        else if (url.pathname === '/api/parties/city' && request.method === 'POST') {
+          // The public city: each room is its own Durable Object, so try them in order until one has a place
+          // (starting with the room this driver was last in, after a reload).
+          const data = citySchema.parse(await body(request)), headers = new Headers({ 'X-Player': JSON.stringify(player) });
+          for (const room of data.code ? [data.code, ...PUBLIC_CITY_CODES.filter(c => c !== data.code)] : PUBLIC_CITY_CODES) {
+            response = await env.RACE_ROOMS.get(env.RACE_ROOMS.idFromName(room)).fetch(new Request(`https://room/city?code=${room}`, { method: 'POST', headers, body: JSON.stringify({ carId: data.carId }) }));
+            if (response.status !== 409) break;
+          }
+          return finish(response!);
+        }
         else return json({ error: 'Endpoint not available on the multiplayer backend.' }, 404);
         if (!codePattern.test(code)) fail(400, 'Invalid lobby code.');
         const headers = new Headers({ 'X-Player': JSON.stringify(player) });
@@ -94,12 +105,14 @@ export default {
         response = await env.RACE_ROOMS.get(env.RACE_ROOMS.idFromName(code), locationHint ? { locationHint } : undefined).fetch(new Request(`https://room/${action}?code=${code}`, { method: action === 'socket' ? 'GET' : 'POST', headers, body: action === 'socket' ? undefined : JSON.stringify(payload) }));
       }
     } catch (cause) { const result = error(cause); response = json({ error: result.error }, result.status); }
-    const headers = new Headers(response.headers);
-    headers.set('Cache-Control', 'no-store');
-    headers.set('X-Content-Type-Options', 'nosniff');
-    for (const [name, value] of Object.entries(cors)) headers.set(name, value);
-    response = new Response(response.body, { status: response.status, headers, ...(response.webSocket ? { webSocket: response.webSocket } : {}) });
-    return response;
+    return finish(response);
+    function finish(response: Response) {
+      const headers = new Headers(response.headers);
+      headers.set('Cache-Control', 'no-store');
+      headers.set('X-Content-Type-Options', 'nosniff');
+      for (const [name, value] of Object.entries(cors)) headers.set(name, value);
+      return new Response(response.body, { status: response.status, headers, ...(response.webSocket ? { webSocket: response.webSocket } : {}) });
+    }
   },
 } satisfies ExportedHandler<Env>;
 
@@ -168,6 +181,7 @@ export class RaceRoom extends DurableObject<Env> {
       const payload = await request.json();
       const lobby = url.pathname === '/create'
         ? (() => { if (this.parties.exportState().length) fail(409, 'Lobby code collision. Try again.'); const data = createSchema.parse(payload); return this.parties.create(player, data.carId, data.settings, code); })()
+        : url.pathname === '/city' ? this.parties.joinPublic(player, carSchema.parse({ carId: (payload as { carId?: unknown }).carId }).carId, code)
         : (() => { const data = joinSchema.parse(payload); return this.parties.join(player, code, data.carId); })();
       await this.persist(); this.broadcast();
       return json({ lobby });
@@ -196,7 +210,7 @@ export class RaceRoom extends DurableObject<Env> {
       else if (data.path === '/kick' && data.method === 'POST') result = { lobby: this.parties.kick(player, kickSchema.parse(data.body).id) };
       else if (data.path === '/race' && data.method === 'POST') {
         const update = updateSchema.parse(data.body), before = this.parties.exportState()[0]?.revision;
-        result = this.parties.update(player, update.raceId, update.ready, update.pose, update.traffic);
+        result = this.parties.update(player, update.raceId, update.ready, update.pose, update.traffic, update.away);
         this.runTraffic();
         saved.raceId = update.raceId;
         saved.pose = (result as ReturnType<Parties['update']>).race.racers.find(r => r.id === player.id)?.pose;

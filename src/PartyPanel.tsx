@@ -1,6 +1,6 @@
 import { assetUrl } from '../shared/assets';
 import { MULTIPLAYER_BACKEND } from './multiplayer-config';
-import { partyEvents } from './cloudflare-party';
+import { PartyError, partyEvents } from './cloudflare-party';
 import { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion, type Variants } from 'framer-motion';
 
@@ -76,8 +76,32 @@ function PartyResults({ race, racers, selfId, bestLap, laps, host, hostName, bus
   </motion.dialog>;
 }
 
-export function PartyPanel({ game, active, player, onPlayer, reduced }: {
+const validName = (name: string) => /^[\p{L}\p{N} _-]{2,18}$/u.test(name.trim());
+/** The first time into the public city without a driver name: everyone there sees it over your car. */
+function CityName({ initial, busy, error, reduced, onDrive, onCancel }: { initial: string; busy: boolean; error: string; reduced: boolean; onDrive: (name: string) => void; onCancel: () => void }) {
+  const dialog = useRef<HTMLDialogElement>(null), [name, setName] = useState(initial);
+  useEffect(() => { const node = dialog.current!; node.showModal(); return () => { if (node.open) node.close(); }; }, []);
+  return <motion.dialog ref={dialog} className="city-name" aria-labelledby="city-name-heading" onCancel={event => { event.preventDefault(); if (!busy) onCancel(); }}
+    initial={{ opacity: 0, y: reduced ? 0 : 12, scale: reduced ? 1 : .99 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ duration: reduced ? 0 : .24, ease: [.2, 0, 0, 1] }}>
+    <form onSubmit={event => { event.preventDefault(); if (validName(name) && !busy) onDrive(name.trim()); }}>
+      <span>Racing City · online</span>
+      <h2 id="city-name-heading">Pick a driver name</h2>
+      <p>Everyone driving the city is in it with you, and sees this name over your car.</p>
+      <label htmlFor="city-name-input">Driver name</label>
+      <input id="city-name-input" autoFocus autoComplete="nickname" placeholder="Your name" minLength={2} maxLength={18} value={name} onChange={event => setName(event.target.value)} aria-describedby="city-name-hint"/>
+      <small id="city-name-hint">2–18 letters, numbers, spaces, _ or -</small>
+      {error && <p className="city-name-error" role="alert">{error}</p>}
+      <footer><button type="submit" className="party-primary" disabled={busy || !validName(name)}><ArrowRight size={18}/>{busy ? 'Joining the city…' : 'Drive into the city'}</button><button type="button" disabled={busy} onClick={onCancel}>Cancel</button></footer>
+    </form>
+  </motion.dialog>;
+}
+
+export function PartyPanel({ game, active, player, onPlayer, reduced, cityRequest, onCitySolo }: {
   game: Game; active: boolean; player: Player | null; onPlayer: (player: Player) => void; reduced: boolean;
+  /** Counts up each time Free roam asks for the city: into the public city (asking for a name first if need be). */
+  cityRequest: number;
+  /** The city on your own instead (in a private lobby, or the public city out of reach), and why. */
+  onCitySolo: (notice: string) => void;
 }) {
   const party = useParty(player, active), { lobby } = party;
   const [nickname, setNickname] = useState(player?.nickname ?? '');
@@ -85,6 +109,39 @@ export function PartyPanel({ game, active, player, onPlayer, reduced }: {
   const [copied, setCopied] = useState(false), [copyError, setCopyError] = useState('');
   const [raceState, setRaceState] = useState<PartyRace>(), [raceError, setRaceError] = useState('');
   useEffect(() => { if (player) setNickname(player.nickname); }, [player?.nickname]);
+  useEffect(() => { game.leaveParty = () => void party.leave(); return () => { game.leaveParty = undefined; }; });
+  /** This driver's identity under this name: renamed if they have one, issued if not (or it expired). */
+  const identify = async (name: string, current = player) => {
+    let identity = current;
+    if (identity) {
+      try { identity = { ...identity, ...await api<Pick<Player, 'id' | 'nickname'>>('/players/me', { nickname: name }, 'PUT') }; }
+      catch (cause) { if (cause instanceof Error && cause.message.includes('expired')) identity = null; else throw cause; }
+    }
+    if (!identity) identity = await api<Player>('/players', { nickname: name });
+    write('player', identity); onPlayer(identity);
+    return identity;
+  };
+  const [askName, setAskName] = useState(false), [cityBusy, setCityBusy] = useState(false), [cityError, setCityError] = useState('');
+  const enterCity = async (identity: Player, retried = false): Promise<void> => {
+    if (lobby && !lobby.public) { onCitySolo('You are in a party lobby, so this city is just yours. Leave the lobby in Party to drive with everyone.'); return; }
+    try { await party.joinCity(identity, game.state.car.id); }
+    catch (cause) {
+      if (cause instanceof PartyError && cause.status === 401 && !retried) return enterCity(await identify(identity.nickname, null), true);
+      onCitySolo(cause instanceof PartyError && cause.status === 409 ? 'You are in a party lobby, so this city is just yours. Leave the lobby in Party to drive with everyone.' : 'The online city is out of reach right now, so you are driving it alone.');
+    }
+  };
+  useEffect(() => {
+    if (!cityRequest) return;
+    if (!player) { setCityError(''); setAskName(true); return; }
+    setCityBusy(true); void enterCity(player).finally(() => setCityBusy(false));
+  }, [cityRequest]);
+  const nameAndDrive = async (name: string) => {
+    setCityBusy(true); setCityError('');
+    try { const identity = await identify(name, null); setAskName(false); await enterCity(identity); }
+    catch (cause) { setCityError(cause instanceof Error ? cause.message : 'Could not save your driver name. Try again.'); }
+    finally { setCityBusy(false); }
+  };
+  const namePrompt = askName && <CityName initial={nickname} busy={cityBusy} error={cityError} reduced={reduced} onDrive={name => void nameAndDrive(name)} onCancel={() => setAskName(false)}/>;
   useEffect(() => {
     game.partyView = active && !lobby?.race;
     return () => { game.partyView = false; };
@@ -102,7 +159,7 @@ export function PartyPanel({ game, active, player, onPlayer, reduced }: {
     const updates = new PartyUpdates({
       ready: () => ready,
       interval: () => game.partyPoseInterval(),
-      send: () => { const traffic = game.partyTrafficOut(); return requestParty<{race: PartyRace; serverNow: number; traffic?: PartyTrafficPacket}>('/race', player.token, 'POST', { raceId: lobby.race!.id, ready, ...(ready ? { pose: game.partyPose() } : {}), ...(traffic ? { traffic } : {}) }); },
+      send: () => { const traffic = game.partyTrafficOut(); return requestParty<{race: PartyRace; serverNow: number; traffic?: PartyTrafficPacket}>('/race', player.token, 'POST', { raceId: lobby.race!.id, ready, ...(ready ? { pose: game.partyPose() } : {}), ...(traffic ? { traffic } : {}), ...(lobby.public ? { away: game.partyIsAway } : {}) }); },
       receive: (result, sent, received) => { game.noteServerClock(result.serverNow, sent, received); accept(result.race, result.serverNow); game.partyTraffic(result.traffic); if (ready) setRaceError(''); },
       error: cause => setRaceError(cause instanceof Error ? cause.message : 'Race connection interrupted.'),
     });
@@ -125,7 +182,7 @@ export function PartyPanel({ game, active, player, onPlayer, reduced }: {
   useEffect(() => setResultsClosed(false), [lobby?.race?.id, raceState?.ended]);
   useEffect(() => { if (!copied) return; const timer = setTimeout(() => setCopied(false), 2000); return () => clearTimeout(timer); }, [copied]);
   // Keep the presence wrapper mounted so the paddock can animate out when you leave it.
-  if (!active && !lobby?.race) return <AnimatePresence />;
+  if (!active && !lobby?.race) return <>{namePrompt}<AnimatePresence /></>;
 
   const busy = party.busy || identityBusy || party.checking;
   const host = lobby?.hostId === player?.id;
@@ -143,18 +200,12 @@ export function PartyPanel({ game, active, player, onPlayer, reduced }: {
   const joinCar = selectedCar;
   const hostName = lobby?.members.find(member => member.id === lobby.hostId)?.nickname;
   const error = identityError || party.error;
-  const validNickname = /^[\p{L}\p{N} _-]{2,18}$/u.test(nickname.trim());
+  const validNickname = validName(nickname);
   const connect = async (join: boolean) => {
     if (!validNickname || busy) return;
     setIdentityBusy(true); setIdentityError(''); party.clearError();
     try {
-      let identity = player;
-      if (identity) {
-        try { identity = { ...identity, ...await api<Pick<Player, 'id' | 'nickname'>>('/players/me', { nickname }, 'PUT') }; }
-        catch (cause) { if (cause instanceof Error && cause.message.includes('expired')) identity = null; else throw cause; }
-      }
-      if (!identity) identity = await api<Player>('/players', { nickname });
-      write('player', identity); onPlayer(identity);
+      const identity = await identify(nickname);
       if (join) await party.join(identity, joinCar.id, code);
       // A lobby starts on the circuit (or the city) you are on; anywhere else (a street race, the car park) on the default.
       else await party.create(identity, joinCar.id, { trackId: game.state.track.id === CITY.id || TRACKS.some(t => t.id === game.state.track.id) ? game.state.track.id : DEFAULT_PARTY_SETTINGS.trackId, weather: game.settings.weather });
@@ -179,25 +230,29 @@ export function PartyPanel({ game, active, player, onPlayer, reduced }: {
     const field = racers.filter(r => !r.disconnected).length, place = racers.findIndex(r => r.id === player?.id) + 1;
     const showResults = !!raceState.startAt && resultsDue && !resultsClosed;
     const openResults = () => { setResultsDue(true); setResultsClosed(false); };
+    // Racing a street race away from the public city: the race's own screen, nothing from the party.
+    if (city && game.partyIsAway) return null;
     if (loading) return <section className="party-loading" role="status" aria-live="polite" aria-label="Joining race">
       <img src={assetUrl(art)} alt=""/>
       <div className="party-loading-card">
-        <span className="party-loading-kicker">{city ? 'City party · free roam together' : street ? `Street race · ${street.street!.laps > 1 ? `${street.street!.laps} laps` : 'sprint'} · Racing City` : `Party race · ${settings.laps} ${settings.laps === 1 ? 'lap' : 'laps'} · ${weatherNames[settings.weather]}`}</span>
+        <span className="party-loading-kicker">{lobby.public ? 'Racing City · online with everyone' : city ? 'City party · free roam together' : street ? `Street race · ${street.street!.laps > 1 ? `${street.street!.laps} laps` : 'sprint'} · Racing City` : `Party race · ${settings.laps} ${settings.laps === 1 ? 'lap' : 'laps'} · ${weatherNames[settings.weather]}`}</span>
         <h2>{track.name}</h2>
         <div className="party-loading-step">{!(raceError || error) && <span className="party-loading-spinner" aria-hidden="true"/>}<strong>{raceError || error || step}</strong></div>
         <ul className="party-loading-drivers">{raceState.racers.map(r => <li key={r.id} className={r.ready ? 'is-ready' : ''}><span>{r.nickname}{r.id === player?.id ? ' (you)' : ''}</span><small>{r.disconnected ? 'Left' : r.ready ? 'Ready' : 'Loading…'}</small></li>)}</ul>
-        <div className="party-race-actions">{host && <button className="party-leave" disabled={busy} onClick={() => void party.reopen()}><Flag size={17}/>{city ? 'End session' : 'Cancel race'}</button>}<button className="party-leave" disabled={busy} onClick={() => void party.leave()}><DoorOpen size={17}/>{city ? 'Leave' : 'Leave race'}</button></div>
+        <div className="party-race-actions">{host && !lobby.public && <button className="party-leave" disabled={busy} onClick={() => void party.reopen()}><Flag size={17}/>{city ? 'End session' : 'Cancel race'}</button>}<button className="party-leave" disabled={busy} onClick={() => void party.leave()}><DoorOpen size={17}/>{city ? 'Leave' : 'Leave race'}</button></div>
       </div>
     </section>;
     // A city party: who is in the city, and the way back out.
-    if (city) return <section className="party-race party-city" aria-label="City party">
-      <div className="party-race-status"><strong>City party</strong><span>{(n => n > 1 ? `${n} in the city · traffic shared` : 'Just you so far · friends can join with the code')(raceState.racers.filter(r => !r.disconnected).length)}</span></div>
+    if (city) return <section className="party-race party-city" aria-label={lobby.public ? 'Online city' : 'City party'}>
+      <div className="party-race-status"><strong>{lobby.public ? 'Racing City · online' : 'City party'}</strong><span>{(n => lobby.public ? (n > 1 ? `${n} drivers in the city` : 'Just you for now · anyone driving the city joins you') : n > 1 ? `${n} in the city · traffic shared` : 'Just you so far · friends can join with the code')(raceState.racers.filter(r => !r.disconnected).length)}</span></div>
       <ol className="party-race-order">{raceState.racers.filter(r => !r.disconnected).map(racer => <li key={racer.id} className={racer.id === player?.id ? 'is-you' : ''}>
-        <b className="party-place">{racer.id === lobby.hostId ? <Crown size={13}/> : '·'}</b><span>{racer.nickname}{racer.id === player?.id ? ' (you)' : ''}</span>
-        <strong>{racer.ready ? 'Driving' : 'Joining'}</strong>
-      </li>)}</ol>
+        <b className="party-place">{racer.id === lobby.hostId && !lobby.public ? <Crown size={13}/> : '·'}</b><span>{racer.nickname}{racer.id === player?.id ? ' (you)' : ''}</span>
+        <strong>{racer.away ? 'Street race' : racer.ready ? 'Driving' : 'Joining'}</strong>
+      </li>)}
+        {lobby.public && <li className="party-city-private" role="note">Want the city to yourselves? Make a private lobby in Party.</li>}
+      </ol>
       {(raceError || error) && <p className="party-race-error" role="alert">{raceError || error}</p>}
-      <div className="party-race-actions">{host && <button className="party-leave" disabled={busy} onClick={() => void party.reopen()}><Flag size={17}/>Back to lobby</button>}<button className="party-leave" disabled={busy} onClick={() => void party.leave()}><DoorOpen size={17}/>Leave</button></div>
+      <div className="party-race-actions">{host && !lobby.public && <button className="party-leave" disabled={busy} onClick={() => void party.reopen()}><Flag size={17}/>Back to lobby</button>}<button className="party-leave" disabled={busy} onClick={() => void party.leave()}><DoorOpen size={17}/>{lobby.public ? 'Leave the city' : 'Leave'}</button></div>
     </section>;
     return <section className={`party-race ${showResults ? 'shows-results' : ''}`} aria-label="Party race">
       {showResults && <PartyResults race={raceState} racers={racers} selfId={player?.id} bestLap={bestLap} laps={street ? street.street!.laps : settings.laps}
@@ -251,7 +306,7 @@ export function PartyPanel({ game, active, player, onPlayer, reduced }: {
         </div>
         <div className="party-section-title"><h2>Race setup</h2><span><Crown size={14}/>{host ? 'You are host' : `${hostName} hosts`}</span></div>
         <div className="party-track-art"><img src={assetUrl(art)} alt={city ? 'Racing City' : `${track.name} circuit map`}/><span>{city ? 'Free roam together' : street ? `Racing City · ${track.subtitle}` : track.subtitle}</span></div>
-        <label className="party-field"><span>Circuit</span>{host ? <select aria-label="Circuit" value={settings.trackId} disabled={busy || !party.connected} onChange={event => void party.configure({ trackId: event.target.value })}><optgroup label="Circuits">{TRACKS.map(track => <option key={track.id} value={track.id}>{track.name}</option>)}</optgroup><optgroup label="Racing City">{CITY_RACES.map(race => <option key={race.id} value={race.id}>{race.name} · street race</option>)}<option value={CITY.id}>Free roam together</option></optgroup></select> : <strong data-testid="party-track">{city ? 'Racing City · free roam' : street ? `${track.name} · street race` : track.name}</strong>}</label>
+        <label className="party-field"><span>Circuit</span>{host ? <select aria-label="Circuit" value={settings.trackId} disabled={busy || !party.connected} onChange={event => void party.configure({ trackId: event.target.value })}><optgroup label="Circuits">{TRACKS.map(track => <option key={track.id} value={track.id}>{track.name}</option>)}</optgroup><optgroup label="Racing City">{CITY_RACES.map(race => <option key={race.id} value={race.id}>{race.name} · street race</option>)}<option value={CITY.id}>Private city · free roam</option></optgroup></select> : <strong data-testid="party-track">{city ? 'Racing City · free roam' : street ? `${track.name} · street race` : track.name}</strong>}</label>
         {!city && !street && <><fieldset className="party-weather" disabled={!host || busy || !party.connected}><legend>Weather</legend><div>{PARTY_WEATHER.map(weather => {
           const WeatherIcon = weatherIcons[weather];
           return <label key={weather} title={weatherNames[weather]} className={settings.weather === weather ? 'selected' : ''}><input type="radio" aria-label={weatherNames[weather]} name="party-weather" value={weather} checked={settings.weather === weather} onChange={() => void party.configure({ weather })}/><WeatherIcon size={20}/><span>{weatherNames[weather]}</span></label>;
