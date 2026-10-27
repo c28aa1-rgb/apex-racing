@@ -89,6 +89,8 @@ const DEMAND_REACH = 60;
  * of lane); the expressway is busier and much faster, the outer ridge roads quieter. */
 const DISTRICT_SPEED: Record<string, number> = { Highway: 29, Outer: 20, Industrial: 15, Commercial: 15, Downtown: 13, Training: 15 };
 const DISTRICT_SPACING: Record<string, number> = { Highway: 80, Outer: 190, Industrial: 150, Commercial: 130, Downtown: 140, Training: 135 };
+/** Painted lane width (m). */
+const LANE_WIDTH = 3.5;
 /** Chance a car turns off onto a side road it passes. */
 const TURN_OFF = .45;
 /** Roads with no traffic: the test straight is the player's own. */
@@ -235,12 +237,15 @@ export class TrafficSim {
   private buildLanes(paths: RoadPath[]) {
     for (const path of paths) {
       if (NO_TRAFFIC.has(path.name)) continue;
-      const half = path.width / 2, perDirection = Math.min(2, Math.max(1, Math.floor((half - 1) / 4)));
+      // The painted layout (measured from the city's lane paint, work/lane-paint.ts): an amber centre line, white lane
+      // lines every LANE_WIDTH, and an edge line half a metre in from the road's edge. So 16-20 m roads have two
+      // lanes each way and 22-28 m roads three; any width left over beyond the last lane is shoulder.
+      const half = path.width / 2, perDirection = Math.max(1, Math.floor((half - .5) / LANE_WIDTH + 1e-6));
       for (const reverse of [false, true]) {
         const source = reverse ? [...path.points].reverse() : path.points, group: Lane[] = [];
         for (let lane = 0; lane < perDirection; lane++) {
-          // Drive on the right: lanes sit right of the centreline, the inner one 2.5 m out, then 4 m apart.
-          const offset = 2.5 + lane * 4, count = source.length, points = new Float32Array(count * 3);
+          // Drive on the right: each lane's centre, counted out from the centre line.
+          const offset = (lane + .5) * LANE_WIDTH, count = source.length, points = new Float32Array(count * 3);
           for (let i = 0; i < count; i++) {
             const previous = source[path.closed ? (i - 1 + count) % count : Math.max(0, i - 1)], next = source[path.closed ? (i + 1) % count : Math.min(count - 1, i + 1)];
             const tx = next[0] - previous[0], tz = next[2] - previous[2], l = Math.hypot(tx, tz) || 1;
@@ -248,7 +253,8 @@ export class TrafficSim {
           }
           const samples = path.closed ? count + 1 : count, s = new Float64Array(samples);
           for (let i = 1; i < samples; i++) { const a = (i - 1) % count, b = i % count; s[i] = s[i - 1] + Math.hypot(points[b * 3] - points[a * 3], points[b * 3 + 1] - points[a * 3 + 1], points[b * 3 + 2] - points[a * 3 + 2]); }
-          const spacing = DISTRICT_SPACING[path.district] ?? 140;
+          // District spacing is per lane of a two-lane direction: more lanes share the same cars per metre of road.
+          const spacing = (DISTRICT_SPACING[path.district] ?? 140) * perDirection / 2;
           const built: Lane = { road: path.name, closed: path.closed, speed: DISTRICT_SPEED[path.district] ?? 15, length: s[samples - 1], siblings: group, points, s, stops: [], zones: [], cars: [],
             spacing, target: Math.max(1, Math.round(s[samples - 1] / spacing)), links: [], width: path.width, index: lane };
           group.push(built); this.lanes.push(built);
@@ -774,14 +780,15 @@ export class TrafficSim {
 
   private changeLane(car: Car) {
     for (const lane of car.lane.siblings) {
-      if (lane === car.lane) continue;
+      // Only into the next lane over.
+      if (Math.abs(lane.index - car.lane.index) !== 1) continue;
       const s = this.nearest(lane, car.position).s;
       if (lane.cars.some(other => Math.abs(other.s - s) < 14)) continue;
       const before = car.position.clone();
       car.lane.cars.splice(car.lane.cars.indexOf(car), 1);
       car.lane = lane; car.s = s; lane.cars.push(car); lane.cars.sort((a, b) => a.s - b.s);
       car.index = this.sample(lane, s, 0, car.position);
-      // Keep drawing it where it was and ease across, instead of jumping 4 m sideways.
+      // Keep drawing it where it was and ease across, instead of jumping a lane sideways.
       car.drift.copy(before).sub(car.position).setY(0);
       return;
     }
