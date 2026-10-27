@@ -251,8 +251,10 @@ export class TrafficSim {
       for (const reverse of [false, true]) {
         const source = reverse ? [...path.points].reverse() : path.points, group: Lane[] = [];
         for (let lane = 0; lane < perDirection; lane++) {
-          // Drive on the right: each lane's centre, counted out from the centre line.
-          const offset = (lane + .5) * LANE_WIDTH, count = source.length, points = new Float32Array(count * 3);
+          // Drive on the right: each lane's centre, counted out from the centre line. The outer lane runs from the last
+          // dashed line to the edge line, wider than the rest on some roads: its cars keep to the middle of it.
+          const edge = half - .5, offset = lane < perDirection - 1 ? (lane + .5) * LANE_WIDTH : (lane * LANE_WIDTH + edge) / 2;
+          const count = source.length, points = new Float32Array(count * 3);
           for (let i = 0; i < count; i++) {
             const previous = source[path.closed ? (i - 1 + count) % count : Math.max(0, i - 1)], next = source[path.closed ? (i + 1) % count : Math.min(count - 1, i + 1)];
             const tx = next[0] - previous[0], tz = next[2] - previous[2], l = Math.hypot(tx, tz) || 1;
