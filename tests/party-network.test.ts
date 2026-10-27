@@ -111,15 +111,19 @@ test('clock corrections converge without jumping or reversing the shared timelin
   const clock = game as unknown as { serverOffsetRtt: number };
   clock.serverOffsetRtt = Infinity;
   game.noteServerClock(1000, 0, 100);
-  let before = game.serverTime(100);
+  let before = game.serverTime(100), settled = -1;
   for (let i = 0; i < 200; i++) {
     const now = 200 + i * PARTY_POSE_INTERVAL_MS;
     const unchanged = game.serverTime(now);
     game.noteServerClock(now + 850, now, now);
     const updated = game.serverTime(now);
-    assert.ok(Math.abs(updated - unchanged) <= .5);
+    // Small steps (a car moves a quarter of a metre at 50 m/s), never backwards...
+    assert.ok(Math.abs(updated - unchanged) <= 5);
     assert.ok(updated > before); before = updated;
+    if (settled < 0 && Math.abs(updated - (now + 850)) < .01) settled = i;
   }
+  // ...yet a first reading 100 ms out (a slow reply while loading) is gone within a second of replies.
+  assert.ok(settled >= 0 && settled * PARTY_POSE_INTERVAL_MS < 1000, `settled after ${settled} replies`);
   assert.ok(Math.abs(game.serverTime(10000) - 10850) < .01);
 });
 
