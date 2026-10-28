@@ -77,6 +77,8 @@ export type Car = {
   reason?: string;
   /** Rammed by a player: sliding free of its lane to a stop, then waiting with its hazards on (see wrecked()). */
   wreck?: { velocity: THREE.Vector3; yawRate: number; still: number; offLane: boolean; hitAt: number };
+  /** Seconds left pulling back into its lane after a knock: drawn easing across and turning to face along the lane. */
+  recovering?: number;
   /** City party: when the machine running the traffic last mentioned this car (sim time). */
   seen?: number;
 };
@@ -100,8 +102,12 @@ const TURN_OFF = .45;
 const NO_TRAFFIC = new Set(['Acceleration']);
 /** Upper bound on cars across the whole city. */
 export const MAX_CARS = 460;
-/** A knocked car sits for this long (s) once stopped, then rejoins its lane when no player is watching. */
-const WRECK_HOLD = 9;
+/**
+ * A knocked car sits for WRECK_HOLD (s) once stopped, then pulls back into its lane and drives on, eased across over
+ * about RECOVER_S. One knocked further than WRECK_FAR (m) from its lane (up a kerb, across the road) is put back only
+ * out of a player's sight, or after WRECK_GIVE_UP regardless.
+ */
+const WRECK_HOLD = 3, RECOVER_S = 2.4, WRECK_FAR = 14, WRECK_GIVE_UP = 15;
 /** Car-following (intelligent driver model): comfortable acceleration and braking, time headway, standstill gap. */
 const ACCEL = 2.2, BRAKE = 3.2, HEADWAY = 1.3, STANDSTILL = 3;
 
@@ -223,7 +229,13 @@ export class TrafficSim {
       car.position.set(x10 / 10, car.position.y, z10 / 10); car.yaw = yaw / 1000; car.heading.set(Math.sin(car.yaw), 0, Math.cos(car.yaw));
       car.wreck.velocity.set(vx / 100, 0, vz / 100); car.wreck.yawRate = spin / 1000; car.wreck.still = still / 10; car.wreck.offLane = !!(flags & 4);
       car.v = 0; car.drift.set(0, 0, 0);
-    } else if (car.wreck) car.wreck = undefined;
+    } else if (car.wreck) {
+      // Put back on the road by the machine running the traffic: drawn where it sat here, easing across.
+      const before = car.position.clone();
+      car.wreck = undefined; car.recovering = RECOVER_S;
+      car.index = this.sample(car.lane, Math.min(car.s, car.lane.length), 0, car.position);
+      car.drift.copy(before).sub(car.position).setY(0);
+    }
     return car;
   }
   /** Signal stages as numbers: green axis, stage (0 green, 1 yellow, 2 all red) and seconds in it (ds), per junction. */
@@ -778,13 +790,15 @@ export class TrafficSim {
       else { this.retire(car); this.deadEnds++; return; }
     }
     car.index = this.sample(car.lane, Math.min(car.s, car.lane.length), car.index, car.position);
-    car.drift.multiplyScalar(Math.exp(-dt / .7)); car.position.add(car.drift);
+    car.drift.multiplyScalar(Math.exp(-dt / (car.recovering ? RECOVER_S / 2.5 : .7))); car.position.add(car.drift);
     const look = this.v3, ahead2 = car.lane; this.sample(ahead2, Math.min(ahead2.closed ? car.s + 3 : ahead2.length, car.s + 3), car.index, look);
     if (ahead2.closed && car.s + 3 >= ahead2.length) this.sample(ahead2, car.s + 3 - ahead2.length, 0, look);
     const heading = look.sub(car.position); if (heading.lengthSq() > 1e-4) car.heading.copy(heading.normalize());
     // Wheels roll with the distance covered; the front ones steer to the angle that makes the turn the car is taking.
     const yaw = Math.atan2(car.heading.x, car.heading.z), turn = Math.atan2(Math.sin(yaw - car.yaw), Math.cos(yaw - car.yaw)) / dt;
-    car.yaw = yaw;
+    // Pulling back in after a knock: it turns to face along the lane over a moment instead of all at once.
+    if (car.recovering) { car.yaw += turn * dt * (1 - Math.exp(-dt / .35)); car.recovering = Math.max(0, car.recovering - dt) || undefined; }
+    else car.yaw = yaw;
     car.spin = (car.spin + car.v * dt / Math.max(car.kind.radius, .2)) % (Math.PI * 2);
     const steer = car.v > .5 ? THREE.MathUtils.clamp(Math.atan(car.kind.wheelbase * turn / car.v), -.6, .6) : car.steer;
     car.steer += (steer - car.steer) * (1 - Math.exp(-dt / .15));
@@ -854,8 +868,9 @@ export class TrafficSim {
   /**
    * A knocked car: it skids to a stop (hard on its brakes, harder still sideways) and turns with the spin it was given,
    * and stays in its lane's queue at the point beside it, so cars behind stop or change lanes. Pushed clear of the
-   * lane, it no longer holds anyone up. Once it has sat for WRECK_HOLD and the player is not looking, it rejoins its
-   * lane where it stopped and drives on.
+   * lane, it no longer holds anyone up. Once it has sat for WRECK_HOLD it pulls back into its lane and drives on, when
+   * there is room: no car close ahead, nothing coming up fast behind, no player where it would go. (Cars queued behind
+   * it are waiting for it to go: they never hold it.)
    */
   private wrecked(car: Car, dt: number, drivers: Driver[]) {
     const wreck = car.wreck!, velocity = wreck.velocity, speed = velocity.length();
@@ -875,12 +890,16 @@ export class TrafficSim {
     const near = this.nearest(car.lane, car.position), onLane = new THREE.Vector3();
     car.s = near.s; car.index = this.sample(car.lane, Math.min(car.s, car.lane.length), car.index, onLane);
     wreck.offLane = near.distance > car.kind.halfWidth + 1.9;
-    if (wreck.still < WRECK_HOLD || (this.seen(car.position) && drivers.some(driver => car.position.distanceTo(driver.position) < 90) && wreck.still < 40)) return;
-    // Back on the road: eased across from where it sat, facing along the lane, from a standstill.
-    if (car.lane.cars.some(other => other !== car && !other.wreck && Math.abs(other.s - car.s) < car.kind.body.lengthM + 4)) return;
-    car.wreck = undefined; car.v = 0; car.considered = undefined; car.joinWait = 0;
+    if (wreck.still < WRECK_HOLD) return;
+    const giveUp = wreck.still > WRECK_GIVE_UP;
+    if (near.distance > WRECK_FAR && !giveUp && this.seen(car.position) && drivers.some(driver => car.position.distanceTo(driver.position) < 90)) return;
+    const length = car.kind.body.lengthM;
+    if (!giveUp && drivers.some(driver => driver.position.distanceTo(onLane) < length / 2 + 2.5)) return;
+    if (car.lane.cars.some(other => other !== car && !other.wreck && (other.s > car.s - 1 ? other.s - car.s < length + 4 : car.s - other.s < 10 + other.v * 2 && other.v > 2))) return;
+    // Back on the road from a standstill: drawn where it sat, easing across and turning to face along the lane.
+    car.wreck = undefined; car.v = 0; car.considered = undefined; car.joinWait = 0; car.recovering = RECOVER_S;
     car.drift.copy(car.position).sub(onLane).setY(0); car.position.copy(onLane);
-    car.heading.copy(this.direction(car.lane, car.s)); car.yaw = Math.atan2(car.heading.x, car.heading.z);
+    car.heading.copy(this.direction(car.lane, car.s));
   }
 
   /**
