@@ -6,21 +6,24 @@ import type { RevealCue } from './race-audio';
 
 /**
  * What's new, shown once per player: after the loading screen hands over to the menu the first time this update is
- * seen (remembered on this device). The reveal borrows the city's police roadblocks: a thin red-and-blue lightbar strobes,
- * the picture opens out of it like a widescreen film, and the lightbar's colours keep washing the card's edges.
+ * seen (remembered on this device). The reveal is a desert evening on the highway: a warm horizon line draws across
+ * the frame, headlights streak along it both ways with a whoosh each, the sun flares at its middle, and the picture
+ * opens out of the horizon like a widescreen film. Amber and dusk light keep washing the card's edges.
  *
- * Bump UPDATE.id for the next update; add ?update to the address to see it again.
+ * Bump UPDATE.id for the next update; add ?update to the address to see it again. (Racing City's card, before this
+ * one, revealed through a police lightbar; it is in the history.)
  */
 const UPDATE = {
-  id: 'racing-city-2026-10',
+  id: 'endless-highway-2026-10',
   date: 'October 2026',
-  image: 'art/update-racing-city.jpg',
-  heading: 'The city is open',
-  summary: 'Drive a whole city at night, with live traffic and working signals. Race two street circuits closed off by police, or bring friends and share the same streets.',
+  image: 'art/update-endless-highway.jpg',
+  alt: 'A blue Bugatti Bolide heads down a six-lane desert highway at golden hour, traffic and mesas behind it.',
+  heading: 'The Endless Highway',
+  summary: 'Three lanes each way through the high desert, built as you drive, so the road never ends. Cruise in whatever traffic you like, or see how far you get before you crash.',
   features: [
-    { name: 'Free roam', detail: 'Five districts after dark. L for headlights, M for the map.' },
-    { name: 'Street races', detail: 'Grand Loop and Ridge Sprint. Stop in an orange box to start.' },
-    { name: 'Party mode', detail: 'Drive or race the city together, in the same traffic.' },
+    { name: 'Cruise', detail: 'Traffic from empty to rush hour, at up to 160 mph. Change it any time with Esc.' },
+    { name: 'Survival', detail: 'Distance until a real crash. Traffic builds as you go. Stay above 40 mph, off the shoulder.' },
+    { name: 'Any hour', detail: 'Noon, golden hour or night, clear or rain. L for headlights.' },
   ],
 };
 
@@ -28,30 +31,19 @@ const UPDATE = {
 const SETTLE = [.16, 1, .3, 1] as const;
 
 /**
- * The reveal's timeline, in seconds after the card opens. The lightbar stretches across the frame, strobes like a
- * patrol car's (three red, three blue, twice over), flares, and the picture opens out of it with a hit.
+ * The reveal's timeline, in seconds after the card opens. The horizon draws across, four sets of headlights race
+ * along it (each a little sooner than the last), the sun flares, and the picture opens out of the line with a hit.
  */
-const BAR_AT = .45, STROBE_AT = 1.15, GROUP = .38, FLASH = .1, GROUPS = 4;
-const FLARE_AT = STROBE_AT + GROUPS * GROUP, OPEN_AT = FLARE_AT + .14;
-const FLASHES = Array.from({ length: GROUPS * 3 }, (_, i) => ({ at: STROBE_AT + Math.floor(i / 3) * GROUP + i % 3 * FLASH, side: Math.floor(i / 3) % 2 }));
-
-/** Opacity keyframes for one lamp (0 red, 1 blue) over the lightbar's life, BAR_AT to OPEN_AT: snapping on and off. */
-function lamp(side: number, low: number, high: number) {
-  const points: [number, number][] = [[BAR_AT, high], [STROBE_AT - .03, high], [STROBE_AT, low]];
-  for (const flash of FLASHES) if (flash.side === side) points.push([flash.at, low], [flash.at + .005, high], [flash.at + .06, high], [flash.at + .065, low]);
-  points.push([FLARE_AT, low], [FLARE_AT + .005, high], [OPEN_AT, high]);
-  return { opacity: points.map(p => p[1]), times: points.map(p => (p[0] - BAR_AT) / (OPEN_AT - BAR_AT)) };
-}
-const LAMPS = [lamp(0, .22, 1), lamp(1, .22, 1)];
-const WASHES = [lamp(0, 0, .55), lamp(1, 0, .5)];
-const strobe = (keys: { times: number[] }) => ({ delay: BAR_AT, duration: OPEN_AT - BAR_AT, times: keys.times, ease: 'linear' as const });
+const LINE_AT = .45;
+const PASSES = [1.05, 1.5, 1.86, 2.14].map((at, i) => ({ at, from: i % 2 ? 1 : -1 }));
+const FLARE_AT = 2.42, OPEN_AT = FLARE_AT + .2;
+const SWEEP = .62;
 
 /** The sounds, on the same clock (src/race-audio.ts, RaceAudio.reveal). */
 const CUES: [number, RevealCue, number?][] = [
-  [BAR_AT, 'power'],
-  ...FLASHES.map(flash => [flash.at, 'flash', flash.side] as [number, RevealCue, number]),
-  [STROBE_AT, 'chirp'], [STROBE_AT + GROUP, 'chirp'],
-  [FLARE_AT - .95, 'riser', .95 + .14],
+  [LINE_AT, 'power'],
+  ...PASSES.map((pass, i) => [pass.at + SWEEP * .3, 'pass', i] as [number, RevealCue, number]),
+  [FLARE_AT - .9, 'riser', .9 + .2],
   [OPEN_AT, 'hit'],
   [OPEN_AT + .55, 'stamp'],
   [OPEN_AT + 1.05, 'shimmer'],
@@ -100,35 +92,38 @@ export function UpdateCard({ onExplore, sound }: { onExplore: () => void; sound?
 
   return <AnimatePresence>{open && <motion.div key="update" className="update-scrim" role="presentation" onClick={close}
     initial={{ opacity: 0 }} animate={{ opacity: 1, transition: { duration: .45 } }} exit={{ opacity: 0, transition: { duration: .28, delay: .05 } }}>
-    {/* The lightbar's strobes light the room, then its red and blue keep washing in turn round the card. */}
+    {/* Headlights and the setting sun light the room, then amber and dusk keep washing in turn round the card. */}
     {!reduced && <>
-      <motion.i className="update-wash is-red" aria-hidden="true" initial={{ opacity: 0 }} animate={{ opacity: [...WASHES[0].opacity, 0] }} transition={{ ...strobe(WASHES[0]), duration: OPEN_AT - BAR_AT + .5, times: [...WASHES[0].times.map(t => t * (OPEN_AT - BAR_AT) / (OPEN_AT - BAR_AT + .5)), 1] }} />
-      <motion.i className="update-wash is-blue" aria-hidden="true" initial={{ opacity: 0 }} animate={{ opacity: [...WASHES[1].opacity, 0] }} transition={{ ...strobe(WASHES[1]), duration: OPEN_AT - BAR_AT + .5, times: [...WASHES[1].times.map(t => t * (OPEN_AT - BAR_AT) / (OPEN_AT - BAR_AT + .5)), 1] }} />
+      <motion.i className="update-wash is-amber" aria-hidden="true" initial={{ opacity: 0 }} animate={{ opacity: [0, .25, .12, .3, .15, .7, .2] }} transition={{ delay: LINE_AT, duration: OPEN_AT - LINE_AT + .6, times: [0, .25, .4, .55, .7, .86, 1], ease: 'easeOut' }} />
+      <motion.i className="update-wash is-dusk" aria-hidden="true" initial={{ opacity: 0 }} animate={{ opacity: [0, .12, .3, .14, .32, .45, .18] }} transition={{ delay: LINE_AT, duration: OPEN_AT - LINE_AT + .6, times: [0, .25, .4, .55, .7, .86, 1], ease: 'easeOut' }} />
       <motion.div aria-hidden="true" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: OPEN_AT + .1, duration: 1 }}>
-        <motion.i className="update-wash is-red" animate={{ opacity: [.12, .42, .12, .12, .3, .12] }} transition={{ duration: 2.4, repeat: Infinity, ease: 'easeInOut', times: [0, .12, .3, .5, .62, 1] }} />
-        <motion.i className="update-wash is-blue" animate={{ opacity: [.12, .12, .4, .12, .12, .3] }} transition={{ duration: 2.4, repeat: Infinity, ease: 'easeInOut', times: [0, .3, .42, .6, .8, .92] }} />
+        <motion.i className="update-wash is-amber" animate={{ opacity: [.14, .4, .14] }} transition={{ duration: 4.2, repeat: Infinity, ease: 'easeInOut' }} />
+        <motion.i className="update-wash is-dusk" animate={{ opacity: [.3, .12, .3] }} transition={{ duration: 4.2, repeat: Infinity, ease: 'easeInOut' }} />
       </motion.div>
     </>}
     <motion.section ref={dialog} tabIndex={-1} className="update-card" role="dialog" aria-modal="true" aria-labelledby="update-heading" onClick={event => event.stopPropagation()}
       variants={reduced ? undefined : card} initial={reduced ? { opacity: 0 } : 'hidden'} animate={reduced ? { opacity: 1 } : 'shown'} exit={reduced ? { opacity: 0 } : 'gone'}>
 
       <motion.div className="update-frame" initial={false} animate={reduced ? undefined : { y: [0, 0, -4, 3, -1, 0] }} transition={{ delay: OPEN_AT - .02, duration: .45, times: [0, .05, .25, .5, .75, 1], ease: 'easeOut' }}>
-        {/* The picture opens out of a thin lightbar, top and bottom edges parting like a widescreen film. */}
+        {/* The picture opens out of the horizon line, top and bottom edges parting like a widescreen film. */}
         <motion.div className="update-film"
           initial={reduced ? false : { clipPath: 'inset(49.4% 0% 49.4% 0%)' }}
           animate={{ clipPath: 'inset(0% 0% 0% 0%)', transition: { delay: OPEN_AT - .08, duration: 1.25, ease: [.7, 0, .2, 1] } }}>
-          <motion.img src={assetUrl(UPDATE.image)} alt="A blue Bugatti Bolide at sunset in Racing City, police cars blocking the street behind it."
+          <motion.img src={assetUrl(UPDATE.image)} alt={UPDATE.alt}
             initial={reduced ? false : { scale: 1.16, filter: 'brightness(.55) saturate(.7)' }}
             animate={{ scale: 1, filter: 'brightness(1) saturate(1)', transition: { delay: OPEN_AT - .08, duration: 2.8, ease: SETTLE } }} />
           {/* One pass of light across the picture once it is open. */}
           {!reduced && <motion.i className="update-sweep" aria-hidden="true" initial={{ x: '-130%', opacity: 0 }} animate={{ x: '560%', opacity: [0, 1, 1, 0] }} transition={{ delay: OPEN_AT + 1.05, duration: 1.5, ease: [.45, 0, .2, 1], opacity: { delay: OPEN_AT + 1.05, duration: 1.5, times: [0, .12, .8, 1] } }} />}
         </motion.div>
-        {!reduced && <motion.div className="update-lightbar" aria-hidden="true"
+        {!reduced && <motion.div className="update-horizon" aria-hidden="true"
           initial={{ scaleX: 0, opacity: 1 }}
           animate={{ scaleX: [0, 1, 1, 1.04], opacity: [1, 1, 1, 0] }}
-          transition={{ delay: BAR_AT, duration: OPEN_AT + .3 - BAR_AT, times: [0, .6 / (OPEN_AT + .3 - BAR_AT), (OPEN_AT - BAR_AT) / (OPEN_AT + .3 - BAR_AT), 1], ease: [SETTLE, 'linear', 'easeIn'] }}>
-          <motion.i className="is-red" initial={{ opacity: 1 }} animate={{ opacity: LAMPS[0].opacity }} transition={strobe(LAMPS[0])} />
-          <motion.i className="is-blue" initial={{ opacity: 1 }} animate={{ opacity: LAMPS[1].opacity }} transition={strobe(LAMPS[1])} />
+          transition={{ delay: LINE_AT, duration: OPEN_AT + .3 - LINE_AT, times: [0, .6 / (OPEN_AT + .3 - LINE_AT), (OPEN_AT - LINE_AT) / (OPEN_AT + .3 - LINE_AT), 1], ease: [SETTLE, 'linear', 'easeIn'] }}>
+          {/* Headlights racing along the horizon, alternately from each side. */}
+          {PASSES.map((pass, i) => <motion.i key={i} className="update-streak" initial={{ x: `${pass.from * 70}vw`, opacity: 0 }}
+            animate={{ x: `${-pass.from * 70}vw`, opacity: [0, 1, 1, 0] }} transition={{ delay: pass.at, duration: SWEEP, ease: [.5, 0, .5, 1], opacity: { delay: pass.at, duration: SWEEP, times: [0, .2, .8, 1] } }} />)}
+          {/* The sun on the horizon, flaring just before the picture opens. */}
+          <motion.i className="update-sun" initial={{ scale: 0, opacity: 0 }} animate={{ scale: [0, .5, 1.6], opacity: [0, .9, 1] }} transition={{ delay: FLARE_AT - .5, duration: .7, times: [0, .6, 1], ease: 'easeIn' }} />
         </motion.div>}
         <motion.span className="update-stamp" initial={reduced ? false : { opacity: 0, x: 14 }} animate={{ opacity: 1, x: 0, transition: { delay: OPEN_AT + .55, duration: .6, ease: SETTLE } }}>
           New update<b>{UPDATE.date}</b>
@@ -141,7 +136,7 @@ export function UpdateCard({ onExplore, sound }: { onExplore: () => void; sound?
           <motion.p variants={rise}>{UPDATE.summary}</motion.p>
           <motion.div className="update-actions" variants={rise}>
             <motion.button className="update-go" onClick={explore} whileHover={reduced ? undefined : { y: -2 }} whileTap={{ scale: .97 }}>
-              Take me to free roam
+              Take me to the highway
               <motion.svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" animate={reduced ? undefined : { x: [0, 4, 0] }} transition={{ duration: 1.6, repeat: Infinity, ease: 'easeInOut', delay: OPEN_AT + 2 }}>
                 <path d="M5 12h13M13 6l6 6-6 6" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
               </motion.svg>

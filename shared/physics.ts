@@ -9,6 +9,8 @@ import { CONE_PENALTY_MS, CONE_RADIUS, type LotLayout } from './lot';
 
 import { DT, MAX_TICKS } from './physics-version';
 import { RaceTraffic } from './race-traffic';
+import { HighwayDrive } from './highway-drive';
+import { DEFAULT_HIGHWAY_TRAFFIC, type HighwayConfig } from './highway-traffic';
 export { PHYSICS_VERSION, DT, MAX_TICKS } from './physics-version';
 /** Where a Cone Attack run begins: wherever the car stopped inside the start box. Part of the run, so replays start in the same place. */
 export type RunOrigin = { x: number; z: number; heading: number };
@@ -220,9 +222,15 @@ export class Simulation {
   readonly spawnPoint: Gate;
   /** Street races: the race's own traffic, moved every tick (shared/race-traffic.ts). */
   readonly raceTraffic?: RaceTraffic;
-  constructor(public track: Track, carId: CarId = DEFAULT_CAR.id, origin?: RunOrigin) {
+  /** The Endless Highway: its road, streamed colliders, floating origin, traffic and run state (shared/highway-drive.ts). */
+  readonly highway?: HighwayDrive;
+  constructor(public track: Track, carId: CarId = DEFAULT_CAR.id, origin?: RunOrigin, highway?: HighwayConfig) {
     this.carSpec = carById(carId);
-    if (origin) {
+    if (track.kind === 'highway') {
+      this.highway = new HighwayDrive(highway ?? { seed: 1, mode: 'cruise', traffic: DEFAULT_HIGHWAY_TRAFFIC }, { floor: groups(GROUP.floor, 0xffff), wall: groups(GROUP.wall, 0xffff) });
+      this.spawnPoint = this.highway.spawnGate();
+      this.recoverPoint = at => this.highway!.recoverGate(at);
+    } else if (origin) {
       const forward = { x: Math.sin(origin.heading), y: 0, z: Math.cos(origin.heading) };
       // A street race starts at its box's height (the city is not flat); the Training Grounds lot is at 0.
       this.spawnPoint = { position: { x: origin.x, y: track.street?.zone.y ?? 0, z: origin.z }, forward, rotation: orientation(forward), width: 4, segment: 0 };
@@ -311,6 +319,8 @@ export class Simulation {
       }
     } else if (track.lot) {
       this.buildLot(track.lot);
+    } else if (track.kind === 'highway') {
+      // Streamed in around the car instead (HighwayDrive.stream), after the snapshot.
     } else {
     // A wider, lower ribbon follows the model elevation outside the asphalt.
     // It supplies continuous grass/run-off contact without covering the visible
@@ -346,6 +356,7 @@ export class Simulation {
         .setFriction(.3).setCollisionGroups(groups(GROUP.wall, 0xffff)));
     }
     if (track.street) this.raceTraffic = new RaceTraffic({ seed: track.id, route: track.street.route, closed: track.street.closed, start: this.spawnPoint.position });
+    this.highway?.stream(this.highwayHost);
     const spawn = this.spawnPoint;
     const spawnPosition = this.surfaceSpawn(spawn.position);
     this.car = this.world.createRigidBody(RAPIER.RigidBodyDesc.dynamic()
@@ -518,6 +529,7 @@ export class Simulation {
   }
   private integrate(input:number,cruise?:{steering:number;speed:number}) {
     if (!cruise && (this.finished || this.ticks >= this.maxTicks)) return;
+    this.highway?.prepare(this.highwayHost);
     this.shiftTicks=Math.max(0,this.shiftTicks-1);
     if(this.manual&&!cruise){
       const up=!!(input&Input.ShiftUp)&&!(this.previousInput&Input.ShiftUp),down=!!(input&Input.ShiftDown)&&!(this.previousInput&Input.ShiftDown);
@@ -777,6 +789,7 @@ export class Simulation {
       }else this.car.setAngvel({x:angular.x+up.x*(limitedYaw-yaw),y:angular.y+up.y*(limitedYaw-yaw),z:angular.z+up.z*(limitedYaw-yaw)},true);
     }
     this.raceTraffic?.step(this);
+    this.highway?.stepTraffic(this.highwayHost);
     this.driveObstacles();
     this.world.step();
     // A car never goes faster than its rated top speed: not down a hill, off a boost pad or in a draft.
@@ -843,6 +856,7 @@ export class Simulation {
     if (this.track.lot) this.hitCones(this.track.lot);
     const after = this.car.translation();
     if (this.track.kind === 'cones') this.crossEdges(this.track.lot!, before, after);
+    if (this.highway) { if (this.highway.finish(this.highwayHost)) this.respawn(); return; }
     // Free roam never scores a gate.
     if (this.track.kind === 'lot') { if (after.y < this.recoveryFloor) this.respawn(); return; }
     const gates = this.gates, gate = gates.checkpoints[this.checkpoint] ?? gates.finish;
@@ -937,6 +951,24 @@ export class Simulation {
     }
     const step=Math.max(dt,DT),v=pose.v?{...pose.v}:{x:(p.x-known.p.x)/step,y:(p.y-known.p.y)/step,z:(p.z-known.p.z)/step};
     Object.assign(known,{p,q,v,ticks:0});
+  }
+  /** The highway's view of this simulation (see HighwayDrive's Host). */
+  private hostCache?: Parameters<HighwayDrive['finish']>[0];
+  private get highwayHost() {
+    const sim = this;
+    return this.hostCache ??= {
+      get world() { return sim.world; }, get car() { return sim.car; }, get hitCount() { return sim.hitCount; }, get ticks() { return sim.ticks; }, get respawns() { return sim.respawns; },
+      get colliderSurfaces() { return sim.colliderSurfaces; },
+      setObstacle: (id: string, body: ObstacleBody, pose?: { p: Vec3; q: Quat; v?: Vec3 }) => this.setObstacle(id, body, pose),
+      obstacleState: (id: string) => this.obstacleState(id),
+      shiftObstacles: (dx: number, dy: number, dz: number) => {
+        for (const opponent of this.obstacles.values()) {
+          const t = opponent.body.translation();
+          opponent.body.setTranslation({ x: t.x - dx, y: t.y - dy, z: t.z - dz }, true);
+          opponent.p.x -= dx; opponent.p.y -= dy; opponent.p.z -= dz;
+        }
+      },
+    };
   }
   /** Where a stand-in really is after contact (position, velocity, spin), so a caller can react to being hit. */
   obstacleState(id:string){const known=this.obstacles.get(id);if(!known)return undefined;return {p:known.body.translation(),q:known.body.rotation(),v:known.body.linvel(),w:known.body.angvel()};}

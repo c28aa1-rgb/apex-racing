@@ -874,7 +874,16 @@ export class TrafficSim {
     // Where it now sits along its lane, and how far off it.
     const near = this.nearest(car.lane, car.position), onLane = new THREE.Vector3();
     car.s = near.s; car.index = this.sample(car.lane, Math.min(car.s, car.lane.length), car.index, onLane);
-    wreck.offLane = near.distance > car.kind.halfWidth + 1.9;
+    // The slide knows nothing of walls: keep it within a few metres of its lane (on the bridge deck, short of the
+    // barrier), and on the road's own height there, so it never hangs in the air off a ramp or past a parapet.
+    const reach = car.kind.halfWidth + 3.2;
+    if (near.distance > reach) {
+      const out = this.v3.set(car.position.x - onLane.x, 0, car.position.z - onLane.z).normalize();
+      car.position.x = onLane.x + out.x * reach; car.position.z = onLane.z + out.z * reach;
+      velocity.addScaledVector(out, -Math.max(0, velocity.dot(out)));
+    }
+    car.position.y = onLane.y;
+    wreck.offLane = Math.min(near.distance, reach) > car.kind.halfWidth + 1.9;
     if (wreck.still < WRECK_HOLD || (this.seen(car.position) && drivers.some(driver => car.position.distanceTo(driver.position) < 90) && wreck.still < 40)) return;
     // Back on the road: eased across from where it sat, facing along the lane, from a standstill.
     if (car.lane.cars.some(other => other !== car && !other.wreck && Math.abs(other.s - car.s) < car.kind.body.lengthM + 4)) return;
