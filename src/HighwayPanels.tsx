@@ -58,15 +58,17 @@ export function HighwayHud({ game, state }: { game: Game; state: GameState }) {
   const survival = state.highwaySetup.mode === 'survival' && game.sim.highway?.survival;
   const level = survival ? (survivalDensity(distance) - SURVIVAL_START) / (SURVIVAL_END - SURVIVAL_START) : 0;
   const best = state.highwayBest ?? 0;
+  // The traffic actually running: this player's Cruise setup, or in a highway party the host's.
+  const traffic = game.sim.highway?.traffic.settings ?? state.highwaySetup.traffic;
   const warn = survival && slow !== undefined;
   return <div className={`highway-panel ${survival ? 'is-survival' : ''} ${shoulder || warn ? 'is-shoulder' : ''}`}>
-    <span>{survival ? 'Survival' : 'Cruise'} · Endless Highway</span>
+    <span>{survival ? 'Survival' : game.partyRace ? 'Party' : 'Cruise'} · Endless Highway</span>
     <strong>{miles(distance, distance < 16093 ? 2 : 1)}</strong>
     {warn ? <b className="highway-shoulder" role="alert">Too slow · speed up past 40 mph · {slow} s</b> : survival && shoulder ? <b className="highway-shoulder" role="status">On the shoulder · not counting</b> : survival ? <div className="highway-level">
       <small>{best > 0 ? distance > best ? 'New best!' : `Best ${miles(best)}` : 'First run'}</small>
       <i aria-label={`Traffic ${Math.round(level * 100)}%`}><b style={{ transform: `scaleX(${Math.max(.04, level)})` }} /></i>
       <small>Traffic</small>
-    </div> : <small>{state.highwaySetup.traffic.density === 0 ? 'Empty road' : `${nearestStep(state.highwaySetup.traffic.density).label} traffic · ${Math.round(state.highwaySetup.traffic.speedKph / KPH_PER_MPH)} mph`} · <kbd>Esc</kbd> to change</small>}
+    </div> : <small>{traffic.density === 0 ? 'Empty road' : `${nearestStep(traffic.density).label} traffic · ${Math.round(traffic.speedKph / KPH_PER_MPH)} mph`} · {game.partyRace ? 'set by the host' : <><kbd>Esc</kbd> to change</>}</small>}
   </div>;
 }
 

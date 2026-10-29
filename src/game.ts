@@ -1,5 +1,5 @@
 import { DT, initPhysics, Input, MAX_TICKS, PHYSICS_VERSION, rotate, Simulation, type Frame, type RunOrigin, type Weather } from '../shared/physics';
-import { CITY, CITY_RACES, CONE_TRACK, TRACKS, TRAINING_GROUNDS, inStartZone, type Track, type Vec3 } from '../shared/tracks';
+import { CITY, CITY_RACES, CONE_TRACK, HIGHWAY, TRACKS, TRAINING_GROUNDS, inStartZone, type Track, type Vec3 } from '../shared/tracks';
 import { DEFAULT_HIGHWAY_TRAFFIC, type HighwayMode, type HighwayTrafficSettings } from '../shared/highway-traffic';
 import { SLOW_LIMIT_TICKS } from '../shared/highway-drive';
 import { carById, DEFAULT_CAR, lookOf, withLivery, type CarDefinition, type CarId } from '../shared/cars';
@@ -17,7 +17,7 @@ import { keyLabel, type Action } from './controls';
 import { Quaternion, Vector3 } from 'three';
 import { FinishDriver } from './finish-driver';
 import { CarRig } from './car-rig';
-import { isCityParty, type PartyLobby, type PartyPose, type PartyRace, type PartyRacer, type PartyTrafficPacket, type PartyWeather } from '../shared/party';
+import { highwayPartySeed, isCityParty, isHighwayParty, type PartyLobby, type PartyPose, type PartyRace, type PartyRacer, type PartyTrafficPacket, type PartyWeather } from '../shared/party';
 import { PARTY_CLOSE_M, PARTY_CLOSE_S, PARTY_POSE_HZ, PARTY_ROAM_POSE_HZ } from '../shared/party-network';
 import { Group, CanvasTexture, Sprite, SpriteMaterial } from 'three';
 import { RemoteMotion } from './remote-motion';
@@ -118,7 +118,8 @@ export class Game {
   onLeaveTraining?:()=>void;
   /** Your finishing position in the current party race, once the server confirms it. */
   partyPlace?:number;
-  partyRace?: { id: string; lap: number; laps: number; ready: boolean; started: boolean; finished: boolean; city?: boolean; public?: boolean };
+  /** city: free roam together (Racing City, or the Endless Highway when highway is set too): no laps, joinable while it runs. */
+  partyRace?: { id: string; lap: number; laps: number; ready: boolean; started: boolean; finished: boolean; city?: boolean; highway?: boolean; public?: boolean };
   /**
    * The public city while this driver races a street race alone: the party is set aside (the race runs like any solo
    * race, others stop seeing this car) and comes back when the race is left. See goAway and comeBack.
@@ -632,7 +633,8 @@ export class Game {
     const previous=this.state.highwaySetup,next={mode:patch.mode??previous.mode,traffic:{...previous.traffic,...patch.traffic}};
     write('highwaySetup',next);this.emit({highwaySetup:next});
     const highway=this.state.track.kind==='highway'?this.sim.highway:undefined;
-    if(!highway||!this.state.trackReady)return;
+    // A highway party's traffic is the host's (party settings); this player's own setup waits for their next solo run.
+    if(!highway||!this.state.trackReady||this.partyRace)return;
     if(next.mode!==highway.config.mode){this.start(false);return;}
     if(next.mode==='cruise')highway.traffic.settings={...next.traffic};
   }
@@ -679,32 +681,35 @@ export class Game {
     this.selectionToken++;this.carToken++;
     const race=lobby.race!,me=race.racers.find(r=>r.id===selfId)!;
     this.partyOriginalTrack=this.state.track;this.partySelf=selfId;this.partyPlace=undefined;
-    // A city party is free roam together in the city: no laps, no finish, traffic shared through the server.
-    const city=isCityParty(lobby.settings);
+    // A city party is free roam together in the city: no laps, no finish, traffic shared through the server. A highway
+    // party is the same on the Endless Highway, each screen running its own traffic from the host's settings.
+    const highway=isHighwayParty(lobby.settings),city=isCityParty(lobby.settings)||highway;
     // A street race in the city is raced like a circuit, with its own roadblocks and its own traffic on each screen.
-    const track=structuredClone(city?CITY:CITY_RACES.find(t=>t.id===lobby.settings.trackId)??TRACKS.find(t=>t.id===lobby.settings.trackId)!);
-    track.spawn=structuredClone(race.grid[me.slot]);track.checkpoints=structuredClone(race.checkpoints);track.finish=structuredClone(race.finish);
+    const track=structuredClone(highway?HIGHWAY:isCityParty(lobby.settings)?CITY:CITY_RACES.find(t=>t.id===lobby.settings.trackId)??TRACKS.find(t=>t.id===lobby.settings.trackId)!);
+    if(!highway){track.spawn=structuredClone(race.grid[me.slot]);track.checkpoints=structuredClone(race.checkpoints);track.finish=structuredClone(race.finish);}
     this.partyFinishDriver=undefined;this.spectating=undefined;this.partySeedWanted=false;
-    this.partyRace={id:race.id,lap:me.pose?.lap??1,laps:lobby.settings.laps,ready:false,started:false,finished:!!(me.finishedAt||me.disconnected||race.ended),city,public:!!lobby.public};this.partyAway=undefined;
+    this.partyRace={id:race.id,lap:me.pose?.lap??1,laps:lobby.settings.laps,ready:false,started:false,finished:!!(me.finishedAt||me.disconnected||race.ended),city,highway,public:!!lobby.public};this.partyAway=undefined;
     this.partySequence=me.pose?.sequence??0;this.lapStartTick=me.pose?-1:0;this.partyBestLap=me.pose?.best;this.partyView=false;this.keys.clear();this.garageView=false;this.awaitingPedal=false;
     this.inputs=[];this.steeringInputs=[];this.driftInputs=[];this.accumulator=0;this.previousFrame=undefined;
     this.lastCheckpoint=0;this.lastRespawns=0;this.queuedRespawn=false;this.queuedFlip=false;this.pendingShifts=0;this.seenBlockedShifts=0;
     this.ghostSim?.dispose();this.ghostSim=undefined;this.ghostRun=undefined;this.chosenGhost=undefined;this.world.ghostFrame(undefined);this.world.endFinish();
-    this.partyWeather=lobby.settings.weather;this.world.setTrack(track);this.world.setWeather(lobby.settings.weather);if(track.night){this.world.setHeadlights(this.world.cityDark);this.cityWasDark=this.world.cityDark;}
-    this.partyLoadStep=track.night?'Loading the city':'Loading circuit';
+    this.partyWeather=lobby.settings.weather;this.world.setTrack(track);this.world.setWeather(lobby.settings.weather);if(timeOfDay(track)){this.world.setHeadlights(this.world.cityDark);this.cityWasDark=this.world.cityDark;}
+    this.partyLoadStep=highway?'Paving the road':track.night?'Loading the city':'Loading circuit';
     const myCar=dressed(me.carId);this.sound.look=lookOf(myCar);
     this.emit({mode:'party-loading',track,car:myCar,trackReady:false,modelReady:false,time:0,speed:0,checkpoint:0,run:undefined,newBest:false,notice:'',ghostSplit:undefined,ghostTiming:undefined});
     await initPhysics(track);
     if(this.partyRace?.id!==race.id)return;
-    this.sim.dispose();this.sim=new Simulation(track,me.carId);this.sim.weather=lobby.settings.weather;this.sim.maxTicks=city?Infinity:60*3600;this.sim.steeringStrength=this.steeringStrength;this.sim.driftStrength=this.driftStrength;this.sim.manual=this.settings.advancedDriving;
-    if(me.pose){this.sim.car.setTranslation(me.pose.p,true);this.sim.car.setRotation(me.pose.q,true);this.sim.car.setLinvel({x:0,y:0,z:0},true);this.sim.car.setAngvel({x:0,y:0,z:0},true);this.sim.checkpoint=me.pose.checkpoint;this.sim.ticks=Math.max(0,Math.round((this.serverTime()-(race.startAt??this.serverTime()))/1000/DT));this.sim.finished=this.partyRace.finished;}
+    this.sim.dispose();this.sim=new Simulation(track,me.carId,undefined,highway?{seed:highwayPartySeed(race.id),mode:'cruise',traffic:{...DEFAULT_HIGHWAY_TRAFFIC,...lobby.settings.traffic},start:highwayStart(race,me)}:undefined);this.sim.weather=lobby.settings.weather;
+    this.originSeen=0;this.originAt={x:0,y:0,z:0};this.sim.maxTicks=city?Infinity:60*3600;this.sim.steeringStrength=this.steeringStrength;this.sim.driftStrength=this.driftStrength;this.sim.manual=this.settings.advancedDriving;
+    if(me.pose&&!highway){this.sim.car.setTranslation(me.pose.p,true);this.sim.car.setRotation(me.pose.q,true);this.sim.car.setLinvel({x:0,y:0,z:0},true);this.sim.car.setAngvel({x:0,y:0,z:0},true);this.sim.checkpoint=me.pose.checkpoint;this.sim.ticks=Math.max(0,Math.round((this.serverTime()-(race.startAt??this.serverTime()))/1000/DT));this.sim.finished=this.partyRace.finished;}
     this.world.setCockpitOffset(loadCockpitOffsets()[me.carId]);
     this.partyLoadStep='Loading your car';this.emit();
     const loaded=await this.world.setCar(me.carId,myCar.look);this.partyLoadStep='Loading the circuit scenery';this.emit();await this.world.venueReady;
     if(this.partyRace?.id!==race.id)return;
     if(!loaded)throw new Error('Your car could not load. Return to lobby and retry.');
     if(this.world.venueLoadError)throw new Error(this.world.venueLoadError);
-    if(track.night){
+    if(highway)this.world.updateHighway(this.sim,true);
+    if(timeOfDay(track)){
       this.partyLoadStep='Starting traffic';this.emit();
       const p=this.sim.car.translation();await this.world.startTraffic(new Vector3(p.x,p.y,p.z));
       if(this.partyRace?.id!==race.id)return;
@@ -778,7 +783,11 @@ export class Game {
   partyPose():PartyPose|undefined {
     const race=this.partyRace;if(!race?.ready||!race.started)return;
     // t: the moment of the physics tick the pose came from, on the shared server clock.
-    return {...this.sim.frame(),v:this.sim.car.linvel(),sequence:++this.partySequence,lap:race.lap,checkpoint:this.sim.checkpoint,finished:race.finished,
+    // On the highway each screen keeps its own floating origin: poses travel in absolute coordinates, with the
+    // distance along the road (a driver joining late starts near the others by it).
+    const highway=race.highway?this.sim.highway:undefined,frame=this.sim.frame();
+    if(highway){frame.p={x:frame.p.x+highway.origin.x,y:frame.p.y+highway.origin.y,z:frame.p.z+highway.origin.z};}
+    return {...frame,v:this.sim.car.linvel(),...(highway?{s:+highway.s.toFixed(1)}:{}),sequence:++this.partySequence,lap:race.lap,checkpoint:this.sim.checkpoint,finished:race.finished,
       ...(this.serverOffset!==undefined?{t:+this.serverTime(this.previous-this.accumulator*1000).toFixed(1)}:{}),...(this.partyBestLap?{best:this.partyBestLap}:{})};
   }
   /**
@@ -806,14 +815,14 @@ export class Game {
   }
   /** City party: what goes with the next pose: the cars you knocked, and the traffic around you if the server asked. */
   partyTrafficOut(){
-    const traffic=this.world.traffic;if(!traffic||!this.partyRace?.city)return undefined;
+    const traffic=this.world.traffic;if(!traffic||!this.partyRace?.city||this.partyRace.highway)return undefined;
     const knocks=traffic.takeKnocks(),p=this.sim.car.translation();
     const seed=this.partySeedWanted?traffic.seed(new Vector3(p.x,p.y,p.z)).slice(0,80):undefined;this.partySeedWanted=false;
     return knocks.length||seed?{...(knocks.length?{knocks}:{}),...(seed?{seed}:{})}:undefined;
   }
   /** City party: the server's traffic update (or its request for yours). */
   partyTraffic(packet?:PartyTrafficPacket){
-    if(!packet||!this.partyRace?.city)return;
+    if(!packet||!this.partyRace?.city||this.partyRace.highway)return;
     if(packet.seed){this.partySeedWanted=true;return;}
     this.world.traffic?.follow(packet,Math.max(0,(this.serverTime()-packet.at)/1000));
   }
@@ -1049,6 +1058,8 @@ export class Game {
       const pose=target&&remote.motion.present(this.serverTime(now));
       if(pose){
         group.position.copy(pose.p);group.quaternion.copy(pose.q);
+        // Highway poses are absolute: into this screen's shifted frame.
+        const origin=this.partyRace?.highway?this.sim.highway?.origin:undefined;if(origin)group.position.set(pose.p.x-origin.x,pose.p.y-origin.y,pose.p.z-origin.z);
       }
       if(group.visible&&elapsed>0)this.animateRemoteWheels(remote,elapsed);
       // Finished drivers keep rolling for a moment on their screens, then fade out here and stop being solid.
@@ -1074,6 +1085,17 @@ export class Game {
 const CLOCK_STEP_MS=5;
 /** How often a driver with nobody to share the city with checks in with the party server. */
 const PARTY_CHECK_IN_MS=3500;
+/**
+ * Where a driver starts in a highway party: at the start, in staggered rows across the three lanes by grid slot; back
+ * in the session after a drop, where they were; joining it late, a little behind whoever is furthest along.
+ */
+function highwayStart(race:PartyRace,me:PartyRacer):{s:number;lane:number}{
+  if(me.pose?.s!==undefined)return {s:me.pose.s,lane:1};
+  const others=race.racers.filter(r=>r.id!==me.id&&!r.disconnected&&r.pose?.s!==undefined).map(r=>r.pose!.s!);
+  if(others.length)return {s:Math.max(...others)-90-me.slot%3*25,lane:2};
+  const lane=[1,0,2][me.slot%3];
+  return {s:140-Math.floor(me.slot/3)*18-(lane===1?0:6),lane};
+}
 function loadHighwaySetup():GameState['highwaySetup'] {
   const saved=read<Partial<GameState['highwaySetup']>>('highwaySetup',{}),traffic=saved.traffic??DEFAULT_HIGHWAY_TRAFFIC;
   const number=(value:unknown,min:number,max:number,fallback:number)=>typeof value==='number'&&Number.isFinite(value)?Math.min(max,Math.max(min,value)):fallback;

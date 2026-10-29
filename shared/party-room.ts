@@ -1,22 +1,24 @@
 import { z } from 'zod';
 import { CAR_IDS, type CarId } from './cars';
-import { CITY, trackById, placementGate, type Track, type Vec3 } from './tracks';
-import { CITY_PARTY_TRACK, DEFAULT_PARTY_SETTINGS, PARTY_WEATHER, PUBLIC_CITY_CODES, isCityParty, isPublicCityCode, type PartyLobby, type PartyMember, type PartySettings, type PartyPose, type PartyTrafficPacket } from './party';
+import { CITY, HIGHWAY, trackById, placementGate, type Track, type Vec3 } from './tracks';
+import { CITY_PARTY_TRACK, DEFAULT_PARTY_SETTINGS, HIGHWAY_PARTY_TRACK, PARTY_WEATHER, PUBLIC_CITY_CODES, isCityParty, isPublicCityCode, isRoamParty, type PartyLobby, type PartyMember, type PartySettings, type PartyPose, type PartyTrafficPacket } from './party';
 import { PARTY_GRIDS } from './party-grids';
 import { PartyTraffic, MAX_SEED, type TrafficKnock } from './city-party-traffic';
 
 const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 export const PARTY_PRESENCE_MS = 120_000;
 export const settingsSchema = z.object({
-  trackId: z.string().refine(id => id === CITY_PARTY_TRACK || Boolean(trackById(id) && !trackById(id)!.lot), 'Choose an available circuit.'),
+  trackId: z.string().refine(id => id === CITY_PARTY_TRACK || id === HIGHWAY_PARTY_TRACK || Boolean(trackById(id) && !trackById(id)!.lot), 'Choose an available circuit.'),
   weather: z.enum(PARTY_WEATHER),
   laps: z.number().int().min(1).max(99),
   maxPlayers: z.number().int().min(2).max(8),
+  traffic: z.object({ density: z.number().finite().min(0).max(60), speedKph: z.number().finite().min(50).max(260) }).strict().optional(),
 }).strict();
 export const carSchema = z.object({ carId: z.enum(CAR_IDS) }).strict();
 export const createSchema = carSchema.extend({ settings: settingsSchema.partial().optional() });
-const vector = z.object({ x: z.number().finite().min(-100000).max(100000), y: z.number().finite().min(-100000).max(100000), z: z.number().finite().min(-100000).max(100000) }).strict();
-const poseSchema = z.object({ sequence: z.number().int().nonnegative(), t: z.number().finite().nonnegative().optional(), p: vector, q: vector.extend({ w: z.number().finite().min(-1).max(1) }).refine(q => Math.abs(Math.hypot(q.x, q.y, q.z, q.w) - 1) < .02), v: vector.refine(v => Math.hypot(v.x, v.y, v.z) <= 1000, 'Invalid velocity.').optional(), lap: z.number().int().min(1).max(99), checkpoint: z.number().int().min(0).max(1000), finished: z.boolean(), best: z.number().int().positive().max(3_600_000).optional() }).strict();
+// Wide enough for the Endless Highway, whose positions are absolute and grow for as long as anyone drives.
+const vector = z.object({ x: z.number().finite().min(-1e7).max(1e7), y: z.number().finite().min(-1e5).max(1e5), z: z.number().finite().min(-1e7).max(1e7) }).strict();
+const poseSchema = z.object({ sequence: z.number().int().nonnegative(), t: z.number().finite().nonnegative().optional(), p: vector, q: vector.extend({ w: z.number().finite().min(-1).max(1) }).refine(q => Math.abs(Math.hypot(q.x, q.y, q.z, q.w) - 1) < .02), v: vector.refine(v => Math.hypot(v.x, v.y, v.z) <= 1000, 'Invalid velocity.').optional(), lap: z.number().int().min(1).max(99), checkpoint: z.number().int().min(0).max(1000), finished: z.boolean(), best: z.number().int().positive().max(3_600_000).optional(), s: z.number().finite().min(-1e7).max(1e7).optional() }).strict();
 const record = z.array(z.number().int().min(-10_000_000).max(10_000_000)).min(7).max(14);
 const knockSchema = z.object({ id: z.number().int().nonnegative(), p: z.object({ x: z.number().finite(), z: z.number().finite() }).strict(),
   q: z.object({ x: z.number().finite(), y: z.number().finite(), z: z.number().finite(), w: z.number().finite() }).strict(),
@@ -90,7 +92,7 @@ export class Parties {
       if (race && !race.ended) {
         for (const racer of race.racers) if (!racer.disconnected && this.now() - (room.seen.get(racer.id) ?? 0) > 20_000 && race.startAt) { racer.disconnected = true; room.revision++; }
         // The public city never ends: it closes when its last driver leaves.
-        if (!room.public && ((!race.startAt && this.now() - race.createdAt > 180_000) || (race.startAt && (this.now() - race.startAt > (isCityParty(room.settings) ? CITY_PARTY_MS : 3_600_000) || race.racers.every(r => r.finishedAt || r.disconnected))))) { race.ended = true; room.revision++; }
+        if (!room.public && ((!race.startAt && this.now() - race.createdAt > 180_000) || (race.startAt && (this.now() - race.startAt > (isRoamParty(room.settings) ? CITY_PARTY_MS : 3_600_000) || race.racers.every(r => r.finishedAt || r.disconnected))))) { race.ended = true; room.revision++; }
       }
     }
   }
@@ -159,7 +161,7 @@ export class Parties {
     if (current && current !== room) return fail(409, 'Leave your current lobby before joining another.');
     if (current === room) { this.touch(room, player); return this.snapshot(room); }
     if (room.kicked?.includes(player.id)) return fail(403, 'The host removed you from this lobby.');
-    const joining = room.race && isCityParty(room.settings) && !room.race.ended;
+    const joining = room.race && isRoamParty(room.settings) && !room.race.ended;
     if (room.race && !joining) return fail(409, 'Race in progress. Wait for the host to reopen the lobby.');
     if (room.members.length >= room.settings.maxPlayers) return fail(409, 'This lobby is full. Ask the host to open another place.');
     room.members.push({ ...player, carId }); room.seen.set(player.id, this.now()); room.revision++;
@@ -177,6 +179,14 @@ export class Parties {
   /** A city party's session: the drivers in the lobby on the city grid, in lobby order. */
   private cityRace(room: LiveLobby) {
     room.race = { id: crypto.randomUUID(), createdAt: this.now(), startAt: null, ended: false, grid: CITY_GRID.map(p => placementGate(CITY, p)), checkpoints: [], finish: structuredClone(CITY.finish),
+      racers: room.members.map((member, i) => ({ ...member, slot: i, ready: false })) };
+  }
+  /**
+   * A highway party's session: everyone in the lobby, placed by their slot. The road and where on it each driver
+   * starts come from the session id on each screen (shared/party.ts highwayPartySeed); the grid only fills the shape.
+   */
+  private highwayRace(room: LiveLobby) {
+    room.race = { id: crypto.randomUUID(), createdAt: this.now(), startAt: null, ended: false, grid: Array.from({ length: 8 }, () => structuredClone(HIGHWAY.start)), checkpoints: [], finish: structuredClone(HIGHWAY.finish),
       racers: room.members.map((member, i) => ({ ...member, slot: i, ready: false })) };
   }
   /**
@@ -268,8 +278,8 @@ export class Parties {
     if (room.public) return this.snapshot(room);
     if (room.hostId !== player.id) return fail(403, 'Only the host can start the race.');
     if (room.race) return this.snapshot(room);
-    if (isCityParty(room.settings)) {
-      this.cityRace(room);
+    if (isRoamParty(room.settings)) {
+      if (isCityParty(room.settings)) this.cityRace(room); else this.highwayRace(room);
       this.touch(room, player); room.revision++;
       return this.snapshot(room);
     }
@@ -300,18 +310,18 @@ export class Parties {
   }
   update(player: Identity, raceId: string, ready: boolean, pose?: PartyPose, traffic?: { knocks?: TrafficKnock[]; seed?: number[][] }, away = false) {
     this.sweep();
-    const room = this.room(player.id), race = room?.race, city = !!room && isCityParty(room.settings);
+    const room = this.room(player.id), race = room?.race, roam = !!room && isRoamParty(room.settings), city = !!room && isCityParty(room.settings);
     if (!room || !race || race.id !== raceId) return fail(409, 'Race session ended. Return to the lobby.');
     const racer = race.racers.find(r => r.id === player.id);
     // A driver who dropped out of a city party (a lost connection) simply comes back.
-    if (racer?.disconnected && city && !race.ended) { racer.disconnected = false; racer.ready = false; room.revision++; }
+    if (racer?.disconnected && roam && !race.ended) { racer.disconnected = false; racer.ready = false; room.revision++; }
     if (!racer || racer.disconnected) return fail(409, 'You are no longer in this race.');
     this.touch(room, player);
     if (ready && !racer.ready) { racer.ready = true; room.revision++; }
     // The public city: off racing a street race alone, and back.
     if (room.public && away !== !!racer.away) { if (away) racer.away = true; else delete racer.away; room.revision++; }
     // A city party has no lights: driving starts as soon as everyone has loaded.
-    if (!race.ended && !race.startAt && race.racers.every(r => r.ready || r.disconnected)) { race.startAt = this.now() + (city ? 300 : 6500); room.revision++; }
+    if (!race.ended && !race.startAt && race.racers.every(r => r.ready || r.disconnected)) { race.startAt = this.now() + (roam ? 300 : 6500); room.revision++; }
     // ponytail: casual client-authoritative driving; never eligible for verified leaderboards.
     // After finishing, a driver keeps sending positions for a few seconds so others see the car roll on and fade out.
     const rolling = racer.finishedAt !== undefined && this.now() - racer.finishedAt < 8000 && !!pose?.finished;

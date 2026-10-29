@@ -73,18 +73,20 @@ export class HighwayDrive {
   private speeds: number[] = [];
   private seenHits = 0; private hitTick = -Infinity; private hitSpeed = 0;
 
-  constructor(readonly config: HighwayConfig, private groups: HighwayGroups, startS = 120) {
+  private startLane: number;
+  constructor(readonly config: HighwayConfig, private groups: HighwayGroups) {
     this.road = new HighwayRoad(config.seed);
+    const startS = config.start?.s ?? 120; this.startLane = config.start?.lane ?? 1;
     this.s = this.startS = this.furthest = startS;
-    const p = this.road.lanePose(startS, 1);
-    this.traffic = new HighwayTraffic(this.road, config, { s: startS, lat: laneCentre(1), x: p.x, y: p.y, z: p.z, along: 0 });
+    const p = this.road.lanePose(startS, this.startLane);
+    this.traffic = new HighwayTraffic(this.road, config, { s: startS, lat: laneCentre(this.startLane), x: p.x, y: p.y, z: p.z, along: 0 });
   }
   get distance() { return this.counted; }
   get survival() { return this.config.mode === 'survival'; }
 
   /** The run's start: the middle lane facing along the road. */
   spawnGate(): Gate {
-    const pose = this.road.lanePose(this.startS, 1), forward = { x: Math.sin(pose.heading), y: 0, z: Math.cos(pose.heading) };
+    const pose = this.road.lanePose(this.startS, this.startLane), forward = { x: Math.sin(pose.heading), y: 0, z: Math.cos(pose.heading) };
     return { position: { x: pose.x - this.origin.x, y: pose.y - this.origin.y, z: pose.z - this.origin.z }, forward, rotation: yawQuat(pose.heading), width: LANE_WIDTH, segment: 0 };
   }
   /** Where a car in trouble is put back: its own carriageway's nearest lane, at the same distance along. */

@@ -15,7 +15,8 @@ import { forwardLane, laneCentre, LANE_WIDTH, LANES, MEDIAN_HALF, RAIL, pointOn,
 export type HighwayMode = 'cruise' | 'survival';
 /** Cruise traffic, set by the player: cars per km in each direction, and their average speed (35-160 mph in the setup). */
 export type HighwayTrafficSettings = { density: number; speedKph: number };
-export type HighwayConfig = { seed: number; mode: HighwayMode; traffic: HighwayTrafficSettings };
+/** start: where on the road the car begins (a party places each driver; 120 m into lane 1 otherwise). */
+export type HighwayConfig = { seed: number; mode: HighwayMode; traffic: HighwayTrafficSettings; start?: { s: number; lane: number } };
 export const DENSITY_STEPS = [{ label: 'Off', value: 0 }, { label: 'Light', value: 6 }, { label: 'Medium', value: 14 }, { label: 'Heavy', value: 24 }, { label: 'Rush hour', value: 38 }] as const;
 export const DEFAULT_HIGHWAY_TRAFFIC: HighwayTrafficSettings = { density: 14, speedKph: 105 };
 /** Survival: traffic at the start and after SURVIVAL_RAMP metres, at a fixed speed so every run is scored the same way. */
