@@ -129,3 +129,5 @@ body:has(.is-party){overflow:auto}#app:has(.is-party){height:auto;min-height:100
 .city-name footer button[type=button]{background:#1d3640;color:#fff;border:1px solid #506567;border-radius:4px;padding:12px 16px;font-size:14px}
 .city-name footer button[type=button]:hover:not(:disabled){background:#264652}
 .party-race-order .party-city-private{display:block;margin-top:4px;padding:8px 0 2px;border-top:1px solid #a8dadc26;font-size:11px;line-height:1.4;color:#a8c4c7}
+/* The city panel: its driver list sits under the heading, however many lines the heading takes. */
+.party-city .party-race-order{position:static;align-self:flex-start;margin-top:-4px}

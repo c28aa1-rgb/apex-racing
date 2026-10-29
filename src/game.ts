@@ -500,13 +500,13 @@ export class Game {
     await initPhysics(CONE_TRACK);if(token!==this.selectionToken)return;
     this.emit({trackReady:true});this.start(true);
   }
-  menu() {this.closeCameraWheel();if(this.partyAway){this.leaveParty?.();return;}if(this.partyRace)return;this.chosenGhost=undefined;
+  menu() {this.closeCameraWheel();if(this.partyAway||this.partyRace?.city){this.leaveParty?.();return;}if(this.partyRace)return;this.chosenGhost=undefined;
     if(this.carBeforeReplay){const own=this.carBeforeReplay;this.carBeforeReplay=undefined;void this.selectCar(own);}
     // Leaving free roam goes back to the Garage, where it is opened from.
     if(this.state.track.lot||this.freeRoam||this.state.track.kind==='street'){this.world.setHeadlights(false);this.emit({mapOpen:false,venueLoad:undefined});
       // The city (venue, traffic, night lighting) must not stay loaded behind the menu: swap in the light car park.
       if(!this.state.track.lot)this.world.setTrack(TRAINING_GROUNDS);this.cockpitPreview=false;this.world.firstPerson=false;this.world.endFinish();this.world.setMouseLook(false);this.onLeaveTraining?.();void this.select(this.lastCircuit).then(()=>this.setGarage(true));return;}this.keys.clear();this.finishRevealAt=0;this.world.endFinish();this.cockpitPreview=false;this.world.firstPerson=false;this.world.setMouseLook(false);this.emit({mode:'menu',notice:'',ghostSplit:undefined,ghostTiming:undefined});this.world.ghostFrame(undefined);}
-  pause() {this.closeCameraWheel();if(this.state.mapOpen)this.emit({mapOpen:false});this.keys.clear();this.world.applyPendingGraphics();if(this.partyRace)return;if(['racing','countdown','replay'].includes(this.state.mode)){this.pausedMode=this.state.mode;this.pausedCountdown=Math.max(0,this.countdownUntil-performance.now());this.emit({mode:'paused'});this.world.setMouseLook(false);}}
+  pause() {this.closeCameraWheel();if(this.state.mapOpen)this.emit({mapOpen:false});this.keys.clear();this.world.applyPendingGraphics();if(this.partyRace&&!this.partyRace.city)return;if(['racing','countdown','replay'].includes(this.state.mode)){this.pausedMode=this.state.mode;this.pausedCountdown=Math.max(0,this.countdownUntil-performance.now());this.emit({mode:'paused'});this.world.setMouseLook(false);}}
   resume() {this.keys.clear();this.accumulator=0;if(!this.freeRoam&&this.sim.ticks>=MAX_TICKS){this.restart();return;}if(this.pausedMode==='countdown')this.countdownUntil=performance.now()+this.pausedCountdown;this.emit({mode:this.pausedMode});this.world.setMouseLook(true);this.world.lockMouse();this.prepareAudio();}
   recover() {if(this.state.mode==='racing')this.queuedRespawn=true;}
   flip() {
@@ -714,7 +714,7 @@ export class Game {
     if(local.ready&&race.startAt&&!local.started&&!race.ended&&!local.finished&&local.city){
       // A city party has no lights: drive as soon as this screen is ready.
       local.started=true;this.accumulator=0;this.goAt=performance.now();this.lapStartTick=this.sim.ticks;
-      this.prepareAudio();this.world.setMouseLook(true);this.emit({mode:'racing',notice:'City party · drive anywhere together'});this.noticeUntil=performance.now()+2600;
+      this.prepareAudio();this.world.setMouseLook(true);this.emit({mode:'racing',notice:local.public?'Racing City · online with everyone':'City party · drive anywhere together'});this.noticeUntil=performance.now()+2600;
     }
     if(local.ready&&race.startAt&&!local.started&&!race.ended&&!local.finished){
       local.started=true;this.countdownUntil=this.serverOffset!==undefined?race.startAt-this.serverOffset:performance.now()+race.startAt-serverNow;this.goAt=-Infinity;
