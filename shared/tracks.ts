@@ -17,8 +17,11 @@ export type Track = {
   /** Optional smoothed developer drive trace used by UI maps and circuit cards. */
   mapPath?: Vec3[];
   localCheckpoints?:boolean;localFinish?:boolean;localWidths?:boolean;
-  /** 'lot' is untimed free roam; 'cones' is the timed course inside the same lot; 'street' a city street race. Circuits omit it. */
-  kind?: 'lot' | 'cones' | 'street';
+  /**
+   * 'lot' is untimed free roam; 'cones' is the timed course inside the same lot; 'street' a city street race;
+   * 'highway' the Endless Highway (shared/highway.ts), generated as it is driven. Circuits omit it.
+   */
+  kind?: 'lot' | 'cones' | 'street' | 'highway';
   /** City street races: the route, laps, start box, police roadblocks and race traffic (shared/city-races.data.ts). */
   street?: StreetRace;
   /** Flat, walled car park built from shared layout data instead of a venue model. */
@@ -179,10 +182,23 @@ export const CITY_RACES: Track[] = CITY_RACE_DATA.map(race => {
     length: race.length, mapPath: route.map(p => v(p[0], p[1], p[2])),
     street: { laps: race.laps, closed: race.closed, route, zone: race.zone, roadblocks: race.roadblocks } };
 });
+/**
+ * The Endless Highway: a divided desert highway generated from a seed as it is driven (shared/highway.ts). Free roam
+ * (Cruise) or a distance run (Survival), never on the leaderboard. Its segments only give the Track shape; the road,
+ * spawn and recovery come from the generator.
+ */
+export const HIGHWAY: Track = {
+  id: 'highway', version: 1, name: 'Endless Highway', subtitle: 'Open desert', difficulty: 'Free roam',
+  description: 'Three lanes each way through the high desert, as far as you care to drive. Cruise at your own pace, or see how far you get before you crash.',
+  accent: '#e9a35b', medals: [0, 0, 0], kind: 'highway', hidden: true, offRoad: { traction: .7, scrub: .5 }, hillStart: true,
+  segments: lotSegments('highway', [[0, 0], [0, 200]], 32), checkpoints: [],
+  start: placed(0, 0, 0, 20), finish: placed(0, 200, 0, 20),
+  metersPerUnit: 1, length: 1000,
+};
 /** Every track the simulation and leaderboard accept, including hidden ones. */
 export const ALL_TRACKS: Track[] = [...TRACKS, TRAINING_GROUNDS, CONE_TRACK, ...CITY_RACES];
 export const trackById = (id: string) => ALL_TRACKS.find(t => t.id === id);
-export const ranked = (track: Track) => track.kind !== 'lot';
+export const ranked = (track: Track) => track.kind !== 'lot' && track.kind !== 'highway';
 export function formatTime(ms: number): string {
   if (!Number.isFinite(ms)) return '—';
   const n = Math.max(0, Math.round(ms));

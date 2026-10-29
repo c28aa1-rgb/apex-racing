@@ -131,3 +131,6 @@ body:has(.is-party){overflow:auto}#app:has(.is-party){height:auto;min-height:100
 .party-race-order .party-city-private{display:block;margin-top:4px;padding:8px 0 2px;border-top:1px solid #a8dadc26;font-size:11px;line-height:1.4;color:#a8c4c7}
 /* The city panel: its driver list sits under the heading, however many lines the heading takes. */
 .party-city .party-race-order{position:static;align-self:flex-start;margin-top:-4px}
+/* Paused in the online city: the pause card has the screen. The city's driver list, status and any connection
+   message step aside (they drew over the card), and come back on resuming. */
+.is-paused .party-race.party-city{opacity:0;visibility:hidden;transition:opacity .15s,visibility 0s .15s}

@@ -1,0 +1,18 @@
+Endless Highway scenery. All assets are CC0 (public domain) from Poly Haven - https://polyhaven.com/license
+Built with npm run build:highway-props (simplified for the game; textures downsized; the concrete desaturated).
+
+Models:
+- Namaqualand Boulder 02 - https://polyhaven.com/a/namaqualand_boulder_02
+- Namaqualand Boulder 05 - https://polyhaven.com/a/namaqualand_boulder_05
+- Dead Tree Trunk 02 - https://polyhaven.com/a/dead_tree_trunk_02
+- Quiver Tree 02 - https://polyhaven.com/a/quiver_tree_02
+- Wild Rooibos Bush - https://polyhaven.com/a/wild_rooibos_bush
+- Pine Tree 01, Small Tree 02 and Shrub 02, taken from the Racing City build - https://polyhaven.com/a/pine_tree_01 , https://polyhaven.com/a/tree_small_02 , https://polyhaven.com/a/shrub_02
+
+Textures:
+- Asphalt 02 - https://polyhaven.com/a/asphalt_02
+- Gravelly Sand - https://polyhaven.com/a/gravelly_sand
+- Brushed Concrete 03 - https://polyhaven.com/a/brushed_concrete_03
+- Rock Face - https://polyhaven.com/a/rock_face
+
+Traffic vehicles: see ../traffic/CREDITS.txt (CC BY 4.0).

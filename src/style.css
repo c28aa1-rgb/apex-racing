@@ -422,3 +422,58 @@ button:disabled{cursor:not-allowed}select:focus-visible{outline:2px solid #a8dad
 @media(max-width:900px){.city-time{grid-template-columns:auto 1fr}.city-time-presets,.city-time-cycle{grid-column:1/-1}.city-time-presets{flex-wrap:wrap}}
 .city-full-map{grid-template-rows:minmax(0,1fr) auto auto}
 .city-time-slider{box-shadow:inset 0 0 0 1px #a8dadc40}
+/* Endless Highway: setup (Free roam card and pause menu), HUD and Survival result. */
+.roam-setup{display:grid;gap:14px;padding:20px 22px 22px;border:1px solid var(--line);border-left:4px solid var(--roam-accent);border-radius:8px;background:#132b3bf2}
+.roam-setup header{display:grid;gap:4px}
+.roam-setup header .text-button{justify-self:start;padding:0 0 8px;font-size:12px}
+.roam-setup header small{font-size:11px;color:var(--roam-accent)}
+.roam-setup header strong{font-family:Shoulders,sans-serif;font-size:38px;line-height:1}
+.roam-setup>.start-button{margin-top:4px;background:var(--roam-accent)}
+.roam-setup>.start-button:hover{filter:brightness(1.08)}
+.highway-setup{display:grid;gap:14px;text-align:left}
+.highway-modes{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.highway-modes button{display:grid;gap:4px;padding:12px 14px;text-align:left;border:1px solid var(--line);border-radius:6px;background:#0f2431}
+.highway-modes button strong{font-family:Shoulders,sans-serif;font-size:22px;line-height:1}
+.highway-modes button small{font-size:11px;line-height:1.45;color:var(--muted)}
+.highway-modes button.active{border-color:#e9a35b;background:#e9a35b1a}
+.highway-modes button.active strong{color:#ffc38a}
+.highway-field{display:grid;gap:8px;margin:0;padding:0;border:0;min-width:0}
+.highway-field>span,.highway-field>legend{display:flex;justify-content:space-between;font-size:12px;color:#d0e1e5;padding:0;margin-bottom:8px}
+.highway-field>span b{font-weight:700;color:#fff;font-variant-numeric:tabular-nums}
+.highway-field legend small{color:#ffc38a;font-size:11px}
+.highway-field input[type=range]{width:100%;accent-color:#e9a35b}
+.highway-field input[type=range]:disabled{opacity:.4}
+.highway-steps{display:flex;gap:4px;flex-wrap:wrap}
+.highway-steps button{flex:1 1 auto;padding:7px 9px;font-size:12px;border:1px solid var(--line);border-radius:4px;background:#0f2431;color:#c4d6dc;white-space:nowrap}
+.highway-steps button.active{border-color:#e9a35b;color:#fff;background:#e9a35b26}
+.highway-rule{margin:0;font-size:12px!important;line-height:1.6!important;color:#bfd2d8!important;padding:10px 12px;border-left:2px solid #e9a35b;background:#e9a35b0f}
+.highway-rule b{color:#fff}
+.highway-cycle{margin:-4px 0 0!important}
+.highway-panel{position:absolute;top:25px;left:50%;transform:translateX(-50%);text-align:center;background:#132b3bd9;border:1px solid #c4e1eb25;border-top:3px solid #e9a35b;border-radius:6px;padding:10px 26px 12px;min-width:240px}
+.highway-panel>span{font-size:11px;color:#ffc38a;letter-spacing:.04em}
+.highway-panel>strong{display:block;font-family:Shoulders,sans-serif;font-size:46px;line-height:1.15;font-variant-numeric:tabular-nums;color:#fff}
+.highway-panel>small{display:block;font-size:11px;color:var(--muted)}
+.highway-panel>small kbd{font-size:10px;padding:1px 4px}
+.highway-level{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:10px;font-size:11px;color:var(--muted)}
+.highway-level small:first-child{color:#d6e3e6;font-variant-numeric:tabular-nums}
+.highway-level i{display:block;height:4px;border-radius:2px;background:#ffffff1f;overflow:hidden;min-width:70px}
+.highway-level i b{display:block;height:100%;background:linear-gradient(90deg,#e9a35b,#ff5a3c);transform-origin:left;transition:transform .6s ease-out}
+.highway-pause{width:min(470px,100%);max-height:calc(100dvh - 48px);overflow-y:auto}
+.highway-pause .highway-setup{margin:4px 0 18px}
+.venue-loading-card.is-highway>span{color:#ffc38a}
+.venue-loading-card.is-highway .venue-loading-bar i{background:#e9a35b}
+@media (max-width:700px){.highway-panel{top:76px;min-width:200px;padding:8px 18px}.highway-panel>strong{font-size:36px}.highway-modes{grid-template-columns:1fr}}
+.highway-panel.is-shoulder{border-top-color:#ff5a3c}
+.highway-panel.is-shoulder>strong{color:#ffb4a4}
+.highway-shoulder{display:block;font-size:12px;font-weight:700;color:#ff8a70;letter-spacing:.02em;animation:shoulder-pulse 1s ease-in-out infinite alternate}
+@keyframes shoulder-pulse{from{opacity:1}to{opacity:.55}}
+@media (prefers-reduced-motion:reduce){.highway-shoulder{animation:none}}
+/* What's new: the Endless Highway reveal (src/UpdateCard.tsx). */
+.update-wash.is-amber{left:-22vw;background:radial-gradient(closest-side,#ff9a3c,transparent)}
+.update-wash.is-dusk{right:-22vw;background:radial-gradient(closest-side,#7a5cff,transparent)}
+.update-horizon{position:absolute;left:4%;right:4%;top:50%;height:3px;margin-top:-1.5px;border-radius:2px;transform-origin:50% 50%;
+  background:linear-gradient(90deg,transparent,#ffb15e 16%,#fff1d6 50%,#ffb15e 84%,transparent);box-shadow:0 0 18px 2px #ff9a3c99,0 0 70px 12px #ff7a2a40}
+.update-streak{position:absolute;top:50%;left:50%;width:200px;height:4px;margin:-2px 0 0 -100px;border-radius:2px;
+  background:linear-gradient(90deg,transparent,#fff6e0 45%,#fff 50%,#fff6e0 55%,transparent);box-shadow:0 0 16px 4px #fff2c8aa}
+.update-sun{position:absolute;top:50%;left:50%;width:150px;height:150px;margin:-75px 0 0 -75px;border-radius:50%;pointer-events:none;
+  background:radial-gradient(closest-side,#fffaf0,#ffc874 32%,#ff8a3c66 58%,transparent)}

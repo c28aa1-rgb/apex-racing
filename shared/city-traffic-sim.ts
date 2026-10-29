@@ -889,10 +889,19 @@ export class TrafficSim {
     // Where it now sits along its lane, and how far off it.
     const near = this.nearest(car.lane, car.position), onLane = new THREE.Vector3();
     car.s = near.s; car.index = this.sample(car.lane, Math.min(car.s, car.lane.length), car.index, onLane);
-    wreck.offLane = near.distance > car.kind.halfWidth + 1.9;
+    // The slide knows nothing of walls: keep it within a few metres of its lane (on the bridge deck, short of the
+    // barrier), and on the road's own height there, so it never hangs in the air off a ramp or past a parapet.
+    const reach = car.kind.halfWidth + 3.2, off = Math.min(near.distance, reach);
+    if (near.distance > reach) {
+      const out = this.v3.set(car.position.x - onLane.x, 0, car.position.z - onLane.z).normalize();
+      car.position.x = onLane.x + out.x * reach; car.position.z = onLane.z + out.z * reach;
+      velocity.addScaledVector(out, -Math.max(0, velocity.dot(out)));
+    }
+    car.position.y = onLane.y;
+    wreck.offLane = off > car.kind.halfWidth + 1.9;
     if (wreck.still < WRECK_HOLD) return;
     const giveUp = wreck.still > WRECK_GIVE_UP;
-    if (near.distance > WRECK_FAR && !giveUp && this.seen(car.position) && drivers.some(driver => car.position.distanceTo(driver.position) < 90)) return;
+    if (off > WRECK_FAR && !giveUp && this.seen(car.position) && drivers.some(driver => car.position.distanceTo(driver.position) < 90)) return;
     const length = car.kind.body.lengthM;
     if (!giveUp && drivers.some(driver => driver.position.distanceTo(onLane) < length / 2 + 2.5)) return;
     if (car.lane.cars.some(other => other !== car && !other.wreck && (other.s > car.s - 1 ? other.s - car.s < length + 4 : car.s - other.s < 10 + other.v * 2 && other.v > 2))) return;

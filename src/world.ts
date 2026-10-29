@@ -24,6 +24,7 @@ import type { WeatherPreset } from './settings';
 import { GRAPHICS_PRESETS, type GraphicsOptions } from './graphics';
 import { Weather, WEATHER } from './weather';
 import { LotScene } from './lot-scene';
+import { HighwayScene } from './highway-scene';
 import { RacingLineGuide } from './racing-line';
 
 const palettes = { road: 0x4d6470, edge: 0xf1eee3, orange: 0xff784c, navy: 0x173b4c, teal: 0x45c8bd, sand: 0xe1dfb5, rock: 0x8fa9a0, leaf: 0x518d7c, barrier: 0xaab5b5, roadSide: 0x303c42, tire: 0x1d272c };
@@ -73,8 +74,14 @@ export class RaceWorld {
   private lightsOn = false;
   /** Called with the share (0-1) of the venue model downloaded, while it loads. */
   onVenueProgress?: (share: number) => void;
-  /** AI traffic and working signals, for venues that have them (the city). */
+  /** AI traffic and working signals, for venues that have them (the city); on the highway, its traffic drawn. */
   traffic?: CityTraffic;
+  /** The Endless Highway's road and scenery (src/highway-scene.ts), while it is the venue. */
+  highway?: HighwayScene;
+  private highwayToken = 0;
+  private sea!: THREE.Mesh;
+  /** Venues lit by the time of day: the city and the Endless Highway. */
+  private get timed() { const track = this.currentTrack; return !!track && (!!track.night || track.kind === 'highway'); }
   private trafficToken = 0;
   private wideView=true;
   private weatherMaterials=new Map<THREE.MeshStandardMaterial,{roughness:number;color:THREE.Color}>();
@@ -245,11 +252,13 @@ export class RaceWorld {
     this.startLight=new StartLight();this.scene.add(this.startLight);
     void this.startLight.load(this.loader).then(()=>this.prewarm([this.startLight])).catch(error=>console.warn('Marshal drone model unavailable; using the built-in drone.',error));
     const sea = new THREE.Mesh(new THREE.PlaneGeometry(5000,5000), material(0x8fcbd1));
-    sea.rotation.x = -Math.PI/2; sea.position.y = -80; sea.receiveShadow = true; this.scene.add(sea);
+    sea.rotation.x = -Math.PI/2; sea.position.y = -80; sea.receiveShadow = true; this.scene.add(sea); this.sea = sea;
     this.garageGroup.visible = false;
     this.scene.add(this.venueGroup, this.trackGroup, this.garageGroup, this.car, this.ghost, this.editorMarker, this.editorFinishMarker, this.editorRoadGuide);
     this.buildEditorMarker(); this.buildEditorFinishMarker(); this.editorMarker.visible = false; this.editorFinishMarker.visible = false; this.editorRoadGuide.visible = false;
     this.buildPlaceholder(this.car, false);this.buildPlaceholder(this.ghost, true); this.ghost.visible = false;
+    // In the scene (dark) before any shader compiles, so switching the lamps never recompiles anything.
+    this.buildBeams();
     addEventListener('resize', this.resize);
     addEventListener('keydown', this.editorKeydown);
     addEventListener('keyup', this.editorKeyup);
@@ -332,6 +341,7 @@ export class RaceWorld {
       }
     }
     this.cullFar=-1;
+    this.highway?.setDrawDistance(next.drawDistance);
     this.setWeather(this.weather.preset);
     this.resize();
     // Warm the exact shader variant for the selected renderer settings.
@@ -350,7 +360,7 @@ export class RaceWorld {
   /** The city's time of day, 0-24: relights it now if the city is the venue. */
   setCityHour(hour:number) {
     this.cityHour=((hour%24)+24)%24;
-    if(this.currentTrack?.night)this.applyCityTime();
+    if(this.timed)this.applyCityTime();
   }
   /** Whether the city at its current hour is dark enough for headlamps. */
   get cityDark(){return cityLight(this.cityHour,WEATHER.clear,true).lamps>.5;}
@@ -372,6 +382,7 @@ export class RaceWorld {
     const model=this.venueGroup.children[0];
     if(model&&model!==this.dressedVenue){this.cityNight.apply(this.venueGroup);this.dressedVenue=model;}
     this.cityNight.setLevel(lit.lamps);
+    this.highway?.setLight(lit.lamps,lit.horizon);if(this.traffic)this.traffic.lamps=lit.lamps;
     if(this.cityNight.group.parent!==this.scene)this.scene.add(this.cityNight.group);
   }
   /** Fog range for a weather preset; clear weather follows the player's draw distance. */
@@ -379,22 +390,30 @@ export class RaceWorld {
     const base=WEATHER[preset],distance=this.options?.drawDistance??GRAPHICS_PRESETS.balanced.drawDistance;
     const range=preset==='clear'?{near:distance*.31,far:distance}:{near:base.near,far:base.far};
     // Night haze closes in sooner: the dark fog hides the city's far edge and the lamp-less hills. By day it opens out.
-    if(!this.currentTrack?.night)return range;
+    if(!this.timed)return range;
     const day=this.cityLit?.day??0;
     return {near:THREE.MathUtils.lerp(Math.min(range.near,90),range.near,day),far:THREE.MathUtils.lerp(Math.min(range.far,1300),range.far,day)};
   }
-  /** Headlamps: the model's lamp glass glows, the tail lamps brighten, and two spot lights light the road ahead. */
+  /**
+   * Headlamps: the model's lamp glass glows, the tail lamps brighten, and two spot lights light the road ahead. The
+   * spot lights stay in the scene from the start and are only dimmed to nothing when off: adding or removing a light
+   * changes every material's shader, and recompiling them all froze the game for seconds the first time lamps came on.
+   */
+  private static readonly BEAM_INTENSITY=480;
+  private buildBeams(){
+    this.beams=new THREE.Group();this.beams.name='apex-headlamps';
+    for(const side of [-1,1]){
+      // Gentle falloff (decay 1.3) keeps the road near the bumper from burning out while the beam still reaches ~100 m.
+      const beam=new THREE.SpotLight(0xf2f6ff,0,150,.6,1,1.3);beam.position.set(side*.62,.7,1.9);beam.castShadow=false;
+      beam.target.position.set(side*2.5,-1.6,40);this.beams.add(beam,beam.target);
+    }
+    this.car.add(this.beams);
+  }
   setHeadlights(on:boolean) {
     this.lightsOn=on;this.carRig?.setHeadlights(on);
-    if(on&&!this.beams){
-      this.beams=new THREE.Group();this.beams.name='apex-headlamps';
-      for(const side of [-1,1]){
-        // Gentle falloff (decay 1.3) keeps the road near the bumper from burning out while the beam still reaches ~100 m.
-        const beam=new THREE.SpotLight(0xf2f6ff,480,150,.6,1,1.3);beam.position.set(side*.62,.7,1.9);beam.castShadow=false;
-        beam.target.position.set(side*2.5,-1.6,40);this.beams.add(beam,beam.target);
-      }
-    }
-    if(this.beams){if(on&&this.beams.parent!==this.car)this.car.add(this.beams);this.beams.visible=on;}
+    if(!this.beams)this.buildBeams();
+    if(this.beams!.parent!==this.car)this.car.add(this.beams!);
+    for(const light of this.beams!.children)if(light instanceof THREE.SpotLight)light.intensity=on?RaceWorld.BEAM_INTENSITY:0;
   }
   get headlightsOn(){return this.lightsOn;}
   setWeather(preset:WeatherPreset) {
@@ -402,7 +421,7 @@ export class RaceWorld {
     const settings=WEATHER[preset];
     this.shadow.color.setHex(0xfff2dc);this.scene.environmentIntensity=.45;this.renderer.toneMappingExposure=1.05;
     // Away from the city the sky and its reflections go back to the venues' own sun.
-    if(!this.currentTrack?.night){
+    if(!this.timed){
       (this.scene.getObjectByName('apex-sky') as Sky).material.uniforms.sunPosition.value.copy(this.daySun);this.refreshEnvironment(this.daySun);this.cityLit=undefined;
       this.scene.children.forEach(object=>{if(object instanceof THREE.HemisphereLight)object.color.setHex(0xe3efff);});
     }
@@ -422,7 +441,8 @@ export class RaceWorld {
       material.roughness=preset==='rain'?Math.min(original.roughness,.38):original.roughness;
       material.color.copy(original.color);if(preset==='rain')material.color.multiplyScalar(.7);
     }
-    if(this.currentTrack?.night)this.applyCityTime();else if(this.cityNight.group.parent){this.cityNight.clear();this.scene.remove(this.cityNight.group);this.dressedVenue=undefined;}
+    this.highway?.setWet(preset==='rain');
+    if(this.timed)this.applyCityTime();else if(this.cityNight.group.parent){this.cityNight.clear();this.scene.remove(this.cityNight.group);this.dressedVenue=undefined;}
   }
   updateWeather(dt:number){this.weather.update(dt,this.camera,this.options?.weatherDensity??.6,this.reducedMotion,this.garageGroup.visible||this.wideView);}
   adaptResolution(fps:number) {
@@ -662,8 +682,8 @@ export class RaceWorld {
   private markGates(track: Track) {
     const marked={track,checkpoints:track.checkpoints,finish:track.finish};this.markedGates=marked;
     this.clearGateMarkings();
-    // Free roam paints no timing gates; the cone course reveals its own when it starts.
-    if(track.kind==='lot')return;
+    // Free roam (the lot, the city, the highway) paints no timing gates; the cone course reveals its own when it starts.
+    if(track.kind==='lot'||track.kind==='highway')return;
     void collisionGeometry(track).catch(()=>undefined).then(mesh=>{
       if(this.markedGates!==marked)return;
       const gates=fittedGates(track,mesh);
@@ -942,14 +962,59 @@ export class RaceWorld {
     this.ghost.visible = false;
     if (!same) this.overview(0, true);
   }
+  /**
+   * The Endless Highway: no venue model; the road is built around the car as it drives (HighwayScene). venueReady
+   * resolves once its scenery models are in.
+   */
+  private setHighway(track: Track) {
+    this.lotScene = undefined; this.weatherMaterials.clear(); this.currentTrack = track; this.markedGates = undefined;
+    this.trackGroup.traverse(obj => { if (obj instanceof THREE.Mesh) { obj.geometry.dispose(); const mats = Array.isArray(obj.material) ? obj.material : [obj.material]; for (const m of mats) if (!Object.values(this.mats).includes(m)) { m.map?.dispose(); m.dispose(); } } });
+    this.trackGroup.clear(); this.staticBatches.clear(); this.trackGroup.add(this.gateMarkings);
+    this.sea.visible = false; this.ghost.visible = false;
+    this.center.set(0, 0, 0); this.trackRadius = 600;
+    const token = ++this.highwayToken;
+    this.venueReady = (async () => {
+      await this.loadVenue(track);
+      if (this.highway || token !== this.highwayToken) return;
+      const scene = await HighwayScene.create(this.loader, (material, factor, units) => this.decalBias(material, factor, units));
+      if (token !== this.highwayToken) { scene.dispose(); return; }
+      this.highway = scene; scene.setDrawDistance(this.options?.drawDistance ?? GRAPHICS_PRESETS.balanced.drawDistance);
+      this.scene.add(scene.group, scene.horizonMesh);
+      this.setWeather(this.weather.preset);
+    })();
+  }
+  private clearHighway() {
+    ++this.highwayToken;
+    if (!this.highway) return;
+    this.highway.dispose(); this.highway = undefined; this.sea.visible = true;
+    this.scene.getObjectByName('apex-sky')?.position.set(0, 0, 0);
+  }
+  /** Per frame on the highway: chunks around the car, the floating origin, the sky dome kept round the camera. */
+  updateHighway(sim: Simulation, prime = false) {
+    if (!this.highway) return;
+    if (prime) this.highway.prime(sim);
+    this.highway.update(sim, this.camera);
+    this.scene.getObjectByName('apex-sky')?.position.copy(this.camera.position);
+  }
+  /**
+   * The simulation moved its world back by (dx, dy, dz) (the highway's floating origin): everything drawn in the
+   * simulation's frame moves with it, so nothing on screen jumps. Skid marks are let go.
+   */
+  shiftOrigin(dx: number, dy: number, dz: number) {
+    const delta = new THREE.Vector3(dx, dy, dz);
+    for (const v of [this.car.position, this.camera.position, this.rig.anchor, this.lastWheelPosition, this.visualCarPosition, this.cameraTarget]) v.sub(delta);
+    this.camera.updateMatrixWorld();
+    this.skidMarks.clear();
+  }
   /** Per-frame Training Grounds animation: cones and the start-box pulse. */
   updateLot(sim: Simulation | undefined, dt: number, showStart: boolean) { this.lotScene?.update(sim, dt, showStart); }
   /** Starts city traffic once the venue is loaded; a later track change cancels a start still in flight. */
   async startTraffic(player:THREE.Vector3) {
     const token=++this.trafficToken;this.stopTraffic();
-    await this.venueReady;if(token!==this.trafficToken||!this.currentTrack?.night)return;
+    await this.venueReady;if(token!==this.trafficToken||!this.timed)return;
     try{
-      const traffic=await CityTraffic.create(this.venueGroup,this.loader,player);
+      const traffic=await CityTraffic.create(this.venueGroup,this.loader,player,this.currentTrack?.kind==='highway');
+      traffic.lamps=this.cityLit?.lamps??1;
       if(token!==this.trafficToken){traffic.dispose();return;}
       traffic.camera=this.camera;this.traffic=traffic;this.scene.add(traffic.group);
     }catch(error){console.warn('City traffic unavailable.',error);}
@@ -957,9 +1022,11 @@ export class RaceWorld {
   stopTraffic(sim?:Simulation) {this.traffic?.dispose(sim);this.traffic=undefined;}
   setTrack(track: Track) {
     ++this.trafficToken;this.stopTraffic();
+    if(track.kind!=='highway')this.clearHighway();
     // Leaving a night venue: day sky, sun and reflections come back now, not when the next venue finishes loading.
-    if(this.currentTrack?.night&&!track.night){this.currentTrack=track;this.setWeather(this.weather.preset);}
-    void this.racingLine.setTrack(track.lot || track.kind === 'lot' ? undefined : track);
+    if(this.timed&&!track.night&&track.kind!=='highway'){this.currentTrack=track;this.setWeather(this.weather.preset);}
+    void this.racingLine.setTrack(track.lot || track.kind === 'lot' || track.kind === 'highway' ? undefined : track);
+    if (track.kind === 'highway') { this.setHighway(track); return; }
     if (track.lot) { this.setLot(track); return; }
     this.lotScene = undefined;
     this.weatherMaterials.clear();
@@ -1117,7 +1184,7 @@ export class RaceWorld {
     const definition = withLivery(carById(carId), livery);
     const token = ++this.carLoadToken; this.currentCarId = carId; this.currentLook = lookOf(definition); this.wheelGroups = [];this.cockpitEye=undefined;this.legacyCockpitEye=undefined;
     this.carRig?.dispose();this.carRig=undefined;this.visualCarReady=false;
-    this.car.clear();
+    this.car.clear();if(this.beams)this.car.add(this.beams);
     try {
       const prepared = await this.loadModel(definition);
       if (token !== this.carLoadToken) return false;
@@ -1126,7 +1193,7 @@ export class RaceWorld {
       const legacy=model.userData.legacyCockpitEye;this.legacyCockpitEye=legacy?new THREE.Vector3(legacy.x,legacy.y,legacy.z):undefined;
       model.traverse(object=>{if(object instanceof THREE.Mesh){const materials=Array.isArray(object.material)?object.material:[object.material];object.castShadow=materials.some(m=>!m.transparent);object.receiveShadow=true;}});
       this.hoodMount=measureHood(model,definition);
-      this.car.clear();this.car.add(model);this.carRig=new CarRig(model,definition);this.wheelGroups=this.carRig.wheels;this.carDamage.attach(model);this.setHeadlights(this.lightsOn);
+      this.car.clear();if(this.beams)this.car.add(this.beams);this.car.add(model);this.carRig=new CarRig(model,definition);this.wheelGroups=this.carRig.wheels;this.carDamage.attach(model);this.setHeadlights(this.lightsOn);
       // Seat each model wheel where its physical tyre rests (hard point - 0.58 m rest length - radius): a few
       // models place a wheel a few centimetres off, which would otherwise float or sink that tyre.
       const physicalRadius=carById(carId).dimensions.wheelRadiusM;
@@ -1433,7 +1500,7 @@ export class RaceWorld {
     this.shadow.position.set(this.car.position.x-16,this.car.position.y+30,this.car.position.z+8);
     if(sunDirection)this.shadow.position.copy(this.car.position).addScaledVector(sunDirection,35);
     // The city's shadows fall away from its sun (or moon) at the time of day.
-    else if(this.currentTrack?.night&&this.cityLit)this.shadow.position.copy(this.car.position).addScaledVector(this.cityLit.light.direction,35);
+    else if(this.timed&&this.cityLit)this.shadow.position.copy(this.car.position).addScaledVector(this.cityLit.light.direction,35);
     if(this.composer)this.composer.render();else this.renderer.render(this.scene,this.camera);
   }
 }

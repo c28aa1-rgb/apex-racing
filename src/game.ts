@@ -1,5 +1,7 @@
 import { DT, initPhysics, Input, MAX_TICKS, PHYSICS_VERSION, rotate, Simulation, type Frame, type RunOrigin, type Weather } from '../shared/physics';
 import { CITY, CITY_RACES, CONE_TRACK, TRACKS, TRAINING_GROUNDS, inStartZone, type Track, type Vec3 } from '../shared/tracks';
+import { DEFAULT_HIGHWAY_TRAFFIC, type HighwayMode, type HighwayTrafficSettings } from '../shared/highway-traffic';
+import { SLOW_LIMIT_TICKS } from '../shared/highway-drive';
 import { carById, DEFAULT_CAR, lookOf, withLivery, type CarDefinition, type CarId } from '../shared/cars';
 import { stepReplay, type Run } from '../shared/replay';
 import { CAMERA_LABELS, RaceWorld, type CameraMode, type CockpitOffset } from './world';
@@ -23,7 +25,7 @@ import type { PartyUpdates } from './party-network';
 import { ghostCheckpointTimes, ghostGap } from './ghost-timing';
 
 export type Mode='menu'|'countdown'|'racing'|'paused'|'celebrating'|'finished'|'replay'|'party-loading'|'party-finished';
-const LIVE_KEYS=new Set<keyof GameState>(['time','speed','boost','drifting','driftCombo']);
+const LIVE_KEYS=new Set<keyof GameState>(['time','speed','boost','drifting','driftCombo','highwayDistance','highwayShoulder','highwaySlow']);
 /** One second of Enter immunity after the loading screen closes (see Game.enterStarts). */
 const ENTER_GRACE_MS=1000;
 export type GameState={mode:Mode;track:Track;trackReady:boolean;trackLoading?:boolean;car:CarDefinition;modelReady:boolean;time:number;speed:number;checkpoint:number;countdown:number;boost:boolean;drifting:boolean;drafting?:boolean;ghost:boolean;muted:boolean;driftStrength:number;run?:Run;personalBest?:number;newBest:boolean;notice:string;fps:number;worstFrame:number;
@@ -46,8 +48,21 @@ export type GameState={mode:Mode;track:Track;trackReady:boolean;trackLoading?:bo
   mapOpen?:boolean;
   /** Loading a night venue (the city): the step shown and progress 0-1. Driving is frozen until it is gone. */
   venueLoad?:{step:string;progress:number};
-  /** Racing City's time of day (0-24) and whether the clock runs (src/city-time.ts). Each player's own. */
-  cityTime:{hour:number;cycle:boolean}};
+  /** Racing City's time of day (0-24) and whether the clock runs (src/city-time.ts). Each player's own; the Endless Highway uses it too. */
+  cityTime:{hour:number;cycle:boolean};
+  /** Endless Highway: Cruise (no end, traffic as set here) or Survival (distance until a crash). Remembered on this device. */
+  highwaySetup:{mode:HighwayMode;traffic:HighwayTrafficSettings};
+  /** Endless Highway, live: metres driven this run, and this car's Survival best. */
+  highwayDistance?:number;highwayBest?:number;
+  /** Survival: the car is on a shoulder, where distance does not count. */
+  highwayShoulder?:boolean;
+  /** Survival: seconds left (rounded up) before running too slowly ends the run; undefined while quick enough. */
+  highwaySlow?:number;
+  /** Survival: how the run ended. `at` makes repeat results distinct. */
+  highwayResult?:{distance:number;timeMs:number;topSpeedKph:number;reason:'impact'|'spin'|'roll'|'slow';newBest:boolean;previousBest:number;at:number}};
+/** Venues lit by the time of day (the city and the Endless Highway). */
+const timeOfDay=(track:Track)=>!!track.night||track.kind==='highway';
+const highwayBestKey=(carId:string)=>`highwayBest:${carId}`;
 export class Game {
   world:RaceWorld;sim:Simulation;state:GameState;private coarse!:GameState;
   settings=loadSettings();career:Career=loadCareer();
@@ -90,7 +105,14 @@ export class Game {
   /** Where the current Cone Attack run began; reused by restart, replay and ghosts. */
   private runOrigin?:RunOrigin;
   private lastPenalties=0;private driftCalm=0;private lastHits=0;
-  get freeRoam(){return this.state.track.kind==='lot';}
+  private blurTimer=0;
+  /** The game is letting the mouse go itself (a result card that needs the cursor): not a pause. */
+  private releasingLock=false;
+  /** Frees the mouse for a card to be clicked, without that counting as the player pausing. */
+  private releaseMouse(){this.releasingLock=!!document.pointerLockElement;this.world.setMouseLook(false);}
+  get freeRoam(){return this.state.track.kind==='lot'||this.state.track.kind==='highway';}
+  /** Endless Highway: the floating origin last drawn from (see Simulation.highway), and the run's top speed. */
+  private originSeen=0;private originAt={x:0,y:0,z:0};private highwayTop=0;
   partyView=false;
   /** Called when the player leaves the Training Grounds, so the interface can switch to the Garage it was opened from. */
   onLeaveTraining?:()=>void;
@@ -162,13 +184,17 @@ export class Game {
     this.world.setCockpitOffset(loadCockpitOffsets()[selectedCar.id]);
     this.applySettings();
     this.sim.steeringStrength=this.steeringStrength;
-    this.state={mode:'menu',track:TRACKS[0],trackReady:location.pathname.startsWith('/dev'),car:selectedCar,modelReady:false,time:0,speed:0,checkpoint:0,countdown:3,boost:false,drifting:false,ghost:read('ghost',true),muted:read('muted',false),cityTime:loadCityTime(),driftStrength:this.driftStrength,personalBest:bestRun(TRACKS[0])?.timeMs,newBest:false,notice:'',worstFrame:0,fps:60,penalties:0,driftCombo:0,driftBest:0,atStart:false};
+    this.state={mode:'menu',track:TRACKS[0],trackReady:location.pathname.startsWith('/dev'),car:selectedCar,modelReady:false,time:0,speed:0,checkpoint:0,countdown:3,boost:false,drifting:false,ghost:read('ghost',true),muted:read('muted',false),cityTime:loadCityTime(),highwaySetup:loadHighwaySetup(),driftStrength:this.driftStrength,personalBest:bestRun(TRACKS[0])?.timeMs,newBest:false,notice:'',worstFrame:0,fps:60,penalties:0,driftCombo:0,driftBest:0,atStart:false};
     this.coarse=this.state;
     void this.world.setCar(selectedCar.id,selectedCar.look).then(modelReady=>{if(this.carToken!==0)return;this.modelError=modelReady?'':'Car could not load. Check your connection and retry.';this.emit({modelReady});});
     addEventListener('apex:continued',()=>{this.enterAfter=performance.now()+ENTER_GRACE_MS;});
     addEventListener('keydown',this.keyDown);addEventListener('keyup',event=>{this.keys.delete(event.code);if(this.settings.bindings.camera.includes(event.code))this.cameraKeyUp();});
-    addEventListener('blur',()=>this.pause());document.addEventListener('visibilitychange',()=>{if(document.hidden)this.pause();});
-    document.addEventListener('pointerlockchange',()=>{if(!document.pointerLockElement)this.pause();});
+    // Losing the window pauses, but only if it stays lost: a moment's blur (a notification, another app flashing up,
+    // a click into the browser's own chrome and back) used to pause the drive for nothing.
+    addEventListener('blur',()=>{clearTimeout(this.blurTimer);this.blurTimer=window.setTimeout(()=>{if(!document.hasFocus())this.pause();},350);});
+    document.addEventListener('visibilitychange',()=>{if(document.hidden)this.pause();});
+    // The pointer lock ending means the player pressed Esc, except when the game lets the mouse go itself.
+    document.addEventListener('pointerlockchange',()=>{if(document.pointerLockElement)return;if(this.releasingLock){this.releasingLock=false;return;}this.pause();});
     // Browsers keep audio locked until the first gesture; unlock it and give every button a click/hover sound.
     addEventListener('pointerdown',this.interfacePointer,true);addEventListener('pointerover',this.interfaceHover,true);
     addEventListener('keydown',()=>this.prepareAudio(),{once:true,capture:true});
@@ -347,7 +373,9 @@ export class Game {
     this.awaitingPedal=!countdown;this.bogUntil=0;this.goAt=-Infinity;this.finishRevealAt=0;this.world.endFinish();this.world.skidMarks.clear();this.world.carDamage.reset();this.pendingShifts=0;this.seenBlockedShifts=0;this.runManual=this.settings.advancedDriving;this.runWeather=this.partyWeather??this.settings.weather;
     this.keys.clear();this.garageView=false;this.cockpitPreview=false;this.inputs=[];this.steeringInputs=[];this.driftInputs=[];this.accumulator=0;this.lastCheckpoint=0;this.lastRespawns=0;this.previousFrame=undefined;this.queuedRespawn=false;this.queuedFlip=false;this.replayInput=undefined;
     if(this.state.track.kind!=='cones'&&this.state.track.kind!=='street')this.runOrigin=undefined;
-    this.sim.dispose();this.sim=new Simulation(this.state.track,this.state.car.id,this.runOrigin);this.sim.steeringStrength=this.steeringStrength;this.sim.driftStrength=this.driftStrength;
+    const highway=this.state.track.kind==='highway'?{seed:(Math.random()*2**31)|0,...this.state.highwaySetup}:undefined;
+    this.sim.dispose();this.sim=new Simulation(this.state.track,this.state.car.id,this.runOrigin,highway);this.sim.steeringStrength=this.steeringStrength;this.sim.driftStrength=this.driftStrength;
+    this.originSeen=0;this.originAt={x:0,y:0,z:0};this.highwayTop=0;
     this.ghostSim?.dispose();this.ghostSim=undefined;
     this.ghostRun=this.chosenGhost?.trackId===this.state.track.id?this.chosenGhost:bestRun(this.state.track);this.previousGhostFrame=undefined;if(this.state.ghost&&this.ghostRun){this.ghostSim=new Simulation(this.state.track,this.ghostRun.carId,this.ghostRun.origin);void this.world.setGhostCar(this.ghostRun.carId);}
     this.world.resetMouseLook();this.world.setMouseLook(true);
@@ -362,7 +390,10 @@ export class Game {
     if(this.freeRoam){
       // Free roam has no clock to start and no five-minute limit.
       this.sim.maxTicks=Infinity;this.awaitingPedal=false;
-      this.emit({mode:'racing',countdown:6,time:0,speed:0,checkpoint:0,newBest:false,run:undefined,penalties:0,driftCombo:0,notice:'Free roam · no clock, no limits',ghostSplit:undefined,ghostTiming:undefined});this.noticeUntil=performance.now()+2600;
+      const notice=!highway?'Free roam · no clock, no limits':highway.mode==='survival'?'Survival · how far can you get?':'Cruise · the road goes on for ever';
+      this.emit({mode:'racing',countdown:6,time:0,speed:0,checkpoint:0,newBest:false,run:undefined,penalties:0,driftCombo:0,notice,ghostSplit:undefined,ghostTiming:undefined,
+        ...(highway?{highwayDistance:0,highwayResult:undefined,highwayBest:read<{distance:number}|null>(highwayBestKey(this.state.car.id),null)?.distance??0}:{})});this.noticeUntil=performance.now()+2600;
+      if(highway)this.world.updateHighway(this.sim,true);
       return;
     }
     this.emit({mode:countdown?'countdown':'racing',countdown:6,time:0,speed:0,checkpoint:0,newBest:false,run:undefined,penalties:0,driftCombo:0,notice:countdown?'':`Press ${this.keyHint('throttle')} or ${this.keyHint('brake')} to start the clock`,ghostSplit:undefined,ghostTiming:!replay&&this.state.ghost&&this.ghostRun?'loading':undefined});
@@ -398,19 +429,20 @@ export class Game {
     if(this.partyView||this.partyRace)return;
     const token=++this.selectionToken;this.keys.clear();this.garageView=false;this.runOrigin=undefined;
     this.ghostSim?.dispose();this.ghostSim=undefined;this.ghostRun=undefined;this.world.ghostFrame(undefined);
-    this.world.setTrack(track);this.world.setHeadlights(!!track.night&&this.world.cityDark);this.cityWasDark=this.world.cityDark;
-    this.emit({track,mapOpen:false,trackReady:false,run:undefined,newBest:false,personalBest:undefined,penalties:0,atStart:false,coneResult:undefined,notice:'',ghostSplit:undefined,ghostTiming:undefined,
-      venueLoad:track.night?{step:'Loading the city',progress:.03}:undefined});
-    // The city is heavy: a loading screen covers it until the streets, physics and traffic are all in place.
+    this.world.setTrack(track);this.world.setHeadlights(timeOfDay(track)&&this.world.cityDark);this.cityWasDark=this.world.cityDark;
+    const highway=track.kind==='highway',heavy=timeOfDay(track);
+    this.emit({track,mapOpen:false,trackReady:false,run:undefined,newBest:false,personalBest:undefined,penalties:0,atStart:false,coneResult:undefined,notice:'',ghostSplit:undefined,ghostTiming:undefined,highwayResult:undefined,
+      venueLoad:heavy?{step:highway?'Loading the desert':'Loading the city',progress:.03}:undefined});
+    // The city is heavy: a loading screen covers it until the streets, physics and traffic are all in place. The highway's scenery too.
     if(track.night)this.world.onVenueProgress=share=>{if(token===this.selectionToken)this.emit({venueLoad:{step:'Loading the city',progress:.03+share*.67}});};
     await initPhysics(track);if(token!==this.selectionToken)return;
-    if(track.night){
-      this.emit({venueLoad:{step:'Building the streets',progress:Math.max(.7,this.state.venueLoad?.progress??0)}});
+    if(heavy){
+      this.emit({venueLoad:{step:highway?'Paving the road':'Building the streets',progress:Math.max(highway?.35:.7,this.state.venueLoad?.progress??0)}});
       await this.world.venueReady;this.world.onVenueProgress=undefined;if(token!==this.selectionToken)return;
     }
     this.emit({trackReady:true});this.start(false);
-    if(track.night){
-      this.emit({venueLoad:{step:'Starting traffic',progress:.88}});
+    if(heavy){
+      this.emit({venueLoad:{step:highway?'Bringing in traffic':'Starting traffic',progress:.88}});
       const p=this.sim.car.translation();await this.world.startTraffic(new Vector3(p.x,p.y,p.z));if(token!==this.selectionToken)return;
       this.emit({venueLoad:{step:'Ready',progress:1}});
       setTimeout(()=>{if(token===this.selectionToken)this.emit({venueLoad:undefined});},350);
@@ -592,6 +624,27 @@ export class Game {
     this.world.confettiBurst();this.sound.cue('finish',this.settings.effectsVolume);
     this.emit({track:TRAINING_GROUNDS,trackReady:true,mode:'racing',run,newBest,personalBest:undefined,penalties:0,checkpoint:0,driftCombo:0,coneResult:result,notice:'',ghostSplit:undefined,ghostTiming:undefined});
   }
+  /**
+   * Endless Highway setup: Cruise or Survival, and Cruise's traffic. Traffic changes reach a Cruise run at once (cars
+   * come and go out of sight); switching mode starts a new run.
+   */
+  setHighwaySetup(patch:{mode?:HighwayMode;traffic?:Partial<HighwayTrafficSettings>}) {
+    const previous=this.state.highwaySetup,next={mode:patch.mode??previous.mode,traffic:{...previous.traffic,...patch.traffic}};
+    write('highwaySetup',next);this.emit({highwaySetup:next});
+    const highway=this.state.track.kind==='highway'?this.sim.highway:undefined;
+    if(!highway||!this.state.trackReady)return;
+    if(next.mode!==highway.config.mode){this.start(false);return;}
+    if(next.mode==='cruise')highway.traffic.settings={...next.traffic};
+  }
+  /** Survival: the run is over. The car rolls on under no input while the result card comes up. */
+  private highwayCrash() {
+    const highway=this.sim.highway!,distance=Math.round(highway.distance),key=highwayBestKey(this.state.car.id);
+    const previous=read<{distance:number}|null>(key,null)?.distance??0,newBest=distance>previous;
+    if(newBest)write(key,{distance,timeMs:this.sim.timeMs,seed:highway.config.seed,date:Date.now()});
+    // The result card has buttons: the cursor comes back (letting go of the mouse is not a pause).
+    this.keys.clear();this.releaseMouse();
+    this.emit({highwayResult:{distance,timeMs:this.sim.timeMs,topSpeedKph:Math.round(this.highwayTop*3.6),reason:highway.crashReason??'impact',newBest,previousBest:previous,at:performance.now()},highwayBest:Math.max(previous,distance),highwayDistance:distance});
+  }
   /** Racing City's time of day: set the hour (0-24) and whether it passes on its own. Remembered on this device. */
   setCityTime(patch:Partial<GameState['cityTime']>) {
     const next={...this.state.cityTime,...patch};next.hour=((next.hour%24)+24)%24;
@@ -601,7 +654,7 @@ export class Game {
   /** The city's clock, when it runs: a game hour a real minute. Headlamps follow dusk and dawn. */
   private runCityClock(elapsed:number) {
     const time=this.state.cityTime;
-    if(!time.cycle||!this.state.track.night||!this.state.trackReady||this.state.venueLoad||!['racing','countdown','party-finished'].includes(this.state.mode))return;
+    if(!time.cycle||!timeOfDay(this.state.track)||!this.state.trackReady||this.state.venueLoad||!['racing','countdown','party-finished'].includes(this.state.mode))return;
     const hour=(time.hour+elapsed*CITY_HOURS_PER_SECOND)%24;
     this.state={...this.state,cityTime:{...time,hour}};
     // Relit every half game minute; the map's clock updates every game minute; saved now and then.
@@ -614,7 +667,7 @@ export class Game {
   }
   /** In the city, headlamps come on as it gets dark and go off in daylight (the player can still switch them). */
   private followDusk() {
-    if(!this.state.track.night)return;
+    if(!timeOfDay(this.state.track))return;
     const dark=this.world.cityDark;if(dark!==this.cityWasDark){this.cityWasDark=dark;this.world.setHeadlights(dark);}
   }
   /** The what's-new card's reveal sounds (src/UpdateCard.tsx). */
@@ -840,7 +893,10 @@ export class Game {
     if(!this.cockpitPreview)this.world.cameraMode=s.cameraMode;
     // Wheel zoom is saved a moment after the wheel stops, not on every notch.
     this.world.onCameraDistance=distance=>{clearTimeout(this.cameraSave);this.cameraSave=window.setTimeout(()=>{this.settings={...this.settings,cameraDistance:distance};write('settings',this.settings);this.emit();},400);};
-    this.world.setGraphics(this.settings.graphics,this.driving);this.world.setWeather(this.partyWeather??this.settings.weather);this.world.sensitivity=this.settings.sensitivity;this.world.pointerLockEnabled=this.settings.pointerLock;this.world.reducedMotion=this.settings.reducedMotion||matchMedia('(prefers-reduced-motion: reduce)').matches;}
+    this.world.setGraphics(this.settings.graphics,this.driving);this.world.setWeather(this.partyWeather??this.settings.weather);
+    // Cruising the highway, the weather's grip changes with it; a Survival run keeps the conditions it started in.
+    if(this.sim?.highway&&!this.sim.highway.survival)this.sim.weather=this.settings.weather;
+    this.world.sensitivity=this.settings.sensitivity;this.world.pointerLockEnabled=this.settings.pointerLock;this.world.reducedMotion=this.settings.reducedMotion||matchMedia('(prefers-reduced-motion: reduce)').matches;}
   /** The car is moving under the player's control: no frame may stall now. */
   private get driving(){return !!this.state&&['racing','countdown','replay'].includes(this.state.mode)&&!this.partyView;}
   setSettings(patch:Partial<Settings>){
@@ -909,10 +965,22 @@ export class Game {
       if(this.awaitingPedal&&(this.held('throttle')||this.held('brake'))){this.awaitingPedal=false;this.emit({notice:''});}
       if((!this.awaitingPedal||this.state.mode==='replay')&&!this.state.mapOpen&&!this.state.venueLoad)this.accumulator+=elapsed;
       while(this.accumulator>=DT){
-        this.previousFrame=this.sim.frame();const input=this.state.mode==='replay'?(this.replayInput?.inputs[this.sim.ticks]??0):this.input();
+        this.previousFrame=this.sim.frame();const input=this.state.mode==='replay'?(this.replayInput?.inputs[this.sim.ticks]??0):this.state.highwayResult?0:this.input();
         if(!this.freeRoam)this.inputs.push(input);
         if(this.state.mode==='replay'&&this.replayInput)stepReplay(this.sim,this.replayInput);else this.sim.step(input);
         if(!this.freeRoam){this.steeringInputs.push(this.sim.steeringStrength);this.driftInputs.push(this.sim.driftStrength);}this.accumulator-=DT;
+        const highway=this.sim.highway;
+        if(highway){
+          // The simulation moved its world back to stay near the origin: the drawing moves with it.
+          if(highway.originVersion!==this.originSeen){
+            const dx=highway.origin.x-this.originAt.x,dy=highway.origin.y-this.originAt.y,dz=highway.origin.z-this.originAt.z;
+            this.world.shiftOrigin(dx,dy,dz);
+            if(this.previousFrame){this.previousFrame.p.x-=dx;this.previousFrame.p.y-=dy;this.previousFrame.p.z-=dz;}
+            this.originSeen=highway.originVersion;this.originAt={...highway.origin};
+          }
+          this.highwayTop=Math.max(this.highwayTop,highway.along);
+          if(highway.crashedAt!==undefined&&!this.state.highwayResult)this.highwayCrash();
+        }
         if(this.sim.penalties!==this.lastPenalties){this.lastPenalties=this.sim.penalties;this.sound.cue('impact',this.settings.effectsVolume*.5);this.emit({penalties:this.sim.penalties});}
         if(this.freeRoam&&this.state.mode==='racing')this.trackDrift();
         if(this.routeRecording){const p=this.sim.car.translation(), last=this.routePoints.at(-1);if(!last||Math.hypot(p.x-last.x,p.z-last.z)>4)this.routePoints.push({x:p.x,y:p.y,z:p.z});}
@@ -943,6 +1011,7 @@ export class Game {
       const inside=!!race||!!zone&&Math.abs(p.x-zone.x)<zone.w/2&&Math.abs(p.z-zone.z)<zone.l/2;
       if(inside!==this.state.atStart||race?.id!==this.state.atRace)this.emit({atStart:inside,atRace:race?.id});
     }else if(this.state.atStart)this.emit({atStart:false,atRace:undefined});
+    if(this.state.track.kind==='highway'&&this.state.trackReady)this.world.updateHighway(this.sim);
     if(this.state.track.lot){this.world.updateLot(this.state.mode==='menu'?undefined:this.sim,elapsed,this.freeRoam);if(this.state.mode==='racing')this.world.updateConfetti(elapsed);}
     if(this.state.mode==='menu'){if(this.cockpitPreview)this.world.chase(this.sim,elapsed);else if(this.editorView)this.world.editor(elapsed);else if(this.garageView)this.world.garage(elapsed);else this.world.overview(elapsed);this.world.ghostFrame(undefined);}else if(this.state.mode==='party-finished'&&this.partyFinishDriver){
       this.accumulator+=elapsed;
@@ -970,7 +1039,7 @@ export class Game {
     this.world.carDamage.reducedMotion=this.world.reducedMotion;
     this.world.carDamage.update(this.sim,this.world.car,this.state.mode==='paused'?0:elapsed,this.settings.carDamage&&['racing','replay','paused','celebrating','finished','party-finished'].includes(this.state.mode));
     this.world.startLight.update(this.world.camera,this.state.mode==='countdown'?this.state.countdown:0,this.state.mode==='racing'?(now-this.goAt)/1000:Infinity,now/1000,this.world.reducedMotion,this.state.mode==='countdown'?(now-(this.countdownUntil-6500))/1000:Infinity,(from,direction)=>this.sim.roadEdgeDistance(from,direction,120));
-    if(now-this.lastUI>65&&!['celebrating','finished'].includes(this.state.mode)){this.lastUI=now;const live:Partial<GameState>={time:this.partyRace?(this.state.mode==='party-finished'?this.state.time:this.partyRace.started?Math.max(0,Math.round(now-this.countdownUntil)):0):this.sim.timeMs,speed:Math.round(this.sim.speed*this.state.track.metersPerUnit*2.23694),checkpoint:this.sim.checkpoint,boost:this.sim.boosting,drifting:this.sim.drifting,drafting:this.sim.slipstream>.04,...(this.noticeUntil&&now>this.noticeUntil&&this.state.mode==='racing'?{notice:''}:{})};
+    if(now-this.lastUI>65&&!['celebrating','finished'].includes(this.state.mode)){this.lastUI=now;const live:Partial<GameState>={time:this.partyRace?(this.state.mode==='party-finished'?this.state.time:this.partyRace.started?Math.max(0,Math.round(now-this.countdownUntil)):0):this.sim.timeMs,speed:Math.round(this.sim.speed*this.state.track.metersPerUnit*2.23694),checkpoint:this.sim.checkpoint,boost:this.sim.boosting,drifting:this.sim.drifting,drafting:this.sim.slipstream>.04,...(this.sim.highway&&!this.state.highwayResult?{highwayDistance:Math.round(this.sim.highway.distance),highwayShoulder:this.sim.highway.survival&&this.sim.highway.onShoulder,highwaySlow:this.sim.highway.slowTicks>0?Math.ceil((SLOW_LIMIT_TICKS-this.sim.highway.slowTicks)/60):undefined}:{}),...(this.noticeUntil&&now>this.noticeUntil&&this.state.mode==='racing'?{notice:''}:{})};
       // Menus and pauses re-render the whole interface; only do it when a shown value moved. Live driving modes always refresh for the RPM gauge.
       if(['countdown','racing','replay'].includes(this.state.mode)||(Object.keys(live) as (keyof GameState)[]).some(key=>live[key]!==this.state[key]))this.emit(live);}
     const solid=this.partyRace?.ready&&['countdown','racing','party-finished'].includes(this.state.mode);
@@ -1005,6 +1074,11 @@ export class Game {
 const CLOCK_STEP_MS=5;
 /** How often a driver with nobody to share the city with checks in with the party server. */
 const PARTY_CHECK_IN_MS=3500;
+function loadHighwaySetup():GameState['highwaySetup'] {
+  const saved=read<Partial<GameState['highwaySetup']>>('highwaySetup',{}),traffic=saved.traffic??DEFAULT_HIGHWAY_TRAFFIC;
+  const number=(value:unknown,min:number,max:number,fallback:number)=>typeof value==='number'&&Number.isFinite(value)?Math.min(max,Math.max(min,value)):fallback;
+  return {mode:saved.mode==='survival'?'survival':'cruise',traffic:{density:number(traffic.density,0,60,DEFAULT_HIGHWAY_TRAFFIC.density),speedKph:number(traffic.speedKph,50,260,DEFAULT_HIGHWAY_TRAFFIC.speedKph)}};
+}
 function loadCityTime():GameState['cityTime'] {
   const saved=read<Partial<GameState['cityTime']>>('cityTime',{});
   return {hour:typeof saved.hour==='number'&&Number.isFinite(saved.hour)?((saved.hour%24)+24)%24:DEFAULT_CITY_HOUR,cycle:saved.cycle===true};

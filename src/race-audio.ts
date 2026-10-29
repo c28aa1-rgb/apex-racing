@@ -42,7 +42,7 @@ export function tireStress(sim:Simulation) {
 const SAMPLES={idleGt3:'idle-porsche-gt3',idleRally:'idle-rally',squeal:'tire-squeal',impact:'impact-hard',impactFast:'impact-fast',crash:'crash',light:'light',go:'go',click:'ui-click',hover:'ui-hover',confirm:'ui-confirm',back:'ui-back',select:'ui-select',shiftUp:'shift-up',shiftDown:'shift-down'} as const;
 type SampleKey=keyof typeof SAMPLES;
 export type UiCue='click'|'hover'|'confirm'|'back'|'select';
-export type RevealCue='power'|'flash'|'chirp'|'riser'|'hit'|'shimmer'|'stamp'|'tick'|'go'|'close';
+export type RevealCue='power'|'flash'|'chirp'|'riser'|'hit'|'shimmer'|'stamp'|'tick'|'go'|'close'|'pass';
 // Safari before 14.1 cannot play Ogg Vorbis, so every sample also ships as AAC (.m4a).
 const AUDIO_EXT=(()=>{try{return document.createElement('audio').canPlayType('audio/ogg; codecs="vorbis"')?'ogg':'m4a';}catch{return 'ogg';}})();
 const MUSIC_DIR='audio/music/';
@@ -246,6 +246,13 @@ export class RaceAudio {
       this.ring(now+.1,.03,[2093,3136,4186,5274],1.5,bus);
     }else if(cue==='stamp')this.play('select',.5,1.05,bus);
     else if(cue==='tick')this.play('hover',.24,1.04+index*.05,bus);
+    else if(cue==='pass'){
+      // A car going by on the highway: tyre roar swelling and falling away, its engine note dropping as it passes.
+      const pitch=1+index*.06;
+      this.sweep(now,.07,500*pitch,2400*pitch,.24,1.1,'bandpass');
+      this.sweep(now+.24,.06,2400*pitch,420*pitch,.42,1.1,'bandpass');
+      this.tone(now,.045,'sawtooth',[[0,150*pitch],[.24,210*pitch],[.62,95*pitch]],.66,800);
+    }
     else if(cue==='go'){this.play('confirm',.6,1,bus);this.sweep(now,.05,500,2600,.45,.8,'bandpass');}
     else if(cue==='close')this.play('back',.6,1,bus);
   }

@@ -31,6 +31,8 @@ type Kind = SimKind & {
   slots: WheelSlot[];
 };
 type Car = SimCar & { kind: Kind };
+/** A car moved by the simulation itself (street race or highway traffic), as far as drawing it goes. */
+type PuppetSource = Pick<RaceCar, 'id' | 'x' | 'y' | 'z' | 'yaw' | 'pitch' | 'v' | 'travel' | 'braking'> & { kind: { id: string }; parked?: boolean; active?: boolean; wreck?: unknown };
 /** A car the player knocked, as reported to the city party server: its id and its stand-in's pose and motion. */
 export type TrafficKnock = { id: number; p: { x: number; z: number }; q: { x: number; y: number; z: number; w: number }; v: { x: number; z: number }; w: { y: number } };
 /** What the party server sends: when (server clock), the cars near this driver, the signals; `handoff` when it stops. */
@@ -40,6 +42,8 @@ const KIND_WEIGHT: Record<string, number> = { 'lct-3000-07': .45, 'lightbody-90-
 const KIND_MASS: Record<string, number> = { 'lct-3000-07': 4200, 'lightbody-90-md-utility': 2400 };
 /** Cars further than this, or off screen, are not drawn. */
 const DRAW_WITHIN = 480;
+/** On the highway the view is long and open: cars are drawn much further out. */
+const HIGHWAY_DRAW_WITHIN = 1300;
 /** Cars nearer than this are drawn in full (spinning, steering wheels); further ones as a simplified shell. */
 const DETAIL_WITHIN = 75;
 /** Upper bound on cars across the whole city (and the size of each instanced batch). */
@@ -85,19 +89,32 @@ export class CityTraffic {
   readonly race = new CityRaceScene();
   /** The street race whose route is closed to free-roam traffic, and the race's own cars as drawn. */
   private closedFor?: Track;
-  private puppets = new Map<RaceCar, Car>();
+  private puppets = new Map<PuppetSource, Car>();
+  /** The simulation the puppets were copied from. */
+  private puppetsFor?: Simulation;
   /** City party: following the server's traffic (since the last packet), and the knocks to report to it. */
   private networked = false;
   private knocks: TrafficKnock[] = [];
 
   private constructor() { this.group.name = 'apex-city-traffic'; }
 
-  /** Loads the vehicles, builds the traffic from the road data and places the cars. */
-  static async create(venue: THREE.Object3D, loader: GLTFLoader, player: THREE.Vector3) {
+  /**
+   * Loads the vehicles, builds the traffic from the road data and places the cars. On the Endless Highway
+   * (`highway`) there is no city: this only draws the simulation's own highway traffic (see syncPuppets).
+   */
+  static async create(venue: THREE.Object3D, loader: GLTFLoader, player: THREE.Vector3, highway = false) {
     const traffic = new CityTraffic();
+    if (highway) {
+      const [gltf, simplifier] = await Promise.all([loader.loadAsync(assetUrl('models/traffic/traffic-cars.glb')), CityTraffic.simplifier()]);
+      traffic.highway = true; traffic.drawWithin = HIGHWAY_DRAW_WITHIN;
+      traffic.buildKinds(gltf.scene, simplifier);
+      traffic.traffic = new TrafficSim([], [], traffic.kinds); traffic.traffic.spawning = false;
+      traffic.buildLamps();
+      return traffic;
+    }
     const [gltf, simplifier, police] = await Promise.all([
       loader.loadAsync(assetUrl('models/traffic/traffic-cars.glb')),
-      import('meshoptimizer').then(async ({ MeshoptSimplifier }) => { await MeshoptSimplifier.ready; return MeshoptSimplifier.supported ? MeshoptSimplifier : undefined; }).catch(() => undefined),
+      CityTraffic.simplifier(),
       loader.loadAsync(assetUrl('models/traffic/police-cars.glb')).catch(error => { console.warn('Police cars unavailable.', error); return undefined; }),
     ]);
     traffic.props = new CityProps(venue); traffic.group.add(traffic.props.group);
@@ -112,6 +129,15 @@ export class CityTraffic {
     traffic.render();
     return traffic;
   }
+  private static simplifier() {
+    return import('meshoptimizer').then(async ({ MeshoptSimplifier }) => { await MeshoptSimplifier.ready; return MeshoptSimplifier.supported ? MeshoptSimplifier : undefined; }).catch(() => undefined);
+  }
+  /** Drawing only the Endless Highway's traffic (no city, signals or props). */
+  private highway = false;
+  /** Cars further than this are not drawn. */
+  private drawWithin = DRAW_WITHIN;
+  /** Head and tail lamps, 0 by day (running lights only) to 1 at night. */
+  lamps = 1;
   private get cars() { return this.traffic.cars as Car[]; }
   private get signals() { return this.traffic.signals; }
   /** Counters for tuning (see TrafficSim). */
@@ -229,11 +255,18 @@ export class CityTraffic {
   private get eye() { return this.camera ? this.eyePosition.setFromMatrixPosition(this.camera.matrixWorld) : this.eyePosition; }
   private eyePosition = new THREE.Vector3();
   /** Whether a point could be on screen: within drawing range and in the camera's view. */
-  private visible(at: THREE.Vector3) { return !!this.camera && at.distanceTo(this.eye) < DRAW_WITHIN && this.frustum.intersectsSphere(new THREE.Sphere(at, 5)); }
+  private visible(at: THREE.Vector3) { return !!this.camera && at.distanceTo(this.eye) < this.drawWithin && this.frustum.intersectsSphere(new THREE.Sphere(at, 5)); }
   // ------------------------------------------------------------------ update
   /** Advances signals and cars by dt seconds and keeps the nearby cars solid in the player's simulation. */
   update(dt: number, sim: Simulation, player: THREE.Vector3, playerVelocity: THREE.Vector3) {
     dt = Math.min(dt, .1);
+    if (this.highway) {
+      // The simulation moves the highway's cars (and makes them solid); this only draws them.
+      if (this.camera) { this.camera.updateMatrixWorld(); this.frustum.setFromProjectionMatrix(new THREE.Matrix4().multiplyMatrices(this.camera.projectionMatrix, this.camera.matrixWorldInverse)); }
+      this.traffic.time += dt;
+      this.syncPuppets(sim); this.render();
+      return;
+    }
     const street = sim.track.kind === 'street' ? sim.track : undefined;
     if (street !== this.closedFor) this.close(street, sim);
     this.race.update(dt, this.camera ? this.eye : undefined);
@@ -312,12 +345,20 @@ export class CityTraffic {
     if (this.registered !== sim) for (const car of this.cars) car.obstacle = false;
     this.traffic.close(race?.street);
   }
-  /** The race's own cars (shared/race-traffic.ts), copied into drawable cars each frame. */
+  /**
+   * The simulation's own cars, copied into drawable cars each frame: a street race's (shared/race-traffic.ts) or the
+   * Endless Highway's (shared/highway-traffic.ts, in absolute coordinates: drawn at minus the floating origin).
+   */
   private syncPuppets(sim: Simulation) {
-    const cars = sim.raceTraffic?.cars; if (!cars) return;
+    // A new run is a new simulation with its own cars: the last run's must not stay drawn where they stopped (on a
+    // highway with a new seed, that is in mid-air or off the road).
+    if (this.puppetsFor !== sim) { this.puppets.clear(); this.puppetsFor = sim; }
+    const race = sim.raceTraffic?.cars, highway = sim.highway, cars: PuppetSource[] | undefined = race ?? highway?.traffic.cars;
+    if (!cars) return;
+    const o = highway?.origin ?? { x: 0, y: 0, z: 0 };
     for (const raceCar of cars) {
       let car = this.puppets.get(raceCar);
-      if (raceCar.parked) { if (car) this.puppets.delete(raceCar); continue; }
+      if (raceCar.parked || raceCar.active === false) { if (car) this.puppets.delete(raceCar); continue; }
       const kind = this.kinds.find(k => k.name === raceCar.kind.id); if (!kind) continue;
       if (!car) {
         car = { id: -1 - raceCar.id, kind, lane: this.traffic.lanes[0], s: 0, v: 0, index: 0, braking: false, temper: 1, position: new THREE.Vector3(), heading: new THREE.Vector3(), zones: new Set(), obstacle: false,
@@ -325,12 +366,18 @@ export class CityTraffic {
         this.puppets.set(raceCar, car);
       }
       const turn = Math.atan2(Math.sin(raceCar.yaw - car.yaw), Math.cos(raceCar.yaw - car.yaw)), speed = Math.max(.5, raceCar.v);
-      car.position.set(raceCar.x, raceCar.y, raceCar.z); car.yaw = raceCar.yaw; car.v = raceCar.v; car.braking = raceCar.braking;
+      // A knocked street-race car keeps the height it was hit at (the race simulation, and so every replay, depends on
+      // its stand-in as it is); draw it on its lane's height where it has slid to, so it never hangs off a ramp.
+      const lane = race && raceCar.wreck ? (raceCar as RaceCar).lane : undefined;
+      const y = lane ? lane.y[Math.min(lane.y.length - 1, (raceCar as RaceCar).hint % lane.y.length)] : raceCar.y;
+      car.position.set(raceCar.x - o.x, y - o.y, raceCar.z - o.z); car.yaw = raceCar.yaw; car.v = raceCar.v; car.braking = raceCar.braking;
       car.heading.set(Math.sin(raceCar.yaw) * Math.cos(raceCar.pitch), -Math.sin(raceCar.pitch), Math.cos(raceCar.yaw) * Math.cos(raceCar.pitch));
       car.spin = (raceCar.travel / Math.max(kind.radius, .2)) % (Math.PI * 2);
       car.steer = raceCar.v > .5 ? THREE.MathUtils.clamp(Math.atan(kind.wheelbase * turn * 60 / speed), -.6, .6) * .5 + car.steer * .5 : car.steer;
       car.wreck = raceCar.wreck ? (car.wreck ?? { velocity: new THREE.Vector3(), yawRate: 0, still: 0, offLane: false, hitAt: 0 }) : undefined;
     }
+    // Highway cars recycled since last frame (placed again elsewhere) are not puppets any more.
+    if (highway) for (const source of this.puppets.keys()) if (source.active === false) this.puppets.delete(source);
   }
   private release(car: Car, sim: Simulation) {
     if (car.obstacle && this.registered === sim) sim.setObstacle(`traffic-${car.id}`, car.kind.body, undefined);
@@ -347,15 +394,17 @@ export class CityTraffic {
       const k = car.kind;
       sphere.set(car.position, k.body.lengthM * .6);
       const distance = eye ? car.position.distanceTo(eye) : 0;
-      if (eye && (distance > DRAW_WITHIN || !this.frustum.intersectsSphere(sphere))) continue;
+      if (eye && (distance > this.drawWithin || !this.frustum.intersectsSphere(sphere))) continue;
       const pitch = -Math.asin(THREE.MathUtils.clamp(car.heading.y, -1, 1));
       q.setFromEuler(new THREE.Euler(pitch, car.yaw, 0, 'YXZ'));
       const carMatrix = new THREE.Matrix4().compose(car.position, q, this.scale.set(1, 1, 1));
       const l = lamps.get(k) ?? 0; lamps.set(k, l + 1);
-      for (const mesh of k.heads) { mesh.setMatrixAt(l, carMatrix); mesh.setColorAt(l, this.color.setRGB(2.4, 2.3, 2.1)); }
+      const lit = this.highway ? .45 + this.lamps * 1.95 : 1;
+      for (const mesh of k.heads) { mesh.setMatrixAt(l, carMatrix); mesh.setColorAt(l, this.color.setRGB(2.4 * lit, 2.3 * lit, 2.1 * lit)); }
       // A knocked car flashes its hazards.
       const hazard = car.wreck && Math.floor(this.traffic.time * 2.6) % 2 === 0;
-      for (const mesh of k.tails) { mesh.setMatrixAt(l, carMatrix); mesh.setColorAt(l, hazard ? this.color.setRGB(5, 2.2, .4) : car.braking ? this.color.setRGB(4.5, 1.2, 1.1) : this.color.setRGB(1.6, .55, .5)); }
+      const tail = this.highway ? .35 + this.lamps * .65 : 1;
+      for (const mesh of k.tails) { mesh.setMatrixAt(l, carMatrix); mesh.setColorAt(l, hazard ? this.color.setRGB(5, 2.2, .4) : car.braking ? this.color.setRGB(4.5, 1.2, 1.1) : this.color.setRGB(1.6 * tail, .55 * tail, .5 * tail)); }
       if (distance > DETAIL_WITHIN && k.far.length) {
         const f = farCounts.get(k) ?? 0; farCounts.set(k, f + 1);
         for (const mesh of k.far) mesh.setMatrixAt(f, carMatrix);
@@ -384,7 +433,9 @@ export class CityTraffic {
       for (const mesh of kind.far) { mesh.count = farCounts.get(kind) ?? 0; mesh.instanceMatrix.needsUpdate = true; }
       for (const mesh of [...kind.heads, ...kind.tails]) { mesh.count = lamps.get(kind) ?? 0; mesh.instanceMatrix.needsUpdate = true; mesh.instanceColor!.needsUpdate = true; }
     }
-    this.pools!.count = pool; this.pools!.instanceMatrix.needsUpdate = true;
+    // On the highway the light pools only show once it is dark (the city keeps them as it always has).
+    if (this.highway) (this.pools!.material as THREE.MeshBasicMaterial).opacity = .32 * this.lamps;
+    this.pools!.count = this.highway && this.lamps < .05 ? 0 : pool; this.pools!.instanceMatrix.needsUpdate = true;
     if (!this.bulbs || !this.bulbGlows) return;
     const colors = [new THREE.Color(4, .15, .1), new THREE.Color(4, 2.2, .1), new THREE.Color(.2, 3.5, 1.2)], dim = .06;
     this.signals.forEach((signal, i) => {
